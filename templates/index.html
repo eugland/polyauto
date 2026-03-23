@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Polymarket Temperature Markets</title>
+    <style>
+      :root {
+        --bg1: #f2f7ff;
+        --bg2: #fff8f0;
+        --ink: #1b1f2a;
+        --muted: #4c5568;
+        --card: #ffffff;
+        --line: #d8e2f1;
+        --accent: #1266f1;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        color: var(--ink);
+        background: linear-gradient(160deg, var(--bg1), var(--bg2));
+        min-height: 100vh;
+      }
+      .wrap {
+        max-width: 1000px;
+        margin: 24px auto;
+        padding: 16px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 18px;
+        box-shadow: 0 8px 24px rgba(22, 36, 62, 0.06);
+      }
+      h1 {
+        margin: 0 0 14px 0;
+        font-size: 1.4rem;
+      }
+      p {
+        color: var(--muted);
+        margin: 0 0 18px 0;
+      }
+      .error {
+        margin-top: 14px;
+        color: #9f2e2e;
+        background: #fff2f2;
+        border: 1px solid #ffcaca;
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .result {
+        margin-top: 16px;
+      }
+      .event-card {
+        margin-top: 14px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 12px;
+        background: #fcfdff;
+      }
+      .event-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .event-title {
+        font-weight: 700;
+      }
+      .event-meta {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+      @media (max-width: 860px) {
+        .event-head { align-items: flex-start; flex-direction: column; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <h1>Polymarket Temperature Markets</h1>
+        <p>Default temperature feed loaded directly from the API.</p>
+
+        {% if error %}
+          <div class="error">{{ error }}</div>
+        {% endif %}
+
+        {% if event_groups %}
+          <div class="result">
+            <p><strong>{{ market_count }}</strong> markets found</p>
+            {% for group in event_groups %}
+              <div class="event-card">
+                <div class="event-head">
+                  <div>
+                    <div class="event-title">{{ group.event_title }}</div>
+                    {% if group.event_url != "-" %}
+                      <a href="{{ group.event_url }}" target="_blank" style="font-size:0.82rem;">open event</a>
+                    {% endif %}
+                  </div>
+                  <div class="event-meta">End: {{ group.end_date }}</div>
+                </div>
+
+                <div style="overflow:auto;">
+                  <table style="width:100%; border-collapse:collapse; font-size:0.88rem;">
+                    <thead>
+                      <tr style="text-align:left; border-bottom:1px solid var(--line);">
+                        <th style="padding:8px;">Selection</th>
+                        <th style="padding:8px;">Yes</th>
+                        <th style="padding:8px;">No</th>
+                        <th style="padding:8px;">Status</th>
+                        <th style="padding:8px;">Last Price</th>
+                        <th style="padding:8px;">Volume</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for s in group.selections %}
+                        <tr style="border-bottom:1px solid #edf2fa;">
+                          <td style="padding:8px;">
+                            <div>{{ s.selection }}</div>
+                          </td>
+                          <td style="padding:8px;">{{ s.yes_price }}</td>
+                          <td style="padding:8px;">{{ s.no_price }}</td>
+                          <td style="padding:8px;">{{ s.status }}</td>
+                          <td style="padding:8px;">{{ s.last_price }}</td>
+                          <td style="padding:8px;">{{ s.volume }}</td>
+                        </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </body>
+</html>
