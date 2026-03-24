@@ -129,16 +129,20 @@
                         href="{{ group.event_url if group.event_url != '-' else '' }}"
                         target="_blank"
                       >Open event</a>
-                      <a
-                        class="btn-link {% if not group.wunderground_url %}is-disabled{% endif %}"
-                        href="{{ group.wunderground_url if group.wunderground_url else '' }}"
-                        target="_blank"
-                      >Open Wunderground</a>
-                      <a
-                        class="btn-link {% if not group.accuweather_url %}is-disabled{% endif %}"
-                        href="{{ group.accuweather_url if group.accuweather_url else '' }}"
-                        target="_blank"
-                      >Open AccuWeather</a>
+                      {% if group.source and group.source.wunderground %}
+                        <a
+                          class="btn-link"
+                          href="{{ group.source.wunderground }}"
+                          target="_blank"
+                        >Open Wunderground</a>
+                      {% endif %}
+                      {% if group.source and group.source.accuweather %}
+                        <a
+                          class="btn-link"
+                          href="{{ group.source.accuweather }}"
+                          target="_blank"
+                        >Open AccuWeather</a>
+                      {% endif %}
                     </div>
                   </div>
                   <div class="live-time">{{ group.local_time_display }}</div>

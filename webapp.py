@@ -4,38 +4,29 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
-from flask import Flask, jsonify, render_template, request as flask_request
+from flask import Flask, render_template
 
 from app import fetch_temperature_tag_events
-from clients.openweather import (
-    Coordinates,
-    LocationQuery,
-    fetch_current_weather,
-    fetch_current_weather_by_coordinates,
-    fetch_intraday_forecast,
-    get_openweather_api_key,
-    resolve_location_coordinates,
-    resolve_location_query,
-)
 
 app = Flask(__name__)
 
-DEFAULT_QUERY = "temperature"
-DEFAULT_LIMIT = 50
-DEFAULT_MAX_PAGES = 1
-DEFAULT_INCLUDE_CLOSED = False
+DEFAULT_RUN_HOST = "127.0.0.1"
+DEFAULT_RUN_PORT = 5000
+DEFAULT_RUN_DEBUG = True
 WEBAPP_CONFIG_PATH = Path(__file__).resolve().with_name("webapp.json")
 EVENT_SLUG_RE = re.compile(r"^highest-temperature-in-(.+)-on-[a-z]+-\d{1,2}-\d{4}$")
+EVENT_DATE_IN_TITLE_RE = re.compile(
+    r"\bon\s+([A-Za-z]+)\s+(\d{1,2})(?:,)?\s+(\d{4})\b", re.IGNORECASE
+)
+EVENT_DATE_IN_SLUG_RE = re.compile(r"-on-([a-z]+)-(\d{1,2})-(\d{4})$")
 
 
-def build_output(
-    query: str, limit: int, max_pages: int, include_closed: bool
-) -> dict[str, Any]:
+def build_output() -> dict[str, Any]:
     events = fetch_temperature_tag_events()
     markets: list[dict[str, Any]] = []
     for event in events:
@@ -49,8 +40,6 @@ def build_output(
             row["event_slug"] = event_slug
             markets.append(row)
     return {
-        "query": query,
-        "include_closed": include_closed,
         "market_count": len(markets),
         "markets": markets,
     }
@@ -108,19 +97,6 @@ def _is_unbuyable_price(value: Any) -> bool:
     return False
 
 
-def _parse_iso_datetime(raw: Any) -> datetime | None:
-    if not isinstance(raw, str) or not raw.strip():
-        return None
-    value = raw.strip().replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
 def _parse_local_time(raw: Any) -> datetime | None:
     if not isinstance(raw, str) or not raw.strip():
         return None
@@ -134,21 +110,71 @@ def _format_local_time(raw: Any) -> str:
     dt = _parse_local_time(raw)
     if dt is None:
         return "-"
-    return dt.strftime("%I:%M %p").lstrip("0")
+    return dt.strftime("%m-%d %I:%M%p").replace(" 0", " ")
 
 
-def _local_clock_sort_value(raw: Any) -> int:
+def _local_offset_sort_value(raw: Any) -> int | None:
     dt = _parse_local_time(raw)
     if dt is None:
-        return -1
-    return dt.hour * 3600 + dt.minute * 60 + dt.second
+        return None
+    offset = dt.utcoffset()
+    if offset is None:
+        return None
+    return int(offset.total_seconds() // 60)
 
 
-def _event_group_sort_key(group: dict[str, Any]) -> tuple[int, int, str]:
-    clock_value = _local_clock_sort_value(group.get("local_time_now"))
-    if clock_value < 0:
-        return (1, 0, str(group.get("event_title", "")))
-    return (0, -clock_value, str(group.get("event_title", "")))
+def _parse_month_number(value: str) -> int | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    for fmt in ("%B", "%b"):
+        try:
+            return datetime.strptime(cleaned, fmt).month
+        except ValueError:
+            continue
+    return None
+
+
+def _extract_event_date_ordinal(event_title: Any, event_slug: Any) -> int | None:
+    title = str(event_title or "").strip()
+    slug = str(event_slug or "").strip().lower()
+
+    match = EVENT_DATE_IN_TITLE_RE.search(title)
+    if match:
+        month_name, day_raw, year_raw = match.groups()
+        month = _parse_month_number(month_name)
+        if month is not None:
+            try:
+                return date(int(year_raw), int(month), int(day_raw)).toordinal()
+            except ValueError:
+                pass
+
+    match = EVENT_DATE_IN_SLUG_RE.search(slug)
+    if match:
+        month_name, day_raw, year_raw = match.groups()
+        month = _parse_month_number(month_name)
+        if month is not None:
+            try:
+                return date(int(year_raw), int(month), int(day_raw)).toordinal()
+            except ValueError:
+                pass
+
+    return None
+
+
+def _event_group_sort_key(group: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    event_date_ordinal = group.get("event_date_sort_ordinal")
+    if isinstance(event_date_ordinal, int):
+        date_sort = event_date_ordinal
+        date_missing = 0
+    else:
+        date_sort = 0
+        date_missing = 1
+
+    offset_minutes = _local_offset_sort_value(group.get("local_time_now"))
+    if offset_minutes is None:
+        return (date_missing, date_sort, 1, 0, str(group.get("event_title", "")))
+    return (date_missing, date_sort, 0, -offset_minutes, str(group.get("event_title", "")))
 
 
 def _event_location_key(event_slug: str) -> str:
@@ -180,30 +206,86 @@ def _format_int_volume(value: Any) -> str:
     return "-"
 
 
-def _load_webapp_mapping() -> dict[str, dict[str, str]]:
+def _read_webapp_config_payload() -> dict[str, Any]:
     if not WEBAPP_CONFIG_PATH.exists():
         return {}
     try:
         payload = json.loads(WEBAPP_CONFIG_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
-    if not isinstance(payload, dict):
-        return {}
+    return payload if isinstance(payload, dict) else {}
 
-    out: dict[str, dict[str, str]] = {}
-    for key, value in payload.items():
+
+def _parse_int(raw: Any, default: int) -> int:
+    if isinstance(raw, bool):
+        return default
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, float):
+        return int(raw)
+    if isinstance(raw, str):
+        try:
+            return int(raw.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _load_webapp_settings(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_settings = payload.get("settings")
+    settings = raw_settings if isinstance(raw_settings, dict) else {}
+    return {
+        "run_host": str(settings.get("run_host") or DEFAULT_RUN_HOST).strip() or DEFAULT_RUN_HOST,
+        "run_port": _parse_int(settings.get("run_port"), DEFAULT_RUN_PORT),
+        "run_debug": _is_true(settings.get("run_debug", DEFAULT_RUN_DEBUG)),
+    }
+
+
+def _load_webapp_mapping(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    def _normalize_source(item: dict[str, Any]) -> dict[str, str]:
+        source_payload = item.get("source")
+        source: dict[str, str] = {}
+        if isinstance(source_payload, dict):
+            for source_key, source_value in source_payload.items():
+                source_name = str(source_key or "").strip().lower()
+                source_url = str(source_value or "").strip()
+                if source_name and source_url:
+                    source[source_name] = source_url
+        return source
+
+    def _parse_offset_minutes(raw: Any) -> int | None:
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, (int, float)):
+            return int(raw)
+        if isinstance(raw, str):
+            try:
+                return int(raw.strip())
+            except ValueError:
+                return None
+        return None
+
+    out: dict[str, dict[str, Any]] = {}
+    locations_payload = payload.get("locations")
+    if not isinstance(locations_payload, list):
+        return out
+
+    for value in locations_payload:
         if not isinstance(value, dict):
             continue
-        out[str(key).strip().lower()] = {
+        key = str(value.get("key") or "").strip().lower()
+        if not key:
+            continue
+        out[key] = {
             "station": str(value.get("station") or "").strip(),
-            "wunderground_url": str(value.get("wunderground_url") or "").strip(),
-            "accuweather_url": str(value.get("accuweather_url") or "").strip(),
+            "source": _normalize_source(value),
             "timezone": str(value.get("timezone") or "").strip(),
+            "utc_offset_minutes": _parse_offset_minutes(value.get("utc_offset_minutes")),
         }
     return out
 
 
-def _build_local_time_now(location_key: str, mapping: dict[str, dict[str, str]]) -> str | None:
+def _build_local_time_now(location_key: str, mapping: dict[str, dict[str, Any]]) -> str | None:
     info = mapping.get(location_key, {})
     timezone_name = str(info.get("timezone") or "").strip()
     offset_raw = info.get("utc_offset_minutes")
@@ -215,32 +297,6 @@ def _build_local_time_now(location_key: str, mapping: dict[str, dict[str, str]])
             offset_minutes = int(offset_raw.strip())
         except ValueError:
             offset_minutes = None
-
-    default_offsets_by_timezone = {
-        "America/Los_Angeles": -420,
-        "America/Denver": -360,
-        "America/Chicago": -300,
-        "America/New_York": -240,
-        "America/Toronto": -240,
-        "Europe/London": 0,
-        "Europe/Paris": 60,
-        "Europe/Berlin": 60,
-        "Europe/Rome": 60,
-        "Europe/Madrid": 60,
-        "Europe/Warsaw": 60,
-        "Europe/Istanbul": 180,
-        "America/Sao_Paulo": -180,
-        "America/Argentina/Buenos_Aires": -180,
-        "Asia/Seoul": 540,
-        "Pacific/Auckland": 780,
-        "Asia/Kolkata": 330,
-        "Asia/Tokyo": 540,
-        "Asia/Shanghai": 480,
-        "Asia/Singapore": 480,
-        "Asia/Hong_Kong": 480,
-        "Asia/Taipei": 480,
-        "Asia/Jerusalem": 120,
-    }
 
     if not timezone_name:
         if offset_minutes is None:
@@ -258,48 +314,33 @@ def _build_local_time_now(location_key: str, mapping: dict[str, dict[str, str]])
         print(f"[LOCALTIME] key={location_key} timezone={timezone_name} local_time={local_time}")
         return local_time
     except Exception as exc:
-        fallback_offset = (
-            offset_minutes
-            if offset_minutes is not None
-            else default_offsets_by_timezone.get(timezone_name)
-        )
-        if fallback_offset is None:
+        if offset_minutes is None:
             print(
                 f"[LOCALTIME] key={location_key} timezone={timezone_name} "
                 f"error={exc} fallback_offset_minutes=<missing> local_time=<none>"
             )
             return None
-        tz_offset = timezone(timedelta(minutes=fallback_offset))
+        tz_offset = timezone(timedelta(minutes=offset_minutes))
         local_time = datetime.now(timezone.utc).astimezone(tz_offset).isoformat()
         print(
             f"[LOCALTIME] key={location_key} timezone={timezone_name} "
-            f"error={exc} fallback_offset_minutes={fallback_offset} local_time={local_time}"
+            f"error={exc} fallback_offset_minutes={offset_minutes} local_time={local_time}"
         )
         return local_time
 
 
-def _is_within_next_24_hours(end_date: Any) -> bool:
-    end_dt = _parse_iso_datetime(end_date)
-    if end_dt is None:
-        return False
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(hours=24)
-    return now <= end_dt <= horizon
-
-
-def build_event_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    mapping = _load_webapp_mapping()
+def build_event_groups(
+    payload: dict[str, Any],
+    mapping: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
     groups_map: dict[str, dict[str, Any]] = {}
     local_time_cache: dict[str, str | None] = {}
     for market in payload.get("markets", []):
         if not isinstance(market, dict):
             continue
-        # Only show currently tradable/open selections in the UI.
         if _is_true(market.get("closed")):
             continue
         if market.get("active") is not None and not _is_true(market.get("active")):
-            continue
-        if not _is_within_next_24_hours(market.get("endDate")):
             continue
 
         event_slug = str(market.get("event_slug") or "")
@@ -309,8 +350,16 @@ def build_event_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
         end_date = market.get("endDate") or "-"
         location_key = _event_location_key(event_slug)
         links = mapping.get(location_key, {})
-        wunderground_url = str(links.get("wunderground_url") or "").strip()
-        accuweather_url = str(links.get("accuweather_url") or "").strip()
+
+        raw_source = links.get("source")
+        source: dict[str, str] = {}
+        if isinstance(raw_source, dict):
+            for source_key, source_value in raw_source.items():
+                source_name = str(source_key or "").strip().lower()
+                source_url = str(source_value or "").strip()
+                if source_name and source_url:
+                    source[source_name] = source_url
+
         timezone_name = str(links.get("timezone") or "").strip()
         if location_key not in local_time_cache:
             local_time_cache[location_key] = _build_local_time_now(location_key, mapping)
@@ -319,13 +368,14 @@ def build_event_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if event_key not in groups_map:
             groups_map[event_key] = {
                 "event_title": event_title,
+                "event_slug": event_slug,
                 "event_url": event_url,
                 "end_date": end_date,
-                "wunderground_url": wunderground_url,
-                "accuweather_url": accuweather_url,
+                "source": source,
                 "timezone": timezone_name,
                 "local_time_now": local_time_now,
                 "local_time_display": _format_local_time(local_time_now),
+                "event_date_sort_ordinal": _extract_event_date_ordinal(event_title, event_slug),
                 "selections": [],
             }
 
@@ -373,52 +423,6 @@ def print_filtered_results(event_groups: list[dict[str, Any]]) -> None:
     print(json.dumps(event_groups, indent=2))
 
 
-def parse_weather_keywords() -> list[str]:
-    if flask_request.method == "POST":
-        payload = flask_request.get_json(silent=True) or {}
-        raw = payload.get("keywords")
-        if isinstance(raw, list):
-            return [str(x).strip().lower() for x in raw if str(x).strip()]
-        if isinstance(raw, str):
-            return [p.strip().lower() for p in raw.split(",") if p.strip()]
-
-    keyword = (flask_request.args.get("keyword") or "").strip().lower()
-    keywords = (flask_request.args.get("keywords") or "").strip().lower()
-    items: list[str] = []
-    if keyword:
-        items.append(keyword)
-    if keywords:
-        items.extend([p.strip() for p in keywords.split(",") if p.strip()])
-    return items
-
-
-def parse_coordinate(value: str | None, name: str) -> float:
-    if value is None or not value.strip():
-        raise ValueError(f"Missing required query parameter '{name}'.")
-    try:
-        return float(value)
-    except ValueError as exc:
-        raise ValueError(f"Query parameter '{name}' must be a number.") from exc
-
-
-def resolve_request_coordinates() -> tuple[Coordinates, str]:
-    location = (flask_request.args.get("location") or "").strip()
-    if location:
-        return resolve_location_coordinates(location), "location"
-
-    location_key = (flask_request.args.get("location_key") or "").strip()
-    if location_key:
-        return resolve_location_coordinates(location_key), "location"
-
-    return (
-        Coordinates(
-            lat=parse_coordinate(flask_request.args.get("lat"), "lat"),
-            lon=parse_coordinate(flask_request.args.get("lon"), "lon"),
-        ),
-        "coordinates",
-    )
-
-
 @app.route("/", methods=["GET"])
 def index() -> Any:
     event_groups: list[dict[str, Any]] = []
@@ -426,13 +430,11 @@ def index() -> Any:
     error = ""
 
     try:
-        payload = build_output(
-            query=DEFAULT_QUERY,
-            limit=DEFAULT_LIMIT,
-            max_pages=DEFAULT_MAX_PAGES,
-            include_closed=DEFAULT_INCLUDE_CLOSED,
-        )
-        event_groups = build_event_groups(payload)
+        config_payload = _read_webapp_config_payload()
+        settings = _load_webapp_settings(config_payload)
+        mapping = _load_webapp_mapping(config_payload)
+        payload = build_output()
+        event_groups = build_event_groups(payload, mapping)
         market_count = sum(len(group["selections"]) for group in event_groups)
         print_filtered_results(event_groups)
     except requests.RequestException as exc:
@@ -448,272 +450,11 @@ def index() -> Any:
     )
 
 
-@app.route("/api/markets", methods=["GET"])
-def markets_api() -> Any:
-    try:
-        payload = build_output(
-            query=DEFAULT_QUERY,
-            limit=DEFAULT_LIMIT,
-            max_pages=DEFAULT_MAX_PAGES,
-            include_closed=DEFAULT_INCLUDE_CLOSED,
-        )
-        print_filtered_results(build_event_groups(payload))
-        return jsonify(payload)
-    except requests.RequestException as exc:
-        return jsonify({"error": str(exc)}), 502
-
-
-@app.route("/api/openweather/temperature", methods=["GET", "POST"])
-@app.route("/api/accuweather/temperature", methods=["GET", "POST"])
-def weather_temperature_api() -> Any:
-    keywords = parse_weather_keywords()
-    if not keywords:
-        return (
-            jsonify(
-                {
-                    "error": "Provide `keyword` or `keywords` query param, or JSON body `keywords`.",
-                    "examples": [
-                        "/api/openweather/temperature?keyword=shanghai",
-                        "/api/openweather/temperature?keywords=shanghai,beijing",
-                    ],
-                }
-            ),
-            400,
-        )
-
-    unknown_keywords: list[str] = []
-    results: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-
-    try:
-        api_key = get_openweather_api_key()
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-
-    for keyword in keywords:
-        query = resolve_location_query(keyword)
-        if not query:
-            unknown_keywords.append(keyword)
-            continue
-        try:
-            location = LocationQuery(keyword=keyword, query=query)
-            results.append(fetch_current_weather(location, api_key))
-        except (requests.RequestException, ValueError) as exc:
-            errors.append(
-                {
-                    "keyword": keyword,
-                    "query": query,
-                    "error": str(exc),
-                }
-            )
-
-    return jsonify(
-        {
-            "provider": "openweather",
-            "requested_keywords": keywords,
-            "resolved_count": len(results),
-            "unknown_keywords": unknown_keywords,
-            "results": results,
-            "errors": errors,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-
-
-@app.route("/api/openweather/by-coords", methods=["GET"])
-def weather_by_coordinates_api() -> Any:
-    try:
-        api_key = get_openweather_api_key()
-        coordinates = Coordinates(
-            lat=parse_coordinate(flask_request.args.get("lat"), "lat"),
-            lon=parse_coordinate(flask_request.args.get("lon"), "lon"),
-        )
-        result = fetch_current_weather_by_coordinates(coordinates, api_key)
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except requests.RequestException as exc:
-        return jsonify({"error": str(exc)}), 502
-
-    return jsonify(
-        {
-            "provider": "openweather",
-            "request_type": "coordinates",
-            "units": "metric",
-            "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
-            "result": result,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-
-
-@app.route("/api/openweather/by-location-key", methods=["GET"])
-def weather_by_location_key_api() -> Any:
-    location_key = (flask_request.args.get("location_key") or "").strip()
-    if not location_key:
-        return (
-            jsonify(
-                {
-                    "error": "Provide `location_key` query param.",
-                    "examples": [
-                        "/api/openweather/by-location-key?location_key=shanghai",
-                    ],
-                }
-            ),
-            400,
-        )
-
-    try:
-        api_key = get_openweather_api_key()
-        coordinates = resolve_location_coordinates(location_key)
-        result = fetch_current_weather_by_coordinates(coordinates, api_key)
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except requests.RequestException as exc:
-        return jsonify({"error": str(exc)}), 502
-
-    return jsonify(
-        {
-            "provider": "openweather",
-            "request_type": "location_key",
-            "units": "metric",
-            "location_key": location_key,
-            "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
-            "result": result,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        }
-    )
-
-
-@app.route("/api/openweather/forecast/intraday", methods=["GET"])
-def weather_intraday_forecast_api() -> Any:
-    try:
-        api_key = get_openweather_api_key()
-        coordinates, request_type = resolve_request_coordinates()
-        result = fetch_intraday_forecast(coordinates, api_key)
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except requests.RequestException as exc:
-        return jsonify({"error": str(exc)}), 502
-
-    response: dict[str, Any] = {
-        "provider": "openweather",
-        "request_type": request_type,
-        "units": "metric",
-        "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
-        "result": result,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-    }
-    location = (flask_request.args.get("location") or "").strip()
-    if location:
-        response["location"] = location
-    location_key = (flask_request.args.get("location_key") or "").strip()
-    if location_key:
-        response["location_key"] = location_key
-    return jsonify(response)
-
-
-@app.route("/api/openweather/day-max", methods=["GET"])
-def weather_day_max_api() -> Any:
-    date = (flask_request.args.get("date") or "").strip()
-
-    try:
-        api_key = get_openweather_api_key()
-        coordinates, request_type = resolve_request_coordinates()
-        current = fetch_current_weather_by_coordinates(coordinates, api_key)
-        if not date:
-            date = str(current.get("local_date_now") or "").strip()
-        if not date:
-            return jsonify({"error": "Unable to determine local date for this location."}), 502
-        result = fetch_intraday_forecast(coordinates, api_key)
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except requests.RequestException as exc:
-        return jsonify({"error": str(exc)}), 502
-
-    max_temp_c = None
-    min_temp_c = None
-    matching_points: list[dict[str, Any]] = []
-    used_current_observation = False
-    forecast_points = result.get("forecast_points")
-    if isinstance(forecast_points, list):
-        for point in forecast_points:
-            if not isinstance(point, dict):
-                continue
-            local_date = point.get("local_date")
-            if not isinstance(local_date, str) or local_date != date:
-                continue
-            matching_points.append(point)
-            raw_max = point.get("temp_max_c")
-            raw_min = point.get("temp_min_c")
-            if isinstance(raw_max, (int, float)):
-                value = float(raw_max)
-                max_temp_c = value if max_temp_c is None else max(max_temp_c, value)
-            if isinstance(raw_min, (int, float)):
-                value = float(raw_min)
-                min_temp_c = value if min_temp_c is None else min(min_temp_c, value)
-
-    local_date_now = current.get("local_date_now")
-    local_temperature_c_now = current.get("temperature_c")
-    if local_date_now == date and isinstance(local_temperature_c_now, (int, float)):
-        current_value = float(local_temperature_c_now)
-        max_temp_c = current_value if max_temp_c is None else max(max_temp_c, current_value)
-        min_temp_c = current_value if min_temp_c is None else min(min_temp_c, current_value)
-        used_current_observation = True
-
-    response = {
-        "provider": "openweather",
-        "request_type": request_type,
-        "units": "metric",
-        "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
-        "date": date,
-        "timezone_offset_seconds": current.get("timezone_offset_seconds"),
-        "local_time_now": current.get("local_time_now"),
-        "local_date_now": local_date_now,
-        "local_temperature_c_now": local_temperature_c_now,
-        "max_temp_c": max_temp_c,
-        "min_temp_c": min_temp_c,
-        "used_current_observation": used_current_observation,
-        "historical_observations_available": False,
-        "coverage_note": (
-            "Free OpenWeather does not provide past-hours history. "
-            "For today's local date this result uses the current local reading plus remaining 3-hour forecast points."
-            if local_date_now == date
-            else "Free OpenWeather does not provide past-hours history. This result is based on 3-hour forecast points only."
-        ),
-        "forecast_points": matching_points,
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-    }
-    location = (flask_request.args.get("location") or "").strip()
-    if location:
-        response["location"] = location
-    location_key = (flask_request.args.get("location_key") or "").strip()
-    if location_key:
-        response["location_key"] = location_key
-    return jsonify(response)
-
-
-@app.route("/api/openweather/history", methods=["GET"])
-def weather_history_api() -> Any:
-    return (
-        jsonify(
-            {
-                "provider": "openweather",
-                "units": "metric",
-                "error": "Historical weather is not available on the free OpenWeather plan used here.",
-                "detail": "Current weather and 5 day / 3 hour forecast are supported. History requires a paid product.",
-            }
-        ),
-        501,
-    )
-
-
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    config_payload = _read_webapp_config_payload()
+    settings = _load_webapp_settings(config_payload)
+    app.run(
+        host=settings["run_host"],
+        port=settings["run_port"],
+        debug=settings["run_debug"],
+    )
