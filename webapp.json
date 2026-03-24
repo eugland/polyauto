@@ -1,0 +1,212 @@
+{
+  "seattle": {
+    "station": "KSEA",
+    "wunderground_url": "https://www.wunderground.com/weather/KSEA",
+    "accuweather_url": "",
+    "timezone": "America/Los_Angeles"
+  },
+  "london": {
+    "station": "EGLC",
+    "wunderground_url": "https://www.wunderground.com/weather/EGLC",
+    "accuweather_url": "",
+    "timezone": "Europe/London"
+  },
+  "dallas": {
+    "station": "KDAL",
+    "wunderground_url": "https://www.wunderground.com/weather/KDAL",
+    "accuweather_url": "",
+    "timezone": "America/Chicago"
+  },
+  "chicago": {
+    "station": "KORD",
+    "wunderground_url": "https://www.wunderground.com/weather/KORD",
+    "accuweather_url": "",
+    "timezone": "America/Chicago"
+  },
+  "paris": {
+    "station": "LFPG",
+    "wunderground_url": "https://www.wunderground.com/weather/LFPG",
+    "accuweather_url": "",
+    "timezone": "Europe/Paris"
+  },
+  "sao-paulo": {
+    "station": "SBGR",
+    "wunderground_url": "https://www.wunderground.com/weather/SBGR",
+    "accuweather_url": "",
+    "timezone": "America/Sao_Paulo"
+  },
+  "buenos-aires": {
+    "station": "SAEZ",
+    "wunderground_url": "https://www.wunderground.com/weather/SAEZ",
+    "accuweather_url": "",
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "seoul": {
+    "station": "RKSI",
+    "wunderground_url": "https://www.wunderground.com/weather/RKSI",
+    "accuweather_url": "",
+    "timezone": "Asia/Seoul"
+  },
+  "toronto": {
+    "station": "CYYZ",
+    "wunderground_url": "https://www.wunderground.com/weather/ca/toronto/CYYZ",
+    "accuweather_url": "",
+    "timezone": "America/Toronto"
+  },
+  "nyc": {
+    "station": "KLGA",
+    "wunderground_url": "https://www.wunderground.com/weather/KLGA",
+    "accuweather_url": "",
+    "timezone": "America/New_York"
+  },
+  "atlanta": {
+    "station": "KATL",
+    "wunderground_url": "https://www.wunderground.com/weather/KATL",
+    "accuweather_url": "",
+    "timezone": "America/New_York"
+  },
+  "miami": {
+    "station": "KMIA",
+    "wunderground_url": "https://www.wunderground.com/weather/KMIA",
+    "accuweather_url": "",
+    "timezone": "America/New_York"
+  },
+  "ankara": {
+    "station": "LTAC",
+    "wunderground_url": "https://www.wunderground.com/weather/LTAC",
+    "accuweather_url": "",
+    "timezone": "Europe/Istanbul"
+  },
+  "wellington": {
+    "station": "NZWN",
+    "wunderground_url": "https://www.wunderground.com/weather/NZWN",
+    "accuweather_url": "",
+    "timezone": "Pacific/Auckland"
+  },
+  "lucknow": {
+    "station": "VILK",
+    "wunderground_url": "https://www.wunderground.com/weather/VILK",
+    "accuweather_url": "",
+    "timezone": "Asia/Kolkata"
+  },
+  "munich": {
+    "station": "EDDM",
+    "wunderground_url": "https://www.wunderground.com/weather/EDDM",
+    "accuweather_url": "",
+    "timezone": "Europe/Berlin"
+  },
+  "tokyo": {
+    "station": "RJTT",
+    "wunderground_url": "https://www.wunderground.com/weather/RJTT",
+    "accuweather_url": "",
+    "timezone": "Asia/Tokyo"
+  },
+  "shanghai": {
+    "station": "ZSPD",
+    "wunderground_url": "https://www.wunderground.com/weather/ZSPD",
+    "accuweather_url": "",
+    "timezone": "Asia/Shanghai"
+  },
+  "singapore": {
+    "station": "WSSS",
+    "wunderground_url": "https://www.wunderground.com/weather/WSSS",
+    "accuweather_url": "",
+    "timezone": "Asia/Singapore"
+  },
+  "milan": {
+    "station": "LIMC",
+    "wunderground_url": "https://www.wunderground.com/weather/LIMC",
+    "accuweather_url": "",
+    "timezone": "Europe/Rome"
+  },
+  "madrid": {
+    "station": "LEMD",
+    "wunderground_url": "https://www.wunderground.com/weather/LEMD",
+    "accuweather_url": "",
+    "timezone": "Europe/Madrid"
+  },
+  "warsaw": {
+    "station": "EPWA",
+    "wunderground_url": "https://www.wunderground.com/weather/EPWA",
+    "accuweather_url": "",
+    "timezone": "Europe/Warsaw"
+  },
+  "austin": {
+    "station": "KAUS",
+    "wunderground_url": "https://www.wunderground.com/weather/KAUS",
+    "accuweather_url": "",
+    "timezone": "America/Chicago"
+  },
+  "denver": {
+    "station": "KDEN",
+    "wunderground_url": "https://www.wunderground.com/weather/KDEN",
+    "accuweather_url": "",
+    "timezone": "America/Denver"
+  },
+  "houston": {
+    "station": "KHOU",
+    "wunderground_url": "https://www.wunderground.com/weather/KHOU",
+    "accuweather_url": "",
+    "timezone": "America/Chicago"
+  },
+  "los-angeles": {
+    "station": "KLAX",
+    "wunderground_url": "https://www.wunderground.com/weather/KLAX",
+    "accuweather_url": "",
+    "timezone": "America/Los_Angeles"
+  },
+  "san-francisco": {
+    "station": "KSFO",
+    "wunderground_url": "https://www.wunderground.com/weather/KSFO",
+    "accuweather_url": "",
+    "timezone": "America/Los_Angeles"
+  },
+  "chongqing": {
+    "station": "ZUCK",
+    "wunderground_url": "https://www.wunderground.com/weather/ZUCK",
+    "accuweather_url": "",
+    "timezone": "Asia/Shanghai"
+  },
+  "beijing": {
+    "station": "ZBAA",
+    "wunderground_url": "https://www.wunderground.com/weather/ZBAA",
+    "accuweather_url": "",
+    "timezone": "Asia/Shanghai"
+  },
+  "wuhan": {
+    "station": "ZHHH",
+    "wunderground_url": "https://www.wunderground.com/weather/ZHHH",
+    "accuweather_url": "",
+    "timezone": "Asia/Shanghai"
+  },
+  "shenzhen": {
+    "station": "ZGSZ",
+    "wunderground_url": "https://www.wunderground.com/weather/ZGSZ",
+    "accuweather_url": "",
+    "timezone": "Asia/Shanghai"
+  },
+  "chengdu": {
+    "station": "ZUUU",
+    "wunderground_url": "https://www.wunderground.com/weather/ZUUU",
+    "accuweather_url": "",
+    "timezone": "Asia/Shanghai"
+  },
+  "tel-aviv": {
+    "station": "LLBG",
+    "wunderground_url": "https://www.wunderground.com/weather/LLBG",
+    "accuweather_url": "",
+    "timezone": "Asia/Jerusalem"
+  },
+  "hong-kong": {
+    "station": "IHONGK12",
+    "wunderground_url": "https://www.wunderground.com/weather/IHONGK12",
+    "accuweather_url": "",
+    "timezone": "Asia/Hong_Kong"
+  },
+  "taipei": {
+    "station": "ITAIPE19",
+    "wunderground_url": "https://www.wunderground.com/weather/ITAIPE19",
+    "accuweather_url": "",
+    "timezone": "Asia/Taipei"
+  }
+}

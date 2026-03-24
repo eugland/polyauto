@@ -74,6 +74,32 @@
         color: var(--muted);
         font-size: 0.85rem;
       }
+      .live-time {
+        color: #0f9d58;
+        font-weight: 800;
+        font-size: 1.1rem;
+        letter-spacing: 0.02em;
+      }
+      .links {
+        display: flex;
+        gap: 8px;
+        margin-top: 6px;
+        flex-wrap: wrap;
+      }
+      .btn-link {
+        display: inline-block;
+        text-decoration: none;
+        border: 1px solid var(--line);
+        color: var(--ink);
+        background: #fff;
+        border-radius: 7px;
+        padding: 5px 8px;
+        font-size: 0.78rem;
+      }
+      .btn-link.is-disabled {
+        color: #8792a5;
+        pointer-events: none;
+      }
       @media (max-width: 860px) {
         .event-head { align-items: flex-start; flex-direction: column; }
       }
@@ -97,11 +123,25 @@
                 <div class="event-head">
                   <div>
                     <div class="event-title">{{ group.event_title }}</div>
-                    {% if group.event_url != "-" %}
-                      <a href="{{ group.event_url }}" target="_blank" style="font-size:0.82rem;">open event</a>
-                    {% endif %}
+                    <div class="links">
+                      <a
+                        class="btn-link {% if group.event_url == '-' %}is-disabled{% endif %}"
+                        href="{{ group.event_url if group.event_url != '-' else '' }}"
+                        target="_blank"
+                      >Open event</a>
+                      <a
+                        class="btn-link {% if not group.wunderground_url %}is-disabled{% endif %}"
+                        href="{{ group.wunderground_url if group.wunderground_url else '' }}"
+                        target="_blank"
+                      >Open Wunderground</a>
+                      <a
+                        class="btn-link {% if not group.accuweather_url %}is-disabled{% endif %}"
+                        href="{{ group.accuweather_url if group.accuweather_url else '' }}"
+                        target="_blank"
+                      >Open AccuWeather</a>
+                    </div>
                   </div>
-                  <div class="event-meta">End: {{ group.end_date }}</div>
+                  <div class="live-time">{{ group.local_time_display }}</div>
                 </div>
 
                 <div style="overflow:auto;">
@@ -111,8 +151,6 @@
                         <th style="padding:8px;">Selection</th>
                         <th style="padding:8px;">Yes</th>
                         <th style="padding:8px;">No</th>
-                        <th style="padding:8px;">Status</th>
-                        <th style="padding:8px;">Last Price</th>
                         <th style="padding:8px;">Volume</th>
                       </tr>
                     </thead>
@@ -124,8 +162,6 @@
                           </td>
                           <td style="padding:8px;">{{ s.yes_price }}</td>
                           <td style="padding:8px;">{{ s.no_price }}</td>
-                          <td style="padding:8px;">{{ s.status }}</td>
-                          <td style="padding:8px;">{{ s.last_price }}</td>
                           <td style="padding:8px;">{{ s.volume }}</td>
                         </tr>
                       {% endfor %}

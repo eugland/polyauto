@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import re
 from dataclasses import dataclass
@@ -12,15 +13,16 @@ import requests
 
 from data.dto import ApiEvent
 
-CONFIG_PATH = Path("config.json")
 POLYMARKET_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 OPENWEATHER_CURRENT_WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
 OPENWEATHER_FORECAST_URL = "https://api.openweathermap.org/data/2.5/forecast"
-EVENT_HORIZON_HOURS = 30
-SLUG_RE = re.compile(r"^highest-temperature-in-(.+)-on-[a-z]+-\d{1,2}-\d{4}$")
-SLUG_BATCH_SIZE = 25
+
+CONFIG_PATH = Path("config.json")
 DEBUG_ENABLED = False
 DEBUG_SHOW_LEVEL = True
+EVENT_HORIZON_HOURS = 30
+
+SLUG_RE = re.compile(r"^highest-temperature-in-(.+)-on-[a-z]+-\d{1,2}-\d{4}$")
 
 
 def debug_log(message: str) -> None:
@@ -79,16 +81,20 @@ class ConfigItem:
     wunderground: str | None
 
 
-def month_slug(d: date) -> str:
-    return d.strftime("%B").lower()
+def extract_wunderground_station_tag(text: str | None) -> str | None:
+    if not text:
+        return None
+    from urllib.parse import urlsplit
 
-
-def build_slug(location_key: str, d: date) -> str:
-    return f"highest-temperature-in-{location_key}-on-{month_slug(d)}-{d.day}-{d.year}"
-
-
-def parse_date(value: str) -> date:
-    return date.fromisoformat(value)
+    for match in re.finditer(r"https?://(?:www\.)?wunderground\.com/[^\s\"'<>]+", text, re.IGNORECASE):
+        url = match.group(0).rstrip(".,);]")
+        parts = urlsplit(url)
+        segments = [segment for segment in parts.path.split("/") if segment]
+        for segment in reversed(segments):
+            candidate = re.sub(r"[^A-Za-z0-9]", "", segment).upper()
+            if len(candidate) >= 4:
+                return candidate
+    return None
 
 
 def openweather_units(unit: str) -> str:
@@ -259,6 +265,63 @@ def load_config(path: Path) -> list[ConfigItem]:
     return items
 
 
+def load_raw_config(path: Path) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def sync_config_wunderground_from_events(path: Path, events: list[ApiEvent]) -> int:
+    raw_config = load_raw_config(path)
+
+    station_by_key: dict[str, str] = {}
+    event_by_key: dict[str, ApiEvent] = {}
+    for event in events:
+        location_key = extract_location_key_from_slug(event.slug)
+        if not location_key:
+            continue
+        station = extract_wunderground_station_tag(event.description)
+        if station is None:
+            station = extract_wunderground_station_tag(event.resolutionSource)
+        if station:
+            station_by_key[location_key] = station
+            event_by_key[location_key] = event
+
+    updates = 0
+    existing_keys: set[str] = set()
+    for name, value in raw_config.items():
+        if not isinstance(value, dict):
+            continue
+        key = str(value.get("key") or name).strip().lower()
+        if not key:
+            continue
+        existing_keys.add(key)
+        station = station_by_key.get(key)
+        if not station:
+            continue
+        if str(value.get("wunderground") or "").strip().upper() == station:
+            continue
+        value["wunderground"] = station
+        updates += 1
+
+    for key, station in station_by_key.items():
+        if key in existing_keys:
+            continue
+        event = event_by_key.get(key)
+        unit = infer_unit_from_event(event) if event else "C"
+        raw_config[key] = {
+            "key": key,
+            "unit": unit,
+            "wunderground": station,
+        }
+        updates += 1
+
+    if updates > 0:
+        path.write_text(json.dumps(raw_config, indent=2) + "\n", encoding="utf-8")
+    return updates
+
+
 def wunderground_units(unit: str) -> str:
     return "e" if unit.upper() == "F" else "m"
 
@@ -281,8 +344,38 @@ def set_url_query_param(url: str, key: str, value: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(updated), parts.fragment))
 
 
-def fetch_wunderground_weather(station_tag: str, unit: str) -> dict:
+def normalize_wunderground_target(target: str) -> tuple[str, str]:
+    from urllib.parse import urlsplit
+
+    raw = str(target or "").strip()
+    if not raw:
+        raise ValueError("Empty Wunderground station target.")
+
+    if raw.lower().startswith(("http://", "https://")):
+        parts = urlsplit(raw)
+        if not parts.netloc.lower().endswith("wunderground.com"):
+            raise ValueError(f"Unsupported Wunderground host in target: {target}")
+        page_url = raw
+        segments = [segment for segment in parts.path.split("/") if segment]
+        station_tag = ""
+        for segment in reversed(segments):
+            candidate = re.sub(r"[^A-Za-z0-9]", "", segment).upper()
+            if len(candidate) >= 4:
+                station_tag = candidate
+                break
+        if not station_tag:
+            raise ValueError(f"Could not parse station tag from Wunderground URL: {target}")
+        return page_url, station_tag
+
+    station_tag = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
+    if len(station_tag) < 4:
+        raise ValueError(f"Invalid Wunderground station tag: {target}")
     page_url = f"https://www.wunderground.com/weather/{station_tag}"
+    return page_url, station_tag
+
+
+def fetch_wunderground_weather(station_tag: str, unit: str) -> dict:
+    page_url, normalized_station_tag = normalize_wunderground_target(station_tag)
     response = requests.get(page_url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
     response.raise_for_status()
     html = response.text
@@ -349,7 +442,7 @@ def fetch_wunderground_weather(station_tag: str, unit: str) -> dict:
 
     forecast_max = None
     forecast_match = re.search(
-        rf"https://api\.weather\.com/v3/wx/forecast/daily/3day\?[^\"']*icaoCode={re.escape(station_tag)}[^\"']*",
+        rf"https://api\.weather\.com/v3/wx/forecast/daily/3day\?[^\"']*icaoCode={re.escape(normalized_station_tag)}[^\"']*",
         html,
     )
     if forecast_match:
@@ -378,13 +471,50 @@ def fetch_wunderground_weather(station_tag: str, unit: str) -> dict:
     }
 
 
-def parse_iso_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except ValueError:
-        return None
+def build_default_weather(unit: str) -> dict:
+    return {
+        "local_time_now": None,
+        "local_date_now": None,
+        "temperature": None,
+        "max_temperature": None,
+        "unit": unit,
+        "weather_description": "disabled",
+    }
+
+
+def prefetch_wunderground_weather(
+    events: list[ApiEvent], config_by_key: dict[str, ConfigItem]
+) -> dict[str, dict]:
+    tasks: dict[str, ConfigItem] = {}
+    for event in events:
+        key = extract_location_key_from_slug(event.slug) or (event.slug or "unknown")
+        config_item = config_by_key.get(key)
+        if not config_item or not config_item.wunderground:
+            continue
+        tasks[key] = config_item
+
+    if not tasks:
+        return {}
+
+    weather_cache: dict[str, dict] = {}
+    max_workers = min(12, len(tasks))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_key = {
+            executor.submit(
+                fetch_wunderground_weather, config_item.wunderground, config_item.unit
+            ): key
+            for key, config_item in tasks.items()
+        }
+        for future in as_completed(future_to_key):
+            key = future_to_key[future]
+            config_item = tasks[key]
+            try:
+                weather_cache[key] = future.result()
+            except (requests.RequestException, RuntimeError, ValueError) as exc:
+                weather = build_default_weather(config_item.unit)
+                weather["weather_description"] = f"wunderground error: {exc}"
+                weather_cache[key] = weather
+    return weather_cache
 
 
 def extract_location_key_from_slug(slug: str | None) -> str | None:
@@ -394,62 +524,6 @@ def extract_location_key_from_slug(slug: str | None) -> str | None:
     if not match:
         return None
     return match.group(1)
-
-
-def fetch_events_from_events_api(allowed_keys: set[str]) -> dict[str, ApiEvent]:
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(hours=EVENT_HORIZON_HOURS)
-    by_key: dict[str, ApiEvent] = {}
-
-    base = now.date()
-    candidate_dates = [base - timedelta(days=1), base, base + timedelta(days=1), base + timedelta(days=2)]
-    all_slugs: list[str] = []
-    for key in sorted(allowed_keys):
-        for d in candidate_dates:
-            all_slugs.append(build_slug(key, d))
-
-    for i in range(0, len(all_slugs), SLUG_BATCH_SIZE):
-        chunk = all_slugs[i : i + SLUG_BATCH_SIZE]
-        params: list[tuple[str, str]] = [("slug", s) for s in chunk]
-        params.extend(
-            [
-                ("closed", "false"),
-                ("end_date_max", horizon.isoformat()),
-            ]
-        )
-        debug_log(f"GET {build_debug_url(POLYMARKET_EVENTS_URL, params)}")
-        response = requests.get(POLYMARKET_EVENTS_URL, params=params, timeout=20)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            continue
-
-        for raw in payload:
-            if not isinstance(raw, dict):
-                continue
-            event = ApiEvent.from_dict(raw)
-            location_key = extract_location_key_from_slug(event.slug)
-            if not location_key or location_key not in allowed_keys:
-                continue
-            if event.closed:
-                continue
-
-            end_dt = parse_iso_datetime(event.endDate)
-            if end_dt is None or end_dt > horizon:
-                continue
-
-            current = by_key.get(location_key)
-            if current is None:
-                by_key[location_key] = event
-                continue
-            current_end = parse_iso_datetime(current.endDate)
-            if current_end is None:
-                by_key[location_key] = event
-                continue
-            if end_dt > current_end:
-                by_key[location_key] = event
-
-    return by_key
 
 
 def fetch_temperature_tag_events() -> list[ApiEvent]:
@@ -542,14 +616,7 @@ def process_event(
     config_item = config_by_key.get(key)
     unit = config_item.unit if config_item else infer_unit_from_event(event)
     unit_markets = build_markets(event, unit)
-    weather = {
-        "local_time_now": None,
-        "local_date_now": None,
-        "temperature": None,
-        "max_temperature": None,
-        "unit": unit,
-        "weather_description": "disabled",
-    }
+    weather = build_default_weather(unit)
     if config_item and config_item.wunderground:
         if key in weather_cache:
             weather = weather_cache[key]
@@ -569,6 +636,7 @@ def process_event(
             "market": [
                 {
                     "group_item_title": market.get("group_item_title"),
+                    "volume_num": market.get("volume_num"),
                     "outcomes": "\t".join(
                         [
                             f"{outcome.get('name')}: {outcome.get('price')}"
@@ -587,6 +655,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="Print JSON output")
     parser.add_argument("--debug", action="store_true", help="Print debug logs (including called URLs)")
     parser.add_argument(
+        "--sync-wunderground",
+        action="store_true",
+        help="Update config.json wunderground station tags from event description links",
+    )
+    parser.add_argument(
         "--debug-no-level",
         action="store_true",
         help="Print debug logs without [DEBUG] prefix",
@@ -594,24 +667,44 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def split_outcomes(outcomes: str) -> tuple[str, str]:
-    yes_part = ""
-    no_part = ""
+def parse_outcome_price(outcomes: str, side: str) -> float | None:
+    target = f"{side.lower()}:"
     for part in outcomes.split("\t"):
         text = part.strip()
-        if text.lower().startswith("yes:"):
-            yes_part = text
-        elif text.lower().startswith("no:"):
-            no_part = text
-    return yes_part, no_part
+        if not text.lower().startswith(target):
+            continue
+        raw = text[len(target):].strip()
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def format_cents(value: float | None) -> str:
+    if value is None:
+        return "   -  "
+    cents = value * 100
+    return f"{cents:>6.1f}"
 
 
 def format_market_line(group_item_title: str, outcomes: str, width: int) -> str:
-    yes_part, no_part = split_outcomes(outcomes)
+    yes_price = parse_outcome_price(outcomes, "yes")
+    no_price = parse_outcome_price(outcomes, "no")
     return (
         f"  - {group_item_title.ljust(width)} | "
-        f"{yes_part.ljust(12)}  {no_part.ljust(12)}"
+        f"Yes:{format_cents(yes_price)}c  No:{format_cents(no_price)}c"
     )
+
+
+def format_volume(value: float | int | None) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "-"
+    if isinstance(value, (int, float)):
+        return f"{round(value):,}"
+    return str(value)
 
 
 def f_to_c(value: float | None) -> float | None:
@@ -659,8 +752,10 @@ def print_friendly(output: dict) -> None:
             weather.get("local_time_now"), weather.get("local_date_now")
         )
         width = 0
+        vol_width = 1
         for market in markets:
             width = max(width, len(market["group_item_title"]))
+            vol_width = max(vol_width, len(format_volume(market.get("volume_num"))))
 
         print(f"[{key}]")
         print(f"Local time: {local_time_text} | Local date: {local_date_text}")
@@ -670,6 +765,8 @@ def print_friendly(output: dict) -> None:
             f"{weather['weather_description']}"
         )
         print(f"Slug: {polymarket['slug']}")
+        event_volume = format_volume((polymarket.get("event") or {}).get("volume"))
+        print(f"Event total vol: {event_volume}")
         if not markets:
             print("Markets: none")
             print("")
@@ -677,12 +774,14 @@ def print_friendly(output: dict) -> None:
 
         print("Markets:")
         for market in markets:
+            volume_text = format_volume(market.get("volume_num")).rjust(vol_width)
+            line = format_market_line(
+                market["group_item_title"],
+                market["outcomes"],
+                width,
+            )
             print(
-                format_market_line(
-                    market["group_item_title"],
-                    market["outcomes"],
-                    width,
-                )
+                f"{line} | vol: {volume_text}"
             )
         print("")
 
@@ -696,9 +795,15 @@ def main() -> int:
     items = load_config(CONFIG_PATH)
     config_by_key = {item.key: item for item in items}
     events = fetch_temperature_tag_events()
-    weather_cache: dict[str, dict] = {}
+    weather_cache = prefetch_wunderground_weather(events, config_by_key)
 
     rows = []
+    config_updates = 0
+    if args.sync_wunderground:
+        config_updates = sync_config_wunderground_from_events(CONFIG_PATH, events)
+        if config_updates:
+            items = load_config(CONFIG_PATH)
+            config_by_key = {item.key: item for item in items}
     for event in events:
         rows.append(process_event(event, config_by_key, weather_cache))
 
@@ -710,6 +815,7 @@ def main() -> int:
             {"key": row["key"], **row["polymarket"]}
             for row in rows
         ],
+        "config_updates": config_updates,
     }
     if args.json:
         print(json.dumps(output, indent=2))

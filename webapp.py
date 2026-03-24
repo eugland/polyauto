@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, jsonify, render_template, request as flask_request
 
-from api import dedupe_markets
+from app import fetch_temperature_tag_events
 from clients.openweather import (
     Coordinates,
     LocationQuery,
@@ -20,8 +22,6 @@ from clients.openweather import (
     resolve_location_coordinates,
     resolve_location_query,
 )
-from clients.polymarket import fetch_markets, looks_like_highest_temperature_market
-from data.dto import MarketsOutput
 
 app = Flask(__name__)
 
@@ -29,26 +29,31 @@ DEFAULT_QUERY = "temperature"
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_PAGES = 1
 DEFAULT_INCLUDE_CLOSED = False
+WEBAPP_CONFIG_PATH = Path(__file__).resolve().with_name("webapp.json")
+EVENT_SLUG_RE = re.compile(r"^highest-temperature-in-(.+)-on-[a-z]+-\d{1,2}-\d{4}$")
 
 
 def build_output(
     query: str, limit: int, max_pages: int, include_closed: bool
 ) -> dict[str, Any]:
-    all_markets = fetch_markets(
-        page_limit=limit,
-        max_pages=max_pages,
-        include_closed=include_closed,
-        query=query,
-    )
-    filtered = [m for m in all_markets if looks_like_highest_temperature_market(m)]
-    deduped = dedupe_markets(filtered)
-    output = MarketsOutput(
-        query=query,
-        include_closed=include_closed,
-        market_count=len(deduped),
-        markets=deduped,
-    )
-    return output.to_dict()
+    events = fetch_temperature_tag_events()
+    markets: list[dict[str, Any]] = []
+    for event in events:
+        event_id = event.id
+        event_title = event.title
+        event_slug = event.slug
+        for market in event.markets:
+            row = market.to_dict()
+            row["event_id"] = event_id
+            row["event_title"] = event_title
+            row["event_slug"] = event_slug
+            markets.append(row)
+    return {
+        "query": query,
+        "include_closed": include_closed,
+        "market_count": len(markets),
+        "markets": markets,
+    }
 
 
 def _parse_json_list(raw: Any) -> list[Any]:
@@ -116,6 +121,163 @@ def _parse_iso_datetime(raw: Any) -> datetime | None:
     return dt.astimezone(timezone.utc)
 
 
+def _parse_local_time(raw: Any) -> datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return datetime.fromisoformat(raw.strip())
+    except ValueError:
+        return None
+
+
+def _format_local_time(raw: Any) -> str:
+    dt = _parse_local_time(raw)
+    if dt is None:
+        return "-"
+    return dt.strftime("%I:%M %p").lstrip("0")
+
+
+def _local_clock_sort_value(raw: Any) -> int:
+    dt = _parse_local_time(raw)
+    if dt is None:
+        return -1
+    return dt.hour * 3600 + dt.minute * 60 + dt.second
+
+
+def _event_group_sort_key(group: dict[str, Any]) -> tuple[int, int, str]:
+    clock_value = _local_clock_sort_value(group.get("local_time_now"))
+    if clock_value < 0:
+        return (1, 0, str(group.get("event_title", "")))
+    return (0, -clock_value, str(group.get("event_title", "")))
+
+
+def _event_location_key(event_slug: str) -> str:
+    slug = str(event_slug or "").strip().lower()
+    match = EVENT_SLUG_RE.match(slug)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _parse_price_to_cents(value: Any) -> str:
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{as_float * 100:.1f}c"
+
+
+def _format_int_volume(value: Any) -> str:
+    if isinstance(value, bool):
+        return "-"
+    if isinstance(value, (int, float)):
+        return f"{int(round(float(value))):,}"
+    if isinstance(value, str):
+        try:
+            return f"{int(round(float(value.strip()))):,}"
+        except ValueError:
+            return value
+    return "-"
+
+
+def _load_webapp_mapping() -> dict[str, dict[str, str]]:
+    if not WEBAPP_CONFIG_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(WEBAPP_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+
+    out: dict[str, dict[str, str]] = {}
+    for key, value in payload.items():
+        if not isinstance(value, dict):
+            continue
+        out[str(key).strip().lower()] = {
+            "station": str(value.get("station") or "").strip(),
+            "wunderground_url": str(value.get("wunderground_url") or "").strip(),
+            "accuweather_url": str(value.get("accuweather_url") or "").strip(),
+            "timezone": str(value.get("timezone") or "").strip(),
+        }
+    return out
+
+
+def _build_local_time_now(location_key: str, mapping: dict[str, dict[str, str]]) -> str | None:
+    info = mapping.get(location_key, {})
+    timezone_name = str(info.get("timezone") or "").strip()
+    offset_raw = info.get("utc_offset_minutes")
+    offset_minutes: int | None = None
+    if isinstance(offset_raw, (int, float)):
+        offset_minutes = int(offset_raw)
+    elif isinstance(offset_raw, str):
+        try:
+            offset_minutes = int(offset_raw.strip())
+        except ValueError:
+            offset_minutes = None
+
+    default_offsets_by_timezone = {
+        "America/Los_Angeles": -420,
+        "America/Denver": -360,
+        "America/Chicago": -300,
+        "America/New_York": -240,
+        "America/Toronto": -240,
+        "Europe/London": 0,
+        "Europe/Paris": 60,
+        "Europe/Berlin": 60,
+        "Europe/Rome": 60,
+        "Europe/Madrid": 60,
+        "Europe/Warsaw": 60,
+        "Europe/Istanbul": 180,
+        "America/Sao_Paulo": -180,
+        "America/Argentina/Buenos_Aires": -180,
+        "Asia/Seoul": 540,
+        "Pacific/Auckland": 780,
+        "Asia/Kolkata": 330,
+        "Asia/Tokyo": 540,
+        "Asia/Shanghai": 480,
+        "Asia/Singapore": 480,
+        "Asia/Hong_Kong": 480,
+        "Asia/Taipei": 480,
+        "Asia/Jerusalem": 120,
+    }
+
+    if not timezone_name:
+        if offset_minutes is None:
+            print(f"[LOCALTIME] key={location_key} timezone=<missing> local_time=<none>")
+            return None
+        tz_offset = timezone(timedelta(minutes=offset_minutes))
+        local_time = datetime.now(timezone.utc).astimezone(tz_offset).isoformat()
+        print(
+            f"[LOCALTIME] key={location_key} timezone=<missing> "
+            f"fallback_offset_minutes={offset_minutes} local_time={local_time}"
+        )
+        return local_time
+    try:
+        local_time = datetime.now(ZoneInfo(timezone_name)).isoformat()
+        print(f"[LOCALTIME] key={location_key} timezone={timezone_name} local_time={local_time}")
+        return local_time
+    except Exception as exc:
+        fallback_offset = (
+            offset_minutes
+            if offset_minutes is not None
+            else default_offsets_by_timezone.get(timezone_name)
+        )
+        if fallback_offset is None:
+            print(
+                f"[LOCALTIME] key={location_key} timezone={timezone_name} "
+                f"error={exc} fallback_offset_minutes=<missing> local_time=<none>"
+            )
+            return None
+        tz_offset = timezone(timedelta(minutes=fallback_offset))
+        local_time = datetime.now(timezone.utc).astimezone(tz_offset).isoformat()
+        print(
+            f"[LOCALTIME] key={location_key} timezone={timezone_name} "
+            f"error={exc} fallback_offset_minutes={fallback_offset} local_time={local_time}"
+        )
+        return local_time
+
+
 def _is_within_next_24_hours(end_date: Any) -> bool:
     end_dt = _parse_iso_datetime(end_date)
     if end_dt is None:
@@ -126,7 +288,9 @@ def _is_within_next_24_hours(end_date: Any) -> bool:
 
 
 def build_event_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    mapping = _load_webapp_mapping()
     groups_map: dict[str, dict[str, Any]] = {}
+    local_time_cache: dict[str, str | None] = {}
     for market in payload.get("markets", []):
         if not isinstance(market, dict):
             continue
@@ -143,12 +307,25 @@ def build_event_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
         event_title = market.get("event_title") or "Unknown event"
         event_url = f"https://polymarket.com/event/{event_slug}" if event_slug else "-"
         end_date = market.get("endDate") or "-"
+        location_key = _event_location_key(event_slug)
+        links = mapping.get(location_key, {})
+        wunderground_url = str(links.get("wunderground_url") or "").strip()
+        accuweather_url = str(links.get("accuweather_url") or "").strip()
+        timezone_name = str(links.get("timezone") or "").strip()
+        if location_key not in local_time_cache:
+            local_time_cache[location_key] = _build_local_time_now(location_key, mapping)
+        local_time_now = local_time_cache.get(location_key)
 
         if event_key not in groups_map:
             groups_map[event_key] = {
                 "event_title": event_title,
                 "event_url": event_url,
                 "end_date": end_date,
+                "wunderground_url": wunderground_url,
+                "accuweather_url": accuweather_url,
+                "timezone": timezone_name,
+                "local_time_now": local_time_now,
+                "local_time_display": _format_local_time(local_time_now),
                 "selections": [],
             }
 
@@ -176,11 +353,9 @@ def build_event_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
         groups_map[event_key]["selections"].append(
             {
                 "selection": market.get("groupItemTitle") or market.get("question") or "-",
-                "status": "Closed" if market.get("closed") else "Open",
-                "last_price": market.get("lastTradePrice", "-"),
-                "volume": market.get("volumeNum", market.get("volume", "-")),
-                "yes_price": yes_price,
-                "no_price": no_price,
+                "volume": _format_int_volume(market.get("volumeNum", market.get("volume", "-"))),
+                "yes_price": _parse_price_to_cents(yes_price),
+                "no_price": _parse_price_to_cents(no_price),
             }
         )
 
@@ -189,7 +364,7 @@ def build_event_groups(payload: dict[str, Any]) -> list[dict[str, Any]]:
         group["selections"].sort(
             key=lambda s: _selection_sort_key(str(s.get("selection", "")))
         )
-    groups.sort(key=lambda g: str(g.get("event_title", "")))
+    groups.sort(key=_event_group_sort_key)
     return groups
 
 
