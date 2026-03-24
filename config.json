@@ -1,0 +1,12 @@
+{
+  "seattle": {
+    "key": "seattle",
+    "unit": "F",
+    "wunderground": "KSEA"
+  },
+  "london": {
+    "key": "london",
+    "unit": "C",
+    "wunderground": "EGLC"
+  }
+}

@@ -10,6 +10,16 @@ import requests
 from flask import Flask, jsonify, render_template, request as flask_request
 
 from api import dedupe_markets
+from clients.openweather import (
+    Coordinates,
+    LocationQuery,
+    fetch_current_weather,
+    fetch_current_weather_by_coordinates,
+    fetch_intraday_forecast,
+    get_openweather_api_key,
+    resolve_location_coordinates,
+    resolve_location_query,
+)
 from clients.polymarket import fetch_markets, looks_like_highest_temperature_market
 from data.dto import MarketsOutput
 
@@ -19,11 +29,6 @@ DEFAULT_QUERY = "temperature"
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_PAGES = 1
 DEFAULT_INCLUDE_CLOSED = False
-ACCUWEATHER_BASE = "https://www.accuweather.com/en/cn"
-ACCUWEATHER_TIMEOUT_SECONDS = 20
-LOCATION_PATHS: dict[str, str] = {
-    "shanghai": "shanghai-pudong-international-airport/1804_poi/weather-forecast/1804_poi",
-}
 
 
 def build_output(
@@ -193,7 +198,7 @@ def print_filtered_results(event_groups: list[dict[str, Any]]) -> None:
     print(json.dumps(event_groups, indent=2))
 
 
-def parse_accuweather_keywords() -> list[str]:
+def parse_weather_keywords() -> list[str]:
     if flask_request.method == "POST":
         payload = flask_request.get_json(silent=True) or {}
         raw = payload.get("keywords")
@@ -212,48 +217,31 @@ def parse_accuweather_keywords() -> list[str]:
     return items
 
 
-def html_to_text(html: str) -> str:
-    no_script = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
-    no_style = re.sub(r"<style[\s\S]*?</style>", " ", no_script, flags=re.IGNORECASE)
-    no_tags = re.sub(r"<[^>]+>", " ", no_style)
-    return re.sub(r"\s+", " ", no_tags).strip()
+def parse_coordinate(value: str | None, name: str) -> float:
+    if value is None or not value.strip():
+        raise ValueError(f"Missing required query parameter '{name}'.")
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise ValueError(f"Query parameter '{name}' must be a number.") from exc
 
 
-def extract_first_temperature_f(text: str) -> int | None:
-    patterns = [
-        r"Today's Weather[^.]{0,220}?Hi:\s*(-?\d+)\s*°",
-        r"Current Weather[^.]{0,220}?(-?\d+)\s*°\s*F",
-        r"10-Day Weather Forecast[^.]{0,400}?(-?\d+)\s*°",
-        r"(-?\d+)\s*°\s*F",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            try:
-                return int(match.group(1))
-            except (TypeError, ValueError):
-                continue
-    return None
+def resolve_request_coordinates() -> tuple[Coordinates, str]:
+    location = (flask_request.args.get("location") or "").strip()
+    if location:
+        return resolve_location_coordinates(location), "location"
 
+    location_key = (flask_request.args.get("location_key") or "").strip()
+    if location_key:
+        return resolve_location_coordinates(location_key), "location"
 
-def fetch_accuweather_first_temperature(keyword: str, path: str) -> dict[str, Any]:
-    url = f"{ACCUWEATHER_BASE}/{path}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        )
-    }
-    response = requests.get(url, headers=headers, timeout=ACCUWEATHER_TIMEOUT_SECONDS)
-    response.raise_for_status()
-    text = html_to_text(response.text)
-    first_temp_f = extract_first_temperature_f(text)
-    return {
-        "keyword": keyword,
-        "url": url,
-        "temperature_f_first_entry": first_temp_f,
-    }
+    return (
+        Coordinates(
+            lat=parse_coordinate(flask_request.args.get("lat"), "lat"),
+            lon=parse_coordinate(flask_request.args.get("lon"), "lon"),
+        ),
+        "coordinates",
+    )
 
 
 @app.route("/", methods=["GET"])
@@ -300,17 +288,18 @@ def markets_api() -> Any:
         return jsonify({"error": str(exc)}), 502
 
 
+@app.route("/api/openweather/temperature", methods=["GET", "POST"])
 @app.route("/api/accuweather/temperature", methods=["GET", "POST"])
-def accuweather_temperature_api() -> Any:
-    keywords = parse_accuweather_keywords()
+def weather_temperature_api() -> Any:
+    keywords = parse_weather_keywords()
     if not keywords:
         return (
             jsonify(
                 {
                     "error": "Provide `keyword` or `keywords` query param, or JSON body `keywords`.",
                     "examples": [
-                        "/api/accuweather/temperature?keyword=shanghai",
-                        "/api/accuweather/temperature?keywords=shanghai,beijing",
+                        "/api/openweather/temperature?keyword=shanghai",
+                        "/api/openweather/temperature?keywords=shanghai,beijing",
                     ],
                 }
             ),
@@ -321,24 +310,31 @@ def accuweather_temperature_api() -> Any:
     results: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
 
+    try:
+        api_key = get_openweather_api_key()
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+
     for keyword in keywords:
-        path = LOCATION_PATHS.get(keyword)
-        if not path:
+        query = resolve_location_query(keyword)
+        if not query:
             unknown_keywords.append(keyword)
             continue
         try:
-            results.append(fetch_accuweather_first_temperature(keyword, path))
-        except requests.RequestException as exc:
+            location = LocationQuery(keyword=keyword, query=query)
+            results.append(fetch_current_weather(location, api_key))
+        except (requests.RequestException, ValueError) as exc:
             errors.append(
                 {
                     "keyword": keyword,
-                    "url": f"{ACCUWEATHER_BASE}/{path}",
+                    "query": query,
                     "error": str(exc),
                 }
             )
 
     return jsonify(
         {
+            "provider": "openweather",
             "requested_keywords": keywords,
             "resolved_count": len(results),
             "unknown_keywords": unknown_keywords,
@@ -346,6 +342,201 @@ def accuweather_temperature_api() -> Any:
             "errors": errors,
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         }
+    )
+
+
+@app.route("/api/openweather/by-coords", methods=["GET"])
+def weather_by_coordinates_api() -> Any:
+    try:
+        api_key = get_openweather_api_key()
+        coordinates = Coordinates(
+            lat=parse_coordinate(flask_request.args.get("lat"), "lat"),
+            lon=parse_coordinate(flask_request.args.get("lon"), "lon"),
+        )
+        result = fetch_current_weather_by_coordinates(coordinates, api_key)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    return jsonify(
+        {
+            "provider": "openweather",
+            "request_type": "coordinates",
+            "units": "metric",
+            "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
+            "result": result,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@app.route("/api/openweather/by-location-key", methods=["GET"])
+def weather_by_location_key_api() -> Any:
+    location_key = (flask_request.args.get("location_key") or "").strip()
+    if not location_key:
+        return (
+            jsonify(
+                {
+                    "error": "Provide `location_key` query param.",
+                    "examples": [
+                        "/api/openweather/by-location-key?location_key=shanghai",
+                    ],
+                }
+            ),
+            400,
+        )
+
+    try:
+        api_key = get_openweather_api_key()
+        coordinates = resolve_location_coordinates(location_key)
+        result = fetch_current_weather_by_coordinates(coordinates, api_key)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    return jsonify(
+        {
+            "provider": "openweather",
+            "request_type": "location_key",
+            "units": "metric",
+            "location_key": location_key,
+            "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
+            "result": result,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+
+@app.route("/api/openweather/forecast/intraday", methods=["GET"])
+def weather_intraday_forecast_api() -> Any:
+    try:
+        api_key = get_openweather_api_key()
+        coordinates, request_type = resolve_request_coordinates()
+        result = fetch_intraday_forecast(coordinates, api_key)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    response: dict[str, Any] = {
+        "provider": "openweather",
+        "request_type": request_type,
+        "units": "metric",
+        "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
+        "result": result,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    location = (flask_request.args.get("location") or "").strip()
+    if location:
+        response["location"] = location
+    location_key = (flask_request.args.get("location_key") or "").strip()
+    if location_key:
+        response["location_key"] = location_key
+    return jsonify(response)
+
+
+@app.route("/api/openweather/day-max", methods=["GET"])
+def weather_day_max_api() -> Any:
+    date = (flask_request.args.get("date") or "").strip()
+
+    try:
+        api_key = get_openweather_api_key()
+        coordinates, request_type = resolve_request_coordinates()
+        current = fetch_current_weather_by_coordinates(coordinates, api_key)
+        if not date:
+            date = str(current.get("local_date_now") or "").strip()
+        if not date:
+            return jsonify({"error": "Unable to determine local date for this location."}), 502
+        result = fetch_intraday_forecast(coordinates, api_key)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except requests.RequestException as exc:
+        return jsonify({"error": str(exc)}), 502
+
+    max_temp_c = None
+    min_temp_c = None
+    matching_points: list[dict[str, Any]] = []
+    used_current_observation = False
+    forecast_points = result.get("forecast_points")
+    if isinstance(forecast_points, list):
+        for point in forecast_points:
+            if not isinstance(point, dict):
+                continue
+            local_date = point.get("local_date")
+            if not isinstance(local_date, str) or local_date != date:
+                continue
+            matching_points.append(point)
+            raw_max = point.get("temp_max_c")
+            raw_min = point.get("temp_min_c")
+            if isinstance(raw_max, (int, float)):
+                value = float(raw_max)
+                max_temp_c = value if max_temp_c is None else max(max_temp_c, value)
+            if isinstance(raw_min, (int, float)):
+                value = float(raw_min)
+                min_temp_c = value if min_temp_c is None else min(min_temp_c, value)
+
+    local_date_now = current.get("local_date_now")
+    local_temperature_c_now = current.get("temperature_c")
+    if local_date_now == date and isinstance(local_temperature_c_now, (int, float)):
+        current_value = float(local_temperature_c_now)
+        max_temp_c = current_value if max_temp_c is None else max(max_temp_c, current_value)
+        min_temp_c = current_value if min_temp_c is None else min(min_temp_c, current_value)
+        used_current_observation = True
+
+    response = {
+        "provider": "openweather",
+        "request_type": request_type,
+        "units": "metric",
+        "requested_coordinates": {"lat": coordinates.lat, "lon": coordinates.lon},
+        "date": date,
+        "timezone_offset_seconds": current.get("timezone_offset_seconds"),
+        "local_time_now": current.get("local_time_now"),
+        "local_date_now": local_date_now,
+        "local_temperature_c_now": local_temperature_c_now,
+        "max_temp_c": max_temp_c,
+        "min_temp_c": min_temp_c,
+        "used_current_observation": used_current_observation,
+        "historical_observations_available": False,
+        "coverage_note": (
+            "Free OpenWeather does not provide past-hours history. "
+            "For today's local date this result uses the current local reading plus remaining 3-hour forecast points."
+            if local_date_now == date
+            else "Free OpenWeather does not provide past-hours history. This result is based on 3-hour forecast points only."
+        ),
+        "forecast_points": matching_points,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    location = (flask_request.args.get("location") or "").strip()
+    if location:
+        response["location"] = location
+    location_key = (flask_request.args.get("location_key") or "").strip()
+    if location_key:
+        response["location_key"] = location_key
+    return jsonify(response)
+
+
+@app.route("/api/openweather/history", methods=["GET"])
+def weather_history_api() -> Any:
+    return (
+        jsonify(
+            {
+                "provider": "openweather",
+                "units": "metric",
+                "error": "Historical weather is not available on the free OpenWeather plan used here.",
+                "detail": "Current weather and 5 day / 3 hour forecast are supported. History requires a paid product.",
+            }
+        ),
+        501,
     )
 
 
