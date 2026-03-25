@@ -1,0 +1,157 @@
+:root {
+  --bg1: #f2f7ff;
+  --bg2: #fff8f0;
+  --ink: #1b1f2a;
+  --muted: #4c5568;
+  --card: #ffffff;
+  --line: #d8e2f1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  color: var(--ink);
+  background: linear-gradient(160deg, var(--bg1), var(--bg2));
+  min-height: 100vh;
+}
+
+.wrap {
+  max-width: 1000px;
+  margin: 24px auto;
+  padding: 16px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 8px 24px rgba(22, 36, 62, 0.06);
+}
+
+h1 {
+  margin: 0 0 14px 0;
+  font-size: 1.4rem;
+}
+
+p {
+  color: var(--muted);
+  margin: 0 0 18px 0;
+}
+
+.error {
+  margin-top: 14px;
+  color: #9f2e2e;
+  background: #fff2f2;
+  border: 1px solid #ffcaca;
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.hidden {
+  display: none;
+}
+
+.result {
+  margin-top: 16px;
+}
+
+.event-card {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: #fcfdff;
+}
+
+.event-card.is-secondary {
+  background: #f5f7fb;
+  border-color: #e4e9f2;
+  opacity: 0.74;
+}
+
+.event-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.event-title {
+  font-weight: 700;
+}
+
+.event-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.weather-meta {
+  margin-top: 6px;
+}
+
+.live-time {
+  color: #0f9d58;
+  font-weight: 800;
+  font-size: 1.1rem;
+  letter-spacing: 0.02em;
+}
+
+.links {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.btn-link {
+  display: inline-block;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  color: var(--ink);
+  background: #fff;
+  border-radius: 7px;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+}
+
+.btn-link.is-disabled {
+  color: #8792a5;
+  pointer-events: none;
+}
+
+.table-wrap {
+  overflow: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+thead tr {
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+th,
+td {
+  padding: 8px;
+}
+
+tbody tr {
+  border-bottom: 1px solid #edf2fa;
+}
+
+@media (max-width: 860px) {
+  .event-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

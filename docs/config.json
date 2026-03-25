@@ -1,0 +1,362 @@
+{
+  "settings": {
+    "run_host": "127.0.0.1",
+    "run_port": 5000,
+    "run_debug": true
+  },
+  "locations": [
+    {
+      "key": "seattle",
+      "station": "KSEA",
+      "timezone": "America/Los_Angeles",
+      "utc_offset_minutes": -420,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KSEA",
+        "accuweather": "https://www.accuweather.com/en/us/seatac/98148/weather-forecast/341357"
+      }
+    },
+    {
+      "key": "london",
+      "station": "EGLC",
+      "timezone": "Europe/London",
+      "utc_offset_minutes": 0,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/EGLC",
+        "accuweather": "https://www.accuweather.com/en/gb/north-woolwich/e16%202/weather-forecast/2532754"
+      }
+    },
+    {
+      "key": "dallas",
+      "station": "KDAL",
+      "timezone": "America/Chicago",
+      "utc_offset_minutes": -300,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KDAL",
+        "accuweather": "https://www.accuweather.com/en/us/love-field/75209/weather-forecast/3591132"
+      }
+    },
+    {
+      "key": "chicago",
+      "station": "KORD",
+      "timezone": "America/Chicago",
+      "utc_offset_minutes": -300,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KORD",
+        "accuweather": "https://www.accuweather.com/en/us/o%27hare/60666/weather-forecast/2626577"
+      }
+    },
+    {
+      "key": "paris",
+      "station": "LFPG",
+      "timezone": "Europe/Paris",
+      "utc_offset_minutes": 60,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/LFPG",
+        "accuweather": "https://www.accuweather.com/en/fr/tremblay-en-france/133738/weather-forecast/133738"
+      }
+    },
+    {
+      "key": "sao-paulo",
+      "station": "SBGR",
+      "timezone": "America/Sao_Paulo",
+      "utc_offset_minutes": -180,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/SBGR",
+        "accuweather": "https://www.accuweather.com/en/br/guarulhos/36369/weather-forecast/36369"
+      }
+    },
+    {
+      "key": "buenos-aires",
+      "station": "SAEZ",
+      "timezone": "America/Argentina/Buenos_Aires",
+      "utc_offset_minutes": -180,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/SAEZ",
+        "accuweather": "https://www.accuweather.com/en/ar/barrio-esteban-echeverr%C3%ADa/1864638/weather-forecast/1864638"
+      }
+    },
+    {
+      "key": "seoul",
+      "station": "RKSI",
+      "timezone": "Asia/Seoul",
+      "utc_offset_minutes": 540,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/RKSI",
+        "accuweather": "https://www.accuweather.com/en/kr/yunshu-dong/2331998/weather-forecast/2331998"
+      }
+    },
+    {
+      "key": "toronto",
+      "station": "CYYZ",
+      "timezone": "America/Toronto",
+      "utc_offset_minutes": -240,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ca/toronto/CYYZ",
+        "accuweather": "https://www.accuweather.com/en/ca/mississauga/l5b/weather-forecast/55071"
+      }
+    },
+    {
+      "key": "nyc",
+      "station": "KLGA",
+      "timezone": "America/New_York",
+      "utc_offset_minutes": -240,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KLGA",
+        "accuweather": "https://www.accuweather.com/en/us/laguardia-airport/11371/weather-forecast/2627477"
+      }
+    },
+    {
+      "key": "atlanta",
+      "station": "KATL",
+      "timezone": "America/New_York",
+      "utc_offset_minutes": -240,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KATL",
+        "accuweather": "https://www.accuweather.com/en/us/college-park/30337/weather-forecast/2140212"
+      }
+    },
+    {
+      "key": "miami",
+      "station": "KMIA",
+      "timezone": "America/New_York",
+      "utc_offset_minutes": -240,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KMIA",
+        "accuweather": "https://www.accuweather.com/en/us/miami-international-airport/33122/weather-forecast/3593859"
+      }
+    },
+    {
+      "key": "ankara",
+      "station": "LTAC",
+      "timezone": "Europe/Istanbul",
+      "utc_offset_minutes": 180,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/LTAC",
+        "accuweather": "https://www.accuweather.com/en/tr/kizilca/1294331/weather-forecast/1294331"
+      }
+    },
+    {
+      "key": "wellington",
+      "station": "NZWN",
+      "timezone": "Pacific/Auckland",
+      "utc_offset_minutes": 780,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/NZWN",
+        "accuweather": "https://www.accuweather.com/en/nz/rongotai/251059/weather-forecast/251059"
+      }
+    },
+    {
+      "key": "lucknow",
+      "station": "VILK",
+      "timezone": "Asia/Kolkata",
+      "utc_offset_minutes": 330,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/VILK",
+        "accuweather": "https://www.accuweather.com/en/in/lucknow/206678/weather-forecast/206678"
+      }
+    },
+    {
+      "key": "munich",
+      "station": "EDDM",
+      "timezone": "Europe/Berlin",
+      "utc_offset_minutes": 60,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/EDDM",
+        "accuweather": "https://www.accuweather.com/en/de/attaching/85356/weather-forecast/1035963"
+      }
+    },
+    {
+      "key": "tokyo",
+      "station": "RJTT",
+      "timezone": "Asia/Tokyo",
+      "utc_offset_minutes": 540,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/RJTT",
+        "accuweather": "https://www.accuweather.com/en/jp/hanedakuko/2409767/weather-forecast/2409767"
+      }
+    },
+    {
+      "key": "shanghai",
+      "station": "ZSPD",
+      "timezone": "Asia/Shanghai",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ZSPD",
+        "accuweather": "https://www.accuweather.com/en/cn/pudong-new-district/74761/weather-forecast/74761"
+      }
+    },
+    {
+      "key": "singapore",
+      "station": "WSSS",
+      "timezone": "Asia/Singapore",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/WSSS",
+        "accuweather": "https://www.accuweather.com/en/sg/changi-village/300560/weather-forecast/300560"
+      }
+    },
+    {
+      "key": "milan",
+      "station": "LIMC",
+      "timezone": "Europe/Rome",
+      "utc_offset_minutes": 60,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/LIMC",
+        "accuweather": "https://www.accuweather.com/en/it/case-nuove/2539803/weather-forecast/2539803"
+      }
+    },
+    {
+      "key": "madrid",
+      "station": "LEMD",
+      "timezone": "Europe/Madrid",
+      "utc_offset_minutes": 60,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/LEMD",
+        "accuweather": "https://www.accuweather.com/en/es/aeropuerto/2330129/weather-forecast/2330129"
+      }
+    },
+    {
+      "key": "warsaw",
+      "station": "EPWA",
+      "timezone": "Europe/Warsaw",
+      "utc_offset_minutes": 60,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/EPWA",
+        "accuweather": "https://www.accuweather.com/en/pl/ok%C4%99cie/264639/weather-forecast/264639"
+      }
+    },
+    {
+      "key": "austin",
+      "station": "KAUS",
+      "timezone": "America/Chicago",
+      "utc_offset_minutes": -300,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KAUS",
+        "accuweather": "https://www.accuweather.com/en/us/austin/78701/weather-forecast/351193"
+      }
+    },
+    {
+      "key": "denver",
+      "station": "KBKF",
+      "timezone": "America/Denver",
+      "utc_offset_minutes": -360,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KDEN",
+        "accuweather": "https://www.accuweather.com/en/us/denver-international-airport/80249/weather-forecast/2626644"
+      }
+    },
+    {
+      "key": "houston",
+      "station": "KHOU",
+      "timezone": "America/Chicago",
+      "utc_offset_minutes": -300,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KHOU",
+        "accuweather": "https://www.accuweather.com/en/us/greater-hobby-area/77075/weather-forecast/3593012"
+      }
+    },
+    {
+      "key": "los-angeles",
+      "station": "KLAX",
+      "timezone": "America/Los_Angeles",
+      "utc_offset_minutes": -420,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KLAX",
+        "accuweather": "https://www.accuweather.com/en/us/westchester/90045/weather-forecast/2142541"
+      }
+    },
+    {
+      "key": "san-francisco",
+      "station": "KSFO",
+      "timezone": "America/Los_Angeles",
+      "utc_offset_minutes": -420,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/KSFO",
+        "accuweather": "https://www.accuweather.com/en/us/south-san-francisco/94080/weather-forecast/337259"
+      }
+    },
+    {
+      "key": "chongqing",
+      "station": "ZUCK",
+      "timezone": "Asia/Shanghai",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ZUCK",
+        "accuweather": "https://www.accuweather.com/en/cn/yubei-district/1715565/weather-forecast/1715565"
+      }
+    },
+    {
+      "key": "beijing",
+      "station": "ZBAA",
+      "timezone": "Asia/Shanghai",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ZBAA",
+        "accuweather": "https://www.accuweather.com/en/cn/shunyi-district/57520/weather-forecast/57520"
+      }
+    },
+    {
+      "key": "wuhan",
+      "station": "ZHHH",
+      "timezone": "Asia/Shanghai",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ZHHH",
+        "accuweather": "https://www.accuweather.com/en/cn/huangpi-district/59313/weather-forecast/59313"
+      }
+    },
+    {
+      "key": "shenzhen",
+      "station": "ZGSZ",
+      "timezone": "Asia/Shanghai",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ZGSZ",
+        "accuweather": "https://www.accuweather.com/en/cn/bao%27an-district/58341/weather-forecast/58341"
+      }
+    },
+    {
+      "key": "chengdu",
+      "station": "ZUUU",
+      "timezone": "Asia/Shanghai",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ZUUU",
+        "accuweather": "https://www.accuweather.com/en/cn/shuangliu-district/61014/weather-forecast/61014"
+      }
+    },
+    {
+      "key": "tel-aviv",
+      "station": "LLBG",
+      "timezone": "Asia/Jerusalem",
+      "utc_offset_minutes": 120,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/LLBG",
+        "accuweather": "https://www.accuweather.com/en/il/yagel/212582/weather-forecast/212582",
+        "weather.gov": "https://www.weather.gov/wrh/timeseries?site=LLBG"
+      }
+    },
+    {
+      "key": "hong-kong",
+      "station": "IHONGK12",
+      "timezone": "Asia/Hong_Kong",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/IHONGK12",
+        "accuweather": "https://www.accuweather.com/en/hk/hong-kong/1123655/weather-forecast/1123655?city=hong%2bkong",
+        "weather.gov.hk": "https://www.weather.gov.hk/en/cis/climat.htm"
+      }
+    },
+    {
+      "key": "taipei",
+      "station": "ITAIPE19",
+      "timezone": "Asia/Taipei",
+      "utc_offset_minutes": 480,
+      "source": {
+        "wunderground": "https://www.wunderground.com/weather/ITAIPE19",
+        "accuweather": "https://www.accuweather.com/en/tw/jingzhong-village/2516631/weather-forecast/2516631",
+        "weather.gov": "https://www.weather.gov/wrh/timeseries?site=RCTP"
+      }
+    }
+  ]
+}
