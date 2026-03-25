@@ -60,6 +60,11 @@
         padding: 12px;
         background: #fcfdff;
       }
+      .event-card.is-secondary {
+        background: #f5f7fb;
+        border-color: #e4e9f2;
+        opacity: 0.74;
+      }
       .event-head {
         display: flex;
         justify-content: space-between;
@@ -119,7 +124,7 @@
           <div class="result">
             <p><strong>{{ market_count }}</strong> markets found</p>
             {% for group in event_groups %}
-              <div class="event-card">
+              <div class="event-card{% if group.is_secondary %} is-secondary{% endif %}">
                 <div class="event-head">
                   <div>
                     <div class="event-title">{{ group.event_title }}</div>
