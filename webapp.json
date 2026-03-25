@@ -237,7 +237,7 @@
     },
     {
       "key": "denver",
-      "station": "KDEN",
+      "station": "KBKF",
       "timezone": "America/Denver",
       "utc_offset_minutes": -360,
       "source": {
@@ -332,7 +332,8 @@
       "utc_offset_minutes": 120,
       "source": {
         "wunderground": "https://www.wunderground.com/weather/LLBG",
-        "accuweather": "https://www.accuweather.com/en/il/yagel/212582/weather-forecast/212582"
+        "accuweather": "https://www.accuweather.com/en/il/yagel/212582/weather-forecast/212582",
+        "weather.gov": "https://www.weather.gov/wrh/timeseries?site=LLBG"
       }
     },
     {
@@ -342,7 +343,8 @@
       "utc_offset_minutes": 480,
       "source": {
         "wunderground": "https://www.wunderground.com/weather/IHONGK12",
-        "accuweather": "https://www.accuweather.com/en/hk/hong-kong/1123655/weather-forecast/1123655?city=hong%2bkong"
+        "accuweather": "https://www.accuweather.com/en/hk/hong-kong/1123655/weather-forecast/1123655?city=hong%2bkong",
+        "weather.gov.hk": "https://www.weather.gov.hk/en/cis/climat.htm"
       }
     },
     {
@@ -352,7 +354,8 @@
       "utc_offset_minutes": 480,
       "source": {
         "wunderground": "https://www.wunderground.com/weather/ITAIPE19",
-        "accuweather": "https://www.accuweather.com/en/tw/jingzhong-village/2516631/weather-forecast/2516631"
+        "accuweather": "https://www.accuweather.com/en/tw/jingzhong-village/2516631/weather-forecast/2516631",
+        "weather.gov": "https://www.weather.gov/wrh/timeseries?site=RCTP"
       }
     }
   ]

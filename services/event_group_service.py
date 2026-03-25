@@ -131,6 +131,15 @@ def _format_int_volume(value: Any) -> str:
     return "-"
 
 
+def _preferred_weather_units(location_cfg: LocationConfig | None) -> str:
+    if location_cfg is None:
+        return "m"
+    accuweather_url = str(location_cfg.source.get("accuweather", "")).lower()
+    if "/en/us/" in accuweather_url:
+        return "e"
+    return "m"
+
+
 def build_event_groups(
     payload: dict[str, Any],
     mapping: dict[str, LocationConfig],
@@ -154,6 +163,8 @@ def build_event_groups(
 
         source = dict(location_cfg.source) if location_cfg is not None else {}
         timezone_name = location_cfg.timezone if location_cfg is not None else ""
+        station_code = location_cfg.station if location_cfg is not None else ""
+        weather_units = _preferred_weather_units(location_cfg)
 
         if location_key not in local_time_cache:
             local_time_cache[location_key] = build_local_time_now(location_key, mapping)
@@ -166,6 +177,8 @@ def build_event_groups(
                 "event_url": event_url,
                 "end_date": end_date,
                 "source": source,
+                "station_code": station_code,
+                "weather_units": weather_units,
                 "timezone": timezone_name,
                 "local_time_now": local_time_now,
                 "local_time_display": format_local_time(local_time_now),

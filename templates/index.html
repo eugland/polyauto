@@ -79,6 +79,9 @@
         color: var(--muted);
         font-size: 0.85rem;
       }
+      .weather-meta {
+        margin-top: 6px;
+      }
       .live-time {
         color: #0f9d58;
         font-weight: 800;
@@ -124,7 +127,11 @@
           <div class="result">
             <p><strong>{{ market_count }}</strong> markets found</p>
             {% for group in event_groups %}
-              <div class="event-card{% if group.is_secondary %} is-secondary{% endif %}">
+              <div
+                class="event-card{% if group.is_secondary %} is-secondary{% endif %}"
+                data-station-code="{{ group.station_code }}"
+                data-weather-units="{{ group.weather_units }}"
+              >
                 <div class="event-head">
                   <div>
                     <div class="event-title">{{ group.event_title }}</div>
@@ -133,21 +140,27 @@
                         class="btn-link {% if group.event_url == '-' %}is-disabled{% endif %}"
                         href="{{ group.event_url if group.event_url != '-' else '' }}"
                         target="_blank"
+                        rel="noopener noreferrer"
+                        data-bg-open="1"
                       >Open event</a>
-                      {% if group.source and group.source.wunderground %}
-                        <a
-                          class="btn-link"
-                          href="{{ group.source.wunderground }}"
-                          target="_blank"
-                        >Open Wunderground</a>
+                      {% if group.source %}
+                        {% for source_name, source_url in group.source.items() %}
+                          {% if source_url %}
+                            <a
+                              class="btn-link"
+                              href="{{ source_url }}"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              data-bg-open="1"
+                            >Open {{ source_name | replace('_', ' ') | title }}</a>
+                          {% endif %}
+                        {% endfor %}
                       {% endif %}
-                      {% if group.source and group.source.accuweather %}
-                        <a
-                          class="btn-link"
-                          href="{{ group.source.accuweather }}"
-                          target="_blank"
-                        >Open AccuWeather</a>
-                      {% endif %}
+                    </div>
+                    <div class="event-meta weather-meta">
+                      <span data-weather-current>Current: --</span>
+                      <span> | </span>
+                      <span data-weather-max>Max: --</span>
                     </div>
                   </div>
                   <div class="live-time">{{ group.local_time_display }}</div>
@@ -183,5 +196,74 @@
         {% endif %}
       </div>
     </div>
+    <script>
+      // Best effort: open in a new tab while trying to keep focus on this tab.
+      document.addEventListener("click", function (event) {
+        var link = event.target.closest("a[data-bg-open='1']");
+        if (!link || !link.href || link.classList.contains("is-disabled")) {
+          return;
+        }
+
+        event.preventDefault();
+        var newTab = window.open(link.href, "_blank", "noopener,noreferrer");
+        if (newTab) {
+          try { newTab.opener = null; } catch (e) {}
+          try { newTab.blur(); } catch (e) {}
+          try { window.focus(); } catch (e) {}
+        }
+      });
+
+      (function loadStationTemperatures() {
+        var WEATHER_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525";
+        var WEATHER_API_URL = "https://api.weather.com/v3/wx/observations/current";
+
+        function formatTemp(value, units) {
+          var number = Number(value);
+          if (!Number.isFinite(number)) {
+            return "--";
+          }
+          return Math.round(number) + (units === "e" ? "°F" : "°C");
+        }
+
+        var cards = document.querySelectorAll(".event-card[data-station-code]");
+        cards.forEach(function (card) {
+          var stationCode = (card.getAttribute("data-station-code") || "").trim();
+          var units = (card.getAttribute("data-weather-units") || "m").trim().toLowerCase();
+          var currentEl = card.querySelector("[data-weather-current]");
+          var maxEl = card.querySelector("[data-weather-max]");
+          if (!stationCode || !currentEl || !maxEl) {
+            return;
+          }
+          if (units !== "e" && units !== "m") {
+            units = "m";
+          }
+
+          var url = WEATHER_API_URL
+            + "?apiKey=" + encodeURIComponent(WEATHER_API_KEY)
+            + "&language=en-US"
+            + "&units=" + encodeURIComponent(units)
+            + "&format=json"
+            + "&icaoCode=" + encodeURIComponent(stationCode);
+
+          fetch(url)
+            .then(function (response) {
+              if (!response.ok) {
+                throw new Error("HTTP " + response.status);
+              }
+              return response.json();
+            })
+            .then(function (data) {
+              var currentTemp = data.temperature;
+              var maxTemp = data.temperatureMaxSince7Am;
+              currentEl.textContent = "Current: " + formatTemp(currentTemp, units);
+              maxEl.textContent = "Max: " + formatTemp(maxTemp, units);
+            })
+            .catch(function () {
+              currentEl.textContent = "Current: n/a";
+              maxEl.textContent = "Max: n/a";
+            });
+        });
+      })();
+    </script>
   </body>
 </html>
