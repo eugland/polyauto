@@ -1,9 +1,9 @@
 const EVENT_HORIZON_HOURS = 30;
+const EVENTS_PAGE_SIZE = 10;
+const EVENTS_MAX_PAGES = 20;
 const POLYMARKET_EVENTS_URL = "https://gamma-api.polymarket.com/events";
 const WEATHER_CURRENT_URL = "https://api.weather.com/v3/wx/observations/current";
-
-// Exposed by request.
-const WEATHER_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525";
+const WORKER_URL = "https://gentle-flower-99e9.eugene-r-w-12.workers.dev";
 
 const EVENT_SLUG_RE = /^highest-temperature-in-(.+)-on-[a-z]+-\d{1,2}-\d{4}$/;
 const EVENT_DATE_IN_TITLE_RE = /\bon\s+([A-Za-z]+)\s+(\d{1,2})(?:,)?\s+(\d{4})\b/i;
@@ -25,20 +25,54 @@ function toSearchParams(params) {
   return search.toString();
 }
 
-async function fetchTemperatureMarketsPayload() {
-  const query = toSearchParams({
-    tag_slug: "temperature",
-    closed: "false",
-    limit: 200,
-    end_date_max: getEndDateMaxIso(),
-  });
-
-  const response = await fetch(`${POLYMARKET_EVENTS_URL}?${query}`);
+async function fetchExternalJson(url, errorPrefix) {
+  const proxyUrl = `${WORKER_URL}?url=${encodeURIComponent(url)}`;
+  const response = await fetch(proxyUrl);
   if (!response.ok) {
-    throw new Error(`Polymarket API failed with HTTP ${response.status}`);
+    throw new Error(`${errorPrefix}: HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+async function fetchTemperatureMarketsPayload() {
+  const endDateMaxIso = getEndDateMaxIso();
+  const events = [];
+  const seenEventIds = new Set();
+
+  for (let pageIndex = 0; pageIndex < EVENTS_MAX_PAGES; pageIndex += 1) {
+    const offset = pageIndex * EVENTS_PAGE_SIZE;
+    const query = toSearchParams({
+      tag_slug: "temperature",
+      closed: "false",
+      limit: EVENTS_PAGE_SIZE,
+      offset,
+      end_date_max: endDateMaxIso,
+    });
+    const pageEvents = await fetchExternalJson(
+      `${POLYMARKET_EVENTS_URL}?${query}`,
+      "Polymarket API failed"
+    );
+
+    if (!Array.isArray(pageEvents) || pageEvents.length === 0) {
+      break;
+    }
+
+    pageEvents.forEach((event) => {
+      const key = String(event && event.id ? event.id : "");
+      if (key && seenEventIds.has(key)) {
+        return;
+      }
+      if (key) {
+        seenEventIds.add(key);
+      }
+      events.push(event);
+    });
+
+    if (pageEvents.length < EVENTS_PAGE_SIZE) {
+      break;
+    }
   }
 
-  const events = await response.json();
   const markets = [];
 
   events.forEach((event) => {
@@ -578,20 +612,13 @@ function loadStationTemperatures() {
     }
 
     const url = `${WEATHER_CURRENT_URL}?${toSearchParams({
-      apiKey: WEATHER_API_KEY,
       language: "en-US",
       units,
       format: "json",
       icaoCode: stationCode,
     })}`;
 
-    fetch(url)
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        return response.json();
-      })
+    fetchExternalJson(url, "Weather API failed")
       .then((data) => {
         currentEl.textContent = `Current: ${formatTemp(data.temperature, units)}`;
         maxEl.textContent = `Max: ${formatTemp(data.temperatureMaxSince7Am, units)}`;

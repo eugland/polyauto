@@ -86,7 +86,6 @@ def register_home_routes(app: Flask, config_path: Path) -> None:
         except requests.RequestException as exc:
             return jsonify({"error": f"Weather API error: {exc}"}), 502
 
-
 def load_runtime_from_config(config_path: Path):
     payload = read_config_payload(config_path)
     return load_runtime_settings(payload)
