@@ -3,6 +3,7 @@ const EVENTS_PAGE_SIZE = 10;
 const EVENTS_MAX_PAGES = 20;
 const POLYMARKET_EVENTS_URL = "https://gamma-api.polymarket.com/events";
 const WEATHER_CURRENT_URL = "https://api.weather.com/v3/wx/observations/current";
+const PWS_CURRENT_URL = "https://api.weather.com/v2/pws/observations/current";
 const METAR_HISTORY_URL = "https://aviationweather.gov/api/data/metar";
 const WORKER_URL = "https://gentle-flower-99e9.eugene-r-w-12.workers.dev";
 
@@ -613,22 +614,38 @@ function loadStationTemperatures() {
       units = "m";
     }
 
-    const url = `${WEATHER_CURRENT_URL}?${toSearchParams({
-      language: "en-US",
-      units,
-      format: "json",
-      icaoCode: stationCode,
-    })}`;
+    const isPWS = !/^[A-Z]{4}$/.test(stationCode);
 
-    fetchExternalJson(url, "Weather API failed")
-      .then((data) => {
-        currentEl.textContent = `Current: ${formatTemp(data.temperature, units)}`;
-        maxEl.textContent = `Max: ${formatTemp(data.temperatureMaxSince7Am, units)}`;
-      })
-      .catch(() => {
-        currentEl.textContent = "Current: n/a";
-        maxEl.textContent = "Max: n/a";
-      });
+    if (isPWS) {
+      const url = `${PWS_CURRENT_URL}?${toSearchParams({ stationId: stationCode, format: "json", units })}`;
+      fetchExternalJson(url, "PWS Weather API failed")
+        .then((data) => {
+          const obs = Array.isArray(data.observations) ? data.observations[0] : null;
+          const unitData = obs ? (units === "e" ? obs.imperial : obs.metric) : null;
+          currentEl.textContent = `Current: ${formatTemp(unitData && unitData.temp, units)}`;
+          maxEl.textContent = `Max: ${formatTemp(unitData && unitData.tempHigh, units)}`;
+        })
+        .catch(() => {
+          currentEl.textContent = "Current: n/a";
+          maxEl.textContent = "Max: n/a";
+        });
+    } else {
+      const url = `${WEATHER_CURRENT_URL}?${toSearchParams({
+        language: "en-US",
+        units,
+        format: "json",
+        icaoCode: stationCode,
+      })}`;
+      fetchExternalJson(url, "Weather API failed")
+        .then((data) => {
+          currentEl.textContent = `Current: ${formatTemp(data.temperature, units)}`;
+          maxEl.textContent = `Max: ${formatTemp(data.temperatureMaxSince7Am, units)}`;
+        })
+        .catch(() => {
+          currentEl.textContent = "Current: n/a";
+          maxEl.textContent = "Max: n/a";
+        });
+    }
   });
 }
 
