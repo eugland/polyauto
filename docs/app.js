@@ -3,6 +3,7 @@ const EVENTS_PAGE_SIZE = 10;
 const EVENTS_MAX_PAGES = 20;
 const POLYMARKET_EVENTS_URL = "https://gamma-api.polymarket.com/events";
 const WEATHER_CURRENT_URL = "https://api.weather.com/v3/wx/observations/current";
+const METAR_HISTORY_URL = "https://aviationweather.gov/api/data/metar";
 const WORKER_URL = "https://gentle-flower-99e9.eugene-r-w-12.workers.dev";
 
 const EVENT_SLUG_RE = /^highest-temperature-in-(.+)-on-[a-z]+-\d{1,2}-\d{4}$/;
@@ -516,7 +517,7 @@ function renderGroups(eventGroups) {
         .join("");
 
       return `
-        <div class="event-card${group.is_secondary ? " is-secondary" : ""}" data-station-code="${escapeHtml(group.station_code)}" data-weather-units="${escapeHtml(group.weather_units)}">
+        <div class="event-card${group.is_secondary ? " is-secondary" : ""}" data-station-code="${escapeHtml(group.station_code)}" data-weather-units="${escapeHtml(group.weather_units)}" data-timezone="${escapeHtml(group.timezone)}">
           <div class="event-head">
             <div>
               <div class="event-title">${escapeHtml(group.event_title)}</div>
@@ -533,6 +534,7 @@ function renderGroups(eventGroups) {
             <div class="live-time">${escapeHtml(group.local_time_display)}</div>
           </div>
 
+          <div class="graph-wrap" data-temp-graph></div>
           <div class="table-wrap">
             <table>
               <thead>
@@ -630,6 +632,118 @@ function loadStationTemperatures() {
   });
 }
 
+async function fetchMETARHistory(stationCode) {
+  const url = `${METAR_HISTORY_URL}?ids=${encodeURIComponent(stationCode)}&hours=24&format=json`;
+  return fetchExternalJson(url, "METAR history failed");
+}
+
+function parseMETARReadings(data, units) {
+  const readings = [];
+  (Array.isArray(data) ? data : []).forEach((obs) => {
+    const tempC = obs.temp;
+    const obsTime = obs.obsTime;
+    if (tempC == null || obsTime == null) return;
+    const temp = units === "e"
+      ? parseFloat(tempC) * 9.0 / 5.0 + 32.0
+      : parseFloat(tempC);
+    readings.push({ time: parseInt(obsTime, 10) * 1000, temperature: Math.round(temp * 10) / 10 });
+  });
+  readings.sort((a, b) => a.time - b.time);
+  return readings;
+}
+
+function formatTimeLabel(timestampMs, timezone) {
+  const opts = { hour: "numeric", minute: "2-digit", hour12: true };
+  try {
+    if (timezone) {
+      return new Intl.DateTimeFormat("en-US", { timeZone: timezone, ...opts }).format(new Date(timestampMs));
+    }
+  } catch (e) {
+    // fall through
+  }
+  return new Date(timestampMs).toLocaleTimeString("en-US", opts);
+}
+
+function renderTemperatureGraph(readings, units, stationCode, timezone) {
+  if (readings.length < 2) return "";
+
+  const VW = 500, VH = 90;
+  const PAD = { top: 10, right: 48, bottom: 18, left: 32 };
+  const innerW = VW - PAD.left - PAD.right;
+  const innerH = VH - PAD.top - PAD.bottom;
+
+  const temps = readings.map((r) => r.temperature);
+  const minTemp = Math.min(...temps);
+  const maxTemp = Math.max(...temps);
+  const range = maxTemp - minTemp || 1;
+
+  const times = readings.map((r) => r.time);
+  const minTime = times[0];
+  const maxTime = times[times.length - 1];
+  const timeSpan = maxTime - minTime || 1;
+
+  const px = (t) => PAD.left + ((t - minTime) / timeSpan) * innerW;
+  const py = (v) => PAD.top + innerH - ((v - minTemp) / range) * innerH;
+
+  const pts = readings.map((r) => `${px(r.time).toFixed(1)},${py(r.temperature).toFixed(1)}`);
+  const linePath = `M ${pts.join(" L ")}`;
+  const baseY = (PAD.top + innerH).toFixed(1);
+  const fillPath = `M ${px(minTime).toFixed(1)},${baseY} L ${pts.join(" L ")} L ${px(maxTime).toFixed(1)},${baseY} Z`;
+
+  const last = readings[readings.length - 1];
+  const lx = px(last.time).toFixed(1);
+  const ly = py(last.temperature).toFixed(1);
+
+  const unitSuffix = units === "e" ? "\u00b0F" : "\u00b0C";
+  const gradId = `tg-${stationCode.replace(/[^a-zA-Z0-9]/g, "")}`;
+
+  return `<svg class="temp-graph" viewBox="0 0 ${VW} ${VH}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.2"/>
+        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <line x1="${PAD.left}" y1="${PAD.top}" x2="${PAD.left}" y2="${PAD.top + innerH}" stroke="#e2e8f0" stroke-width="1"/>
+    <line x1="${PAD.left}" y1="${PAD.top + innerH}" x2="${PAD.left + innerW}" y2="${PAD.top + innerH}" stroke="#e2e8f0" stroke-width="1"/>
+    <path d="${fillPath}" fill="url(#${gradId})"/>
+    <path d="${linePath}" fill="none" stroke="#3b82f6" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lx}" cy="${ly}" r="3" fill="#3b82f6"/>
+    <text x="${(parseFloat(lx) + 5).toFixed(1)}" y="${(parseFloat(ly) + 4).toFixed(1)}" font-size="11" fill="#3b82f6" font-weight="600">${escapeHtml(Math.round(last.temperature) + unitSuffix)}</text>
+    <text x="${PAD.left - 3}" y="${(PAD.top + 4).toFixed(1)}" font-size="9" fill="#94a3b8" text-anchor="end">${escapeHtml(Math.round(maxTemp) + unitSuffix)}</text>
+    <text x="${PAD.left - 3}" y="${(PAD.top + innerH).toFixed(1)}" font-size="9" fill="#94a3b8" text-anchor="end">${escapeHtml(Math.round(minTemp) + unitSuffix)}</text>
+    <text x="${PAD.left}" y="${(VH - 2).toFixed(1)}" font-size="9" fill="#94a3b8">${escapeHtml(formatTimeLabel(minTime, timezone))}</text>
+    <text x="${(PAD.left + innerW).toFixed(1)}" y="${(VH - 2).toFixed(1)}" font-size="9" fill="#94a3b8" text-anchor="end">${escapeHtml(formatTimeLabel(maxTime, timezone))}</text>
+  </svg>`;
+}
+
+function loadTemperatureGraphs() {
+  const cards = document.querySelectorAll(".event-card[data-station-code]");
+  const stationToCards = {};
+
+  cards.forEach((card) => {
+    const code = String(card.getAttribute("data-station-code") || "").trim();
+    if (!code) return;
+    if (!stationToCards[code]) stationToCards[code] = [];
+    stationToCards[code].push(card);
+  });
+
+  Object.entries(stationToCards).forEach(([code, cardList]) => {
+    const units = String(cardList[0].getAttribute("data-weather-units") || "m").trim().toLowerCase();
+    const timezone = String(cardList[0].getAttribute("data-timezone") || "").trim();
+    fetchMETARHistory(code)
+      .then((data) => {
+        const readings = parseMETARReadings(data, units);
+        const svgHtml = renderTemperatureGraph(readings, units, code, timezone);
+        cardList.forEach((card) => {
+          const el = card.querySelector("[data-temp-graph]");
+          if (el) el.innerHTML = svgHtml;
+        });
+      })
+      .catch(() => {});
+  });
+}
+
 function showError(message) {
   const errorEl = document.getElementById("error");
   errorEl.textContent = message;
@@ -646,6 +760,7 @@ async function init() {
     const eventGroups = buildEventGroups(payload, mapping);
     renderGroups(eventGroups);
     loadStationTemperatures();
+    loadTemperatureGraphs();
   } catch (error) {
     showError(`API error: ${error.message || String(error)}`);
   }

@@ -149,6 +149,22 @@ tbody tr {
   border-bottom: 1px solid #edf2fa;
 }
 
+.graph-wrap {
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+.graph-wrap:empty {
+  display: none;
+}
+
+.temp-graph {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 @media (max-width: 860px) {
   .event-head {
     align-items: flex-start;
