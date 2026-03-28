@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(txt|md|yml|yaml\\)$\")",
+      "WebFetch(domain:api.open-meteo.com)",
+      "WebFetch(domain:archive-api.open-meteo.com)"
+    ]
+  }
+}
