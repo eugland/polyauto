@@ -338,11 +338,11 @@
     },
     {
       "key": "hong-kong",
-      "station": "IHONGK12",
+      "station": "VHHH",
       "timezone": "Asia/Hong_Kong",
       "utc_offset_minutes": 480,
       "source": {
-        "wunderground": "https://www.wunderground.com/weather/IHONGK12",
+        "wunderground": "https://www.wunderground.com/weather/VHHH",
         "accuweather": "https://www.accuweather.com/en/hk/hong-kong/1123655/weather-forecast/1123655?city=hong%2bkong",
         "weather.gov.hk": "https://www.weather.gov.hk/en/cis/climat.htm"
       }
