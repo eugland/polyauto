@@ -349,11 +349,11 @@
     },
     {
       "key": "taipei",
-      "station": "ITAIPE19",
+      "station": "RCTP",
       "timezone": "Asia/Taipei",
       "utc_offset_minutes": 480,
       "source": {
-        "wunderground": "https://www.wunderground.com/weather/ITAIPE19",
+        "wunderground": "https://www.wunderground.com/weather/RCTP",
         "accuweather": "https://www.accuweather.com/en/tw/jingzhong-village/2516631/weather-forecast/2516631",
         "weather.gov": "https://www.weather.gov/wrh/timeseries?site=RCTP"
       }
