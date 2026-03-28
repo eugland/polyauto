@@ -82,6 +82,10 @@
       .weather-meta {
         margin-top: 6px;
       }
+      .weather-trend-up   { color: #0f9d58; font-weight: 700; }
+      .weather-trend-down { color: #c0392b; font-weight: 700; }
+      .weather-trend-flat { color: var(--muted); font-weight: 700; }
+      .weather-spark { display: inline-block; vertical-align: middle; margin-left: 6px; }
       .live-time {
         color: #0f9d58;
         font-weight: 800;
@@ -158,9 +162,12 @@
                       {% endif %}
                     </div>
                     <div class="event-meta weather-meta">
-                      <span data-weather-current>Current: --</span>
+                      <span data-weather-current>Now: --</span>
                       <span> | </span>
-                      <span data-weather-max>Max: --</span>
+                      <span data-weather-max>24h High: --</span>
+                      <span> | </span>
+                      <span data-weather-trend></span>
+                      <span data-weather-chart class="weather-spark"></span>
                     </div>
                   </div>
                   <div class="live-time">{{ group.local_time_display }}</div>
@@ -214,55 +221,76 @@
       });
 
       (function loadStationTemperatures() {
-        var WEATHER_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525";
-        var WEATHER_API_URL = "https://api.weather.com/v3/wx/observations/current";
+        function toF(c) { return c * 9.0 / 5.0 + 32.0; }
 
-        function formatTemp(value, units) {
-          var number = Number(value);
-          if (!Number.isFinite(number)) {
-            return "--";
-          }
-          return Math.round(number) + (units === "e" ? "°F" : "°C");
+        function formatTemp(celsius, units) {
+          if (celsius === null || celsius === undefined || !Number.isFinite(Number(celsius))) { return "--"; }
+          var v = units === "e" ? toF(Number(celsius)) : Number(celsius);
+          return Math.round(v) + (units === "e" ? "°F" : "°C");
         }
 
-        var cards = document.querySelectorAll(".event-card[data-station-code]");
-        cards.forEach(function (card) {
-          var stationCode = (card.getAttribute("data-station-code") || "").trim();
-          var units = (card.getAttribute("data-weather-units") || "m").trim().toLowerCase();
+        function trendInfo(readings, units) {
+          if (readings.length < 2) { return { symbol: "→", cls: "weather-trend-flat", label: "→ 0.0" + (units === "e" ? "°F" : "°C") }; }
+          var last  = readings[readings.length - 1].temperature;
+          var prev  = readings[readings.length - 2].temperature;
+          var delta = units === "e" ? toF(last) - toF(prev) : last - prev;
+          var sign  = delta >= 0 ? "+" : "";
+          var label = (delta > 0.4 ? "↑" : delta < -0.4 ? "↓" : "→") + " " + sign + delta.toFixed(1) + (units === "e" ? "°F" : "°C");
+          var cls   = delta > 0.4 ? "weather-trend-up" : delta < -0.4 ? "weather-trend-down" : "weather-trend-flat";
+          return { label: label, cls: cls };
+        }
+
+        function buildSparkline(readings) {
+          if (readings.length < 2) { return ""; }
+          var temps = readings.map(function(r) { return r.temperature; });
+          var min = Math.min.apply(null, temps), max = Math.max.apply(null, temps);
+          var range = max - min || 1;
+          var W = 100, H = 24, pad = 3;
+          var points = temps.map(function(t, i) {
+            var x = (i / (temps.length - 1)) * W;
+            var y = H - pad - ((t - min) / range) * (H - pad * 2);
+            return x.toFixed(1) + "," + y.toFixed(1);
+          }).join(" ");
+          var lastY = (H - pad - ((temps[temps.length - 1] - min) / range) * (H - pad * 2)).toFixed(1);
+          return '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">'
+            + '<polyline points="' + points + '" fill="none" stroke="#1266f1" stroke-width="1.5" stroke-linejoin="round"/>'
+            + '<circle cx="' + W + '" cy="' + lastY + '" r="2.5" fill="#1266f1"/>'
+            + '</svg>';
+        }
+
+        function applyWeatherData(card, stationData) {
+          var units     = (card.getAttribute("data-weather-units") || "m").trim().toLowerCase();
           var currentEl = card.querySelector("[data-weather-current]");
-          var maxEl = card.querySelector("[data-weather-max]");
-          if (!stationCode || !currentEl || !maxEl) {
-            return;
-          }
-          if (units !== "e" && units !== "m") {
-            units = "m";
-          }
+          var maxEl     = card.querySelector("[data-weather-max]");
+          var trendEl   = card.querySelector("[data-weather-trend]");
+          var chartEl   = card.querySelector("[data-weather-chart]");
+          if (!currentEl || !maxEl) { return; }
 
-          var url = WEATHER_API_URL
-            + "?apiKey=" + encodeURIComponent(WEATHER_API_KEY)
-            + "&language=en-US"
-            + "&units=" + encodeURIComponent(units)
-            + "&format=json"
-            + "&icaoCode=" + encodeURIComponent(stationCode);
+          var readings = stationData.readings || [];
+          currentEl.textContent = "Now: " + formatTemp(stationData.current, units);
+          maxEl.textContent     = "24h High: " + formatTemp(stationData.daily_high, units);
 
-          fetch(url)
-            .then(function (response) {
-              if (!response.ok) {
-                throw new Error("HTTP " + response.status);
-              }
-              return response.json();
-            })
-            .then(function (data) {
-              var currentTemp = data.temperature;
-              var maxTemp = data.temperatureMaxSince7Am;
-              currentEl.textContent = "Current: " + formatTemp(currentTemp, units);
-              maxEl.textContent = "Max: " + formatTemp(maxTemp, units);
-            })
-            .catch(function () {
-              currentEl.textContent = "Current: n/a";
-              maxEl.textContent = "Max: n/a";
+          if (trendEl) {
+            var trend = trendInfo(readings, units);
+            trendEl.textContent = trend.label;
+            trendEl.className   = trend.cls;
+          }
+          if (chartEl) { chartEl.innerHTML = buildSparkline(readings); }
+        }
+
+        fetch("/api/weather/all")
+          .then(function(r) { return r.ok ? r.json() : Promise.reject(r.status); })
+          .then(function(allData) {
+            document.querySelectorAll(".event-card[data-station-code]").forEach(function(card) {
+              var code = (card.getAttribute("data-station-code") || "").trim();
+              if (!code || !allData[code]) { return; }
+              applyWeatherData(card, allData[code]);
             });
-        });
+          })
+          .catch(function() {
+            document.querySelectorAll("[data-weather-current]").forEach(function(el) { el.textContent = "Now: n/a"; });
+            document.querySelectorAll("[data-weather-max]").forEach(function(el)     { el.textContent = "24h High: n/a"; });
+          });
       })();
     </script>
   </body>
