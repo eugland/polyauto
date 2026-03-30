@@ -7,6 +7,7 @@
   "locations": [
     {
       "key": "seattle",
+      "enabled": false,
       "station": "KSEA",
       "timezone": "America/Los_Angeles",
       "utc_offset_minutes": -420,
@@ -17,6 +18,7 @@
     },
     {
       "key": "london",
+      "enabled": false,
       "station": "EGLC",
       "timezone": "Europe/London",
       "utc_offset_minutes": 0,
@@ -27,6 +29,7 @@
     },
     {
       "key": "dallas",
+      "enabled": true,
       "station": "KDAL",
       "timezone": "America/Chicago",
       "utc_offset_minutes": -300,
@@ -37,6 +40,7 @@
     },
     {
       "key": "chicago",
+      "enabled": false,
       "station": "KORD",
       "timezone": "America/Chicago",
       "utc_offset_minutes": -300,
@@ -47,6 +51,7 @@
     },
     {
       "key": "paris",
+      "enabled": false,
       "station": "LFPG",
       "timezone": "Europe/Paris",
       "utc_offset_minutes": 60,
@@ -57,6 +62,7 @@
     },
     {
       "key": "sao-paulo",
+      "enabled": false,
       "station": "SBGR",
       "timezone": "America/Sao_Paulo",
       "utc_offset_minutes": -180,
@@ -67,6 +73,7 @@
     },
     {
       "key": "buenos-aires",
+      "enabled": false,
       "station": "SAEZ",
       "timezone": "America/Argentina/Buenos_Aires",
       "utc_offset_minutes": -180,
@@ -77,6 +84,7 @@
     },
     {
       "key": "seoul",
+      "enabled": false,
       "station": "RKSI",
       "timezone": "Asia/Seoul",
       "utc_offset_minutes": 540,
@@ -87,6 +95,7 @@
     },
     {
       "key": "toronto",
+      "enabled": false,
       "station": "CYYZ",
       "timezone": "America/Toronto",
       "utc_offset_minutes": -240,
@@ -97,6 +106,7 @@
     },
     {
       "key": "nyc",
+      "enabled": false,
       "station": "KLGA",
       "timezone": "America/New_York",
       "utc_offset_minutes": -240,
@@ -107,6 +117,7 @@
     },
     {
       "key": "atlanta",
+      "enabled": false,
       "station": "KATL",
       "timezone": "America/New_York",
       "utc_offset_minutes": -240,
@@ -117,6 +128,7 @@
     },
     {
       "key": "miami",
+      "enabled": false,
       "station": "KMIA",
       "timezone": "America/New_York",
       "utc_offset_minutes": -240,
@@ -127,6 +139,7 @@
     },
     {
       "key": "ankara",
+      "enabled": false,
       "station": "LTAC",
       "timezone": "Europe/Istanbul",
       "utc_offset_minutes": 180,
@@ -137,6 +150,7 @@
     },
     {
       "key": "wellington",
+      "enabled": false,
       "station": "NZWN",
       "timezone": "Pacific/Auckland",
       "utc_offset_minutes": 780,
@@ -147,6 +161,7 @@
     },
     {
       "key": "lucknow",
+      "enabled": false,
       "station": "VILK",
       "timezone": "Asia/Kolkata",
       "utc_offset_minutes": 330,
@@ -157,6 +172,7 @@
     },
     {
       "key": "munich",
+      "enabled": false,
       "station": "EDDM",
       "timezone": "Europe/Berlin",
       "utc_offset_minutes": 60,
@@ -167,6 +183,7 @@
     },
     {
       "key": "tokyo",
+      "enabled": false,
       "station": "RJTT",
       "timezone": "Asia/Tokyo",
       "utc_offset_minutes": 540,
@@ -177,6 +194,7 @@
     },
     {
       "key": "shanghai",
+      "enabled": false,
       "station": "ZSPD",
       "timezone": "Asia/Shanghai",
       "utc_offset_minutes": 480,
@@ -187,6 +205,7 @@
     },
     {
       "key": "singapore",
+      "enabled": false,
       "station": "WSSS",
       "timezone": "Asia/Singapore",
       "utc_offset_minutes": 480,
@@ -197,6 +216,7 @@
     },
     {
       "key": "milan",
+      "enabled": false,
       "station": "LIMC",
       "timezone": "Europe/Rome",
       "utc_offset_minutes": 60,
@@ -207,6 +227,7 @@
     },
     {
       "key": "madrid",
+      "enabled": false,
       "station": "LEMD",
       "timezone": "Europe/Madrid",
       "utc_offset_minutes": 60,
@@ -217,6 +238,7 @@
     },
     {
       "key": "warsaw",
+      "enabled": false,
       "station": "EPWA",
       "timezone": "Europe/Warsaw",
       "utc_offset_minutes": 60,
@@ -227,6 +249,7 @@
     },
     {
       "key": "austin",
+      "enabled": false,
       "station": "KAUS",
       "timezone": "America/Chicago",
       "utc_offset_minutes": -300,
@@ -237,6 +260,7 @@
     },
     {
       "key": "denver",
+      "enabled": false,
       "station": "KBKF",
       "timezone": "America/Denver",
       "utc_offset_minutes": -360,
@@ -247,6 +271,7 @@
     },
     {
       "key": "houston",
+      "enabled": false,
       "station": "KHOU",
       "timezone": "America/Chicago",
       "utc_offset_minutes": -300,
@@ -257,6 +282,7 @@
     },
     {
       "key": "los-angeles",
+      "enabled": false,
       "station": "KLAX",
       "timezone": "America/Los_Angeles",
       "utc_offset_minutes": -420,
@@ -267,6 +293,7 @@
     },
     {
       "key": "san-francisco",
+      "enabled": false,
       "station": "KSFO",
       "timezone": "America/Los_Angeles",
       "utc_offset_minutes": -420,
@@ -277,6 +304,7 @@
     },
     {
       "key": "chongqing",
+      "enabled": false,
       "station": "ZUCK",
       "timezone": "Asia/Shanghai",
       "utc_offset_minutes": 480,
@@ -287,6 +315,7 @@
     },
     {
       "key": "beijing",
+      "enabled": false,
       "station": "ZBAA",
       "timezone": "Asia/Shanghai",
       "utc_offset_minutes": 480,
@@ -297,6 +326,7 @@
     },
     {
       "key": "wuhan",
+      "enabled": false,
       "station": "ZHHH",
       "timezone": "Asia/Shanghai",
       "utc_offset_minutes": 480,
@@ -307,6 +337,7 @@
     },
     {
       "key": "shenzhen",
+      "enabled": false,
       "station": "ZGSZ",
       "timezone": "Asia/Shanghai",
       "utc_offset_minutes": 480,
@@ -317,6 +348,7 @@
     },
     {
       "key": "chengdu",
+      "enabled": false,
       "station": "ZUUU",
       "timezone": "Asia/Shanghai",
       "utc_offset_minutes": 480,
@@ -327,6 +359,7 @@
     },
     {
       "key": "tel-aviv",
+      "enabled": false,
       "station": "LLBG",
       "timezone": "Asia/Jerusalem",
       "utc_offset_minutes": 120,
@@ -338,22 +371,22 @@
     },
     {
       "key": "hong-kong",
-      "station": "IHONGK12",
+      "enabled": false,
+      "station": "VHHH",
       "timezone": "Asia/Hong_Kong",
       "utc_offset_minutes": 480,
       "source": {
-        "wunderground": "https://www.wunderground.com/weather/IHONGK12",
         "accuweather": "https://www.accuweather.com/en/hk/hong-kong/1123655/weather-forecast/1123655?city=hong%2bkong",
         "weather.gov.hk": "https://www.weather.gov.hk/en/cis/climat.htm"
       }
     },
     {
       "key": "taipei",
-      "station": "ITAIPE19",
+      "enabled": false,
+      "station": "RCTP",
       "timezone": "Asia/Taipei",
       "utc_offset_minutes": 480,
       "source": {
-        "wunderground": "https://www.wunderground.com/weather/ITAIPE19",
         "accuweather": "https://www.accuweather.com/en/tw/jingzhong-village/2516631/weather-forecast/2516631",
         "weather.gov": "https://www.weather.gov/wrh/timeseries?site=RCTP"
       }

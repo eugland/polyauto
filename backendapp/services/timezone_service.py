@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, reset_tzpath
 
-from domains.models import LocationConfig
+from backendapp.domains.models import LocationConfig
 
 
 def configure_zoneinfo_tzpath() -> None:

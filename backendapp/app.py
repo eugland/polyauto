@@ -5,10 +5,10 @@ from pathlib import Path
 
 from flask import Flask
 
-from controllers.home_controller import load_runtime_from_config, register_home_routes
-from services.timezone_service import configure_zoneinfo_tzpath
+from backendapp.controllers.home_controller import load_runtime_from_config, register_home_routes
+from backendapp.services.timezone_service import configure_zoneinfo_tzpath
 
-CONFIG_PATH = Path(__file__).resolve().with_name("webapp.json")
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "webapp.json"
 
 
 def create_app() -> Flask:

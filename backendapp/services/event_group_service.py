@@ -4,9 +4,9 @@ import json
 from datetime import date, datetime
 from typing import Any
 
-from domains.constants import EVENT_DATE_IN_SLUG_RE, EVENT_DATE_IN_TITLE_RE, EVENT_SLUG_RE
-from domains.models import LocationConfig
-from services.timezone_service import (
+from backendapp.domains.constants import EVENT_DATE_IN_SLUG_RE, EVENT_DATE_IN_TITLE_RE, EVENT_SLUG_RE
+from backendapp.domains.models import LocationConfig
+from backendapp.services.timezone_service import (
     build_local_time_now,
     format_local_time,
     local_offset_sort_value,

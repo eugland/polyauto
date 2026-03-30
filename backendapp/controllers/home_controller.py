@@ -9,14 +9,14 @@ from typing import Any
 import requests
 from flask import Flask, jsonify, render_template, request
 
-from services.config_service import (
+from backendapp.services.config_service import (
     load_location_mapping,
     load_runtime_settings,
     read_config_payload,
 )
-from services.event_group_service import build_event_groups, print_filtered_results
-from services.polymarket_service import fetch_temperature_markets_payload
-from services.weather_history_service import compute_daily_high, fetch_all_stations_metric, fetch_temperature_history
+from backendapp.services.event_group_service import build_event_groups, print_filtered_results
+from backendapp.services.polymarket_service import fetch_temperature_markets_payload
+from backendapp.services.weather_history_service import compute_daily_high, fetch_all_stations_metric, fetch_temperature_history
 
 WEATHER_CURRENT_URL = "https://api.weather.com/v3/wx/observations/current"
 DEFAULT_WEATHER_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"

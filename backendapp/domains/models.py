@@ -16,4 +16,5 @@ class LocationConfig:
     station: str
     timezone: str
     utc_offset_minutes: int | None
+    enabled: bool = True
     source: dict[str, str] = field(default_factory=dict)

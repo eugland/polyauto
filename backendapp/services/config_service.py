@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from domains.constants import DEFAULT_RUN_DEBUG, DEFAULT_RUN_HOST, DEFAULT_RUN_PORT
-from domains.models import LocationConfig, RuntimeSettings
+from backendapp.domains.constants import DEFAULT_RUN_DEBUG, DEFAULT_RUN_HOST, DEFAULT_RUN_PORT
+from backendapp.domains.models import LocationConfig, RuntimeSettings
 
 
 def read_config_payload(config_path: Path) -> dict[str, Any]:
@@ -60,6 +60,7 @@ def load_location_mapping(payload: dict[str, Any]) -> dict[str, LocationConfig]:
             source=_normalize_source(value),
             timezone=str(value.get("timezone") or "").strip(),
             utc_offset_minutes=_parse_offset_minutes(value.get("utc_offset_minutes")),
+            enabled=bool(value.get("enabled", True)),
         )
 
     return out

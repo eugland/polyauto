@@ -5,7 +5,7 @@ from typing import Any
 
 import requests
 
-from domains.constants import EVENT_HORIZON_HOURS, POLYMARKET_EVENTS_URL
+from backendapp.domains.constants import EVENT_HORIZON_HOURS, POLYMARKET_EVENTS_URL
 
 
 def fetch_temperature_markets_payload() -> dict[str, Any]:
@@ -26,11 +26,13 @@ def fetch_temperature_markets_payload() -> dict[str, Any]:
         event_id = event.get("id")
         event_title = event.get("title")
         event_slug = event.get("slug")
+        event_description = event.get("description") or ""
         for market in event.get("markets", []):
             row = dict(market)
             row["event_id"] = event_id
             row["event_title"] = event_title
             row["event_slug"] = event_slug
+            row["event_description"] = event_description
             markets.append(row)
 
     return {
