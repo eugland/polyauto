@@ -335,6 +335,27 @@ The application consumes three external APIs:
 
 ---
 
+## Bet Viewer
+
+`automata/view_bets.py` serves a local UI for inspecting and annotating `bets.db`.
+
+```bash
+python -m automata.view_bets
+# → http://localhost:5050
+```
+
+| Feature | Detail |
+|---|---|
+| Summary bar | Total bets, cost, wins/losses/open, win rate |
+| Table | All recorded bets, newest first |
+| Filters | Filter by city or outcome (win / loss / open) |
+| Inline edit | Set `resolved_temp` and `outcome` (win/loss) per row directly in the browser |
+| JSON API | `GET /api/bets` — returns all rows as JSON for use in ML pipelines |
+
+See [docs/running.md](docs/running.md) for how to run the automata bot and frontend.
+
+---
+
 ## Project Structure
 
 ```
@@ -355,7 +376,16 @@ PythonProject/
 │   └── models.py                   # LocationConfig, RuntimeSettings dataclasses
 ├── templates/
 │   └── index.html                  # Jinja2 HTML template
+├── bets.db                         # SQLite bet log (auto-created on first live run)
+├── automata/
+│   ├── main.py                     # Betting engine entry point
+│   ├── client.py                   # Polymarket CLOB client helpers
+│   ├── weather.py                  # Forecast + METAR fetchers
+│   ├── parser.py                   # Market question parser
+│   ├── db.py                       # bets.db schema + read/write helpers
+│   └── view_bets.py                # Browser UI for bets.db (port 5050)
 └── docs/
+    ├── running.md                  # How to run automata and frontend
     ├── app.js                      # Standalone browser-only version
     ├── config.json                 # Config copy for standalone version
     └── index.html                  # Standalone HTML page

@@ -113,8 +113,8 @@ def run(dry_run: bool = True) -> None:
     from automata.weather import (
         extract_all_urls, extract_icao_from_wunderground_url,
         extract_station_name, extract_unit,
-        # fetch_weather_for_stations, fetch_coords_for_stations,
-        # fetch_forecasts_for_events,
+        fetch_coords_for_stations,
+        fetch_forecasts_for_events,
     )
 
     min_no_price  = float(os.getenv("MIN_NO_PRICE", "0.95"))
@@ -155,25 +155,18 @@ def run(dry_run: bool = True) -> None:
             }
         events[event_slug]["markets"].append(raw)
 
-    # ── Fetch current weather for all known stations ───────────────────────────
-    # stations_f = {ev["icao"] for ev in events.values() if ev["icao"] and ev["unit"] == "F"}
-    # stations_c = {ev["icao"] for ev in events.values() if ev["icao"] and ev["unit"] == "C"}
-    # log.info("Fetching current weather + coords for %d stations...", len(stations_f | stations_c))
-    # weather_f = fetch_weather_for_stations(list(stations_f), units="e") if stations_f else {}
-    # weather_c = fetch_weather_for_stations(list(stations_c), units="m") if stations_c else {}
+    # ── Fetch station coords then forecast highs (Open-Meteo) ────────────────
+    all_icaos = [ev["icao"] for ev in events.values() if ev["icao"]]
+    coords = fetch_coords_for_stations(list(set(all_icaos))) if all_icaos else {}
 
-    # ── Fetch station coords then forecast highs (Open-Meteo + NOAA) ─────────
-    # all_icaos = [ev["icao"] for ev in events.values() if ev["icao"]]
-    # coords = fetch_coords_for_stations(list(set(all_icaos))) if all_icaos else {}
-
-    # event_list = [
-    #     {"icao": ev["icao"], "date": ev["date"], "unit": ev["unit"]}
-    #     for ev in events.values() if ev["icao"] and ev["date"]
-    # ]
-    # log.info("Fetching Open-Meteo + NOAA forecasts for %d event/station pairs...", len(set(
-    #     (e["icao"], e["date"]) for e in event_list
-    # )))
-    # forecasts = fetch_forecasts_for_events(event_list, coords)
+    event_list = [
+        {"icao": ev["icao"], "date": ev["date"], "unit": ev["unit"]}
+        for ev in events.values() if ev["icao"] and ev["date"]
+    ]
+    log.info("Fetching forecasts for %d event/station pairs...", len(set(
+        (e["icao"], e["date"]) for e in event_list
+    )))
+    forecasts = fetch_forecasts_for_events(event_list, coords)
 
     # ── Collect ALL candidates (no price filter, no dedup yet) ───────────────
     from automata.parser import _extract_no_token_id
@@ -191,7 +184,8 @@ def run(dry_run: bool = True) -> None:
             question = str(raw.get("groupItemTitle") or raw.get("question") or "-")
             end_date = _fmt_end_date(raw.get("endDateIso") or raw.get("endDate"))
 
-            if not _parse_threshold(question):
+            parsed = _parse_threshold(question)
+            if not parsed:
                 continue
             token_id = _extract_no_token_id(raw)
             if not token_id:
@@ -199,6 +193,7 @@ def run(dry_run: bool = True) -> None:
             from automata.parser import _extract_yes_token_id
             yes_token_id = _extract_yes_token_id(raw)
 
+            threshold, threshold_hi, _unit, direction = parsed
             all_candidates.append({
                 "question": question,
                 "city": _extract_city(event["title"]),
@@ -209,6 +204,11 @@ def run(dry_run: bool = True) -> None:
                 "yes_price": None,
                 "end_date": end_date,
                 "end_datetime": raw.get("endDateIso") or raw.get("endDate") or "",
+                "icao": event["icao"],
+                "unit": event["unit"],
+                "threshold": threshold,
+                "threshold_hi": threshold_hi,
+                "direction": direction,
                 "skip_reason": None,
             })
 
@@ -235,6 +235,11 @@ def run(dry_run: bool = True) -> None:
             else:
                 c["price"] = live_ask
 
+    # ── Attach forecast high for each candidate ────────────────────────────────
+    for c in all_candidates:
+        fc = forecasts.get((c["icao"], c["end_date"])) if c.get("icao") else None
+        c["forecast_high"] = fc["open_meteo"] if fc else None
+
     # ── Find best candidate per city (lowest Yes = farthest from resolving Yes) ─
     bettable = [c for c in all_candidates if not c["skip_reason"] and c["city"] not in city_blacklist]
 
@@ -256,25 +261,24 @@ def run(dry_run: bool = True) -> None:
             reverse=True,
         )
         print(f"  [DRY RUN] {len(autobet_items)} autobet item(s) (latest local time first):")
-        print(f"    {'':1}  {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'local time':<16}  {'city':<15}  {'date':<10}  question")
-        print(f"    {'-'*1}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*22}")
+        print(f"    {'':1}  {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'local time':<16}  {'city':<15}  {'date':<10}  {'forecast':>8}  question")
+        print(f"    {'-'*1}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*8}  {'-'*22}")
         for c in autobet_items:
             cost = round(bet_shares * c["price"], 2)
             tz_name = CITY_TZ.get(c["city"], "UTC")
             now_local = now_utc.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M")
             no_str  = f"{c['price']*100:6.2f}¢"
             yes_str = f"{c['yes_price']*100:6.2f}¢" if c["yes_price"] is not None else "   n/a "
-            print(f"    \u2605  {no_str}  {yes_str}  {bet_shares:>6.0f}sh  ${cost:>5.2f}  {now_local:<16}  {c['city']:<15}  {c['title_date']:<10}  {c['question']}")
+            fcast_val = c.get("forecast_high")
+            fcast_str = f"{fcast_val:.1f}°{c['unit']}" if fcast_val is not None else "n/a"
+            print(f"    \u2605  {no_str}  {yes_str}  {bet_shares:>6.0f}sh  ${cost:>5.2f}  {now_local:<16}  {c['city']:<15}  {c['title_date']:<10}  {fcast_str:>8}  {c['question']}")
         print()
         log.info("  %d autobet item(s): %s", len(autobet_items),
                  ", ".join(f"{c['city']} {c['title_date']} {c['question']}" for c in autobet_items))
         return
 
-    # ── Live betting: only the ★ per city, checked against DB ────────────────
-    from automata.client import build_client, place_no_order
-    from automata.db import init_db, already_bet, record_bet
-
-    init_db()
+    # ── Live betting: one bet per city-date, skip if position or open order exists ──
+    from automata.client import build_client, place_no_order, get_positions, get_all_open_orders
 
     required = ["POLYMARKET_PRIVATE_KEY", "CLOB_API_KEY", "CLOB_SECRET", "CLOB_PASS", "POLYMARKET_HOST"]
     missing = [k for k in required if not os.getenv(k)]
@@ -282,28 +286,66 @@ def run(dry_run: bool = True) -> None:
         log.error("Missing .env keys for live betting: %s", ", ".join(missing))
         return
 
+    funder = os.getenv("POLYMARKET_FUNDER") or ""
     client = build_client(
         host=os.environ["POLYMARKET_HOST"],
         private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
         api_key=os.environ["CLOB_API_KEY"],
         api_secret=os.environ["CLOB_SECRET"],
         api_passphrase=os.environ["CLOB_PASS"],
-        funder=os.getenv("POLYMARKET_FUNDER") or None,
+        funder=funder or None,
         signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
     )
 
-    # Only bet the ★ candidate per city; derive local date for DB key
-    bets_to_place: list[dict] = []
+    # Build token_id → (city, date) lookup from all candidates
+    token_to_city_date: dict[str, tuple[str, str]] = {
+        c["token_id"]: (c["city"], c["end_date"]) for c in all_candidates
+    }
+
+    # position_size: token_id → shares held
+    position_size: dict[str, float] = {
+        p["token_id"]: p["size"] for p in (get_positions(funder) if funder else [])
+    }
+
+    # city-dates with an open buy order in the book (order in flight — don't touch)
+    open_buy_city_dates: set[tuple[str, str]] = set()
+    for o in get_all_open_orders(client):
+        if str(o.get("side", "")).upper() == "BUY":
+            cd = token_to_city_date.get(str(o.get("asset_id") or o.get("token_id", "")))
+            if cd:
+                open_buy_city_dates.add(cd)
+
+    # city-dates where we hold any position (possibly a different token than today's best)
+    held_city_dates: set[tuple[str, str]] = set()
+    for tid in position_size:
+        cd = token_to_city_date.get(tid)
+        if cd:
+            held_city_dates.add(cd)
+
+    bets_to_place: list[dict] = []  # (candidate, shares_to_buy)
     for city, best in best_per_city.items():
-        try:
-            dt = datetime.fromisoformat(best["end_datetime"].replace("Z", "+00:00"))
-            local_date = dt.astimezone(ZoneInfo(CITY_TZ.get(city, "UTC"))).strftime("%Y-%m-%d")
-        except Exception:
-            local_date = best["end_date"]
-        best["_local_date"] = local_date
-        if already_bet(city, local_date, best["question"]):
-            log.info("Already bet %s %s %s — skipping", city, local_date, best["question"])
+        key = (city, best["end_date"])
+
+        # Open order already in flight for this city-date → skip entirely
+        if key in open_buy_city_dates:
+            log.info("Open buy order in book  %s %s — skipping", city, best["end_date"])
             continue
+
+        held = position_size.get(best["token_id"], 0.0)
+
+        if held >= bet_shares:
+            # Fully filled — nothing to do
+            log.info("Position full  %s %s  %.2f shares — skipping", city, best["end_date"], held)
+            continue
+
+        if held == 0 and key in held_city_dates:
+            # Position exists but in a different token — don't mix
+            log.info("Position in different token  %s %s — skipping", city, best["end_date"])
+            continue
+
+        shares_needed = round(bet_shares - held, 2)
+        best["_shares_to_buy"] = shares_needed
+        best["_top_up"] = held > 0
         bets_to_place.append(best)
 
     if not bets_to_place:
@@ -314,18 +356,40 @@ def run(dry_run: bool = True) -> None:
     print()
 
     for b in bets_to_place:
-        cost = round(bet_shares * b["price"], 2)
-        local_date = b["_local_date"]
+        shares_to_buy = b["_shares_to_buy"]
+        cost = round(shares_to_buy * b["price"], 2)
+        if cost > balance:
+            log.warning("  Insufficient balance $%.2f for %s %s (need $%.2f) — skipping",
+                        balance, b["city"], b["question"], cost)
+            continue
+        label = f"TOP-UP +{shares_to_buy}" if b["_top_up"] else f"{shares_to_buy:.0f} shares"
         try:
-            resp = place_no_order(client, b["token_id"], b["price"], bet_shares)
+            resp = place_no_order(client, b["token_id"], b["price"], shares_to_buy)
             order_id = resp.get("orderID") or resp.get("id") or "?"
             status   = resp.get("status") or "submitted"
             result   = f"{status}  id={order_id}"
-            record_bet(b["city"], local_date, b["question"], b["token_id"],
-                       b["price"], cost, order_id)
+            from automata.db import record_bet
+            record_bet(
+                city=b["city"],
+                icao=b.get("icao"),
+                event_date=b["end_date"],
+                question=b["question"],
+                option="No",
+                token_id=b["token_id"],
+                order_id=order_id,
+                shares=shares_to_buy,
+                no_price=b["price"],
+                yes_price=b.get("yes_price"),
+                cost_usdc=cost,
+                unit=b.get("unit"),
+                threshold=b.get("threshold"),
+                threshold_hi=b.get("threshold_hi"),
+                direction=b.get("direction"),
+                forecast_high=b.get("forecast_high"),
+            )
         except Exception as exc:
             result = f"ERROR: {exc}"
-        print(f"  BUY No @ {b['price']*100:.2f}¢  {bet_shares:.0f} shares (${cost:.2f})  {b['city']}  {local_date}  {b['question']}  → {result}")
+        print(f"  BUY No @ {b['price']*100:.2f}¢  {label} (${cost:.2f})  {b['city']}  {b['title_date']}  {b['question']}  → {result}")
 
     print()
 
@@ -341,18 +405,23 @@ def _scan_positions(dry_run: bool = True) -> None:
 
     take_profit = float(os.getenv("TAKE_PROFIT_PRICE", "0.999"))
 
-    from automata.client import build_client, get_positions, get_open_orders, place_sell_order
+    funder = os.getenv("POLYMARKET_FUNDER") or ""
+    if not funder:
+        log.warning("POLYMARKET_FUNDER not set — cannot scan positions")
+        return
+
+    from automata.client import build_client, get_positions, get_open_orders, place_sell_order, place_market_sell, get_best_bid
     client = build_client(
         host=os.environ["POLYMARKET_HOST"],
         private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
         api_key=os.environ["CLOB_API_KEY"],
         api_secret=os.environ["CLOB_SECRET"],
         api_passphrase=os.environ["CLOB_PASS"],
-        funder=os.getenv("POLYMARKET_FUNDER") or None,
+        funder=funder,
         signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
     )
 
-    positions = get_positions(client)
+    positions = get_positions(funder)
     if not positions:
         log.info("Positions: none")
         return
@@ -361,6 +430,22 @@ def _scan_positions(dry_run: bool = True) -> None:
     for pos in positions:
         token_id = pos["token_id"]
         size     = pos["size"]
+        if size < 5:
+            host = os.environ["POLYMARKET_HOST"]
+            bid = get_best_bid(host, token_id)
+            if bid is not None and bid >= take_profit:
+                if dry_run:
+                    log.info("  token %s  %.2f shares — [DRY RUN] bid %.1f¢ >= %.1f¢, would market sell", token_id[:12], size, bid * 100, take_profit * 100)
+                else:
+                    try:
+                        resp = place_market_sell(client, token_id, bid, size)
+                        order_id = resp.get("orderID") or resp.get("id") or "?"
+                        log.info("  token %s  %.2f shares — market sell @ %.1f¢  id=%s", token_id[:12], size, bid * 100, order_id)
+                    except Exception as exc:
+                        log.error("  token %s — market sell failed: %s", token_id[:12], exc)
+            else:
+                log.info("  token %s  %.2f shares — too small, bid not at target yet", token_id[:12], size)
+            continue
         orders   = get_open_orders(client, token_id)
         has_tp   = any(
             abs(float(o.get("price", 0)) - take_profit) < 0.0001
@@ -412,42 +497,47 @@ if __name__ == "__main__":
         log.error("Failed to derive API credentials: %s", exc)
         raise SystemExit(1)
 
+    from automata.db import init_db
+    init_db()
+
     iteration = 0
     while True:
         iteration += 1
         log.info("=== Iteration %d ===", iteration)
 
-        # ── Balance check — gates all activity this cycle ─────────────────────
-        bet_shares = float(os.getenv("BET_SIZE_SHARES", "10.0"))
-        try:
-            from automata.client import build_client, get_usdc_balance
-            _client = build_client(
-                host=os.environ["POLYMARKET_HOST"],
-                private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
-                api_key=os.environ["CLOB_API_KEY"],
-                api_secret=os.environ["CLOB_SECRET"],
-                api_passphrase=os.environ["CLOB_PASS"],
-                funder=os.getenv("POLYMARKET_FUNDER") or None,
-                signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
-            )
-            balance = get_usdc_balance(_client)
-            # Worst-case cost = shares * max_no_price (e.g. 10 shares * $0.998 = $9.98)
-            max_no_price = float(os.getenv("MAX_NO_PRICE", "0.998"))
-            min_required = bet_shares * max_no_price
-            log.info("USDC balance: $%.2f  (need at least $%.2f for %g shares)", balance, min_required, bet_shares)
-        except Exception as exc:
-            log.warning("Balance check failed: %s — skipping cycle", exc)
-            log.info("Sleeping 60 s...")
-            time.sleep(60)
-            continue
+        if args.bet:
+            # ── Position scan ─────────────────────────────────────────────────
+            _scan_positions(dry_run=False)
 
-        if balance < min_required:
-            log.warning("Balance $%.2f < $%.2f needed — skipping scan and betting", balance, min_required)
-            log.info("Sleeping 60 s...")
-            time.sleep(60)
-            continue
+            # ── Balance check — gates new bets ────────────────────────────────
+            bet_shares = float(os.getenv("BET_SIZE_SHARES", "10.0"))
+            try:
+                from automata.client import build_client, get_usdc_balance
+                _client = build_client(
+                    host=os.environ["POLYMARKET_HOST"],
+                    private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
+                    api_key=os.environ["CLOB_API_KEY"],
+                    api_secret=os.environ["CLOB_SECRET"],
+                    api_passphrase=os.environ["CLOB_PASS"],
+                    funder=os.getenv("POLYMARKET_FUNDER") or None,
+                    signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+                )
+                balance = get_usdc_balance(_client)
+                max_no_price = float(os.getenv("MAX_NO_PRICE", "0.998"))
+                min_required = bet_shares * max_no_price
+                log.info("USDC balance: $%.2f  (need at least $%.2f for %g shares)", balance, min_required, bet_shares)
+            except Exception as exc:
+                log.warning("Balance check failed: %s — skipping new bets this cycle", exc)
+                log.info("Sleeping 60 s...")
+                time.sleep(60)
+                continue
 
-        _scan_positions(dry_run=not args.bet)
+            if balance < min_required:
+                log.warning("Balance $%.2f < $%.2f needed — skipping new bets", balance, min_required)
+                log.info("Sleeping 60 s...")
+                time.sleep(60)
+                continue
+
         run(dry_run=not args.bet)
 
         log.info("Sleeping 60 s...")

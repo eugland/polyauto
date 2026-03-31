@@ -51,6 +51,18 @@ def get_usdc_balance(client: ClobClient) -> float:
     return int(data.get("balance", 0) or 0) / 1e6
 
 
+def get_best_bid(host: str, token_id: str) -> float | None:
+    """Fetch the live best bid price for a token. Returns None if no bids."""
+    import requests
+    try:
+        resp = requests.get(f"{host}/book", params={"token_id": token_id}, timeout=5)
+        resp.raise_for_status()
+        bids = resp.json().get("bids", [])
+        return max(float(b["price"]) for b in bids) if bids else None
+    except Exception:
+        return None
+
+
 def get_best_ask(host: str, token_id: str) -> float | None:
     """
     Fetch the live best ask price for a single token from the public order book.
@@ -95,20 +107,27 @@ def get_best_asks_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -
 
 
 
-def get_positions(client: ClobClient) -> list[dict]:
+def get_positions(funder: str) -> list[dict]:
     """
-    Return open positions as a list of {token_id, size}.
-    Filters out positions with size <= 0.
+    Return open positions for the proxy wallet using Polymarket's data API.
+    Returns list of {token_id, size}.
     """
+    import requests
     try:
-        raw = client.get_positions()
-        positions = raw if isinstance(raw, list) else (raw or {}).get("positions", [])
+        r = requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": funder, "sizeThreshold": "0.01"},
+            timeout=10,
+        )
+        r.raise_for_status()
         return [
-            {"token_id": str(p.get("asset_id") or p.get("token_id", "")), "size": float(p.get("size", 0))}
-            for p in positions
+            {"token_id": str(p["asset"]), "size": float(p["size"])}
+            for p in r.json()
             if float(p.get("size", 0)) > 0
         ]
-    except Exception:
+    except Exception as exc:
+        import logging
+        logging.getLogger("automata").warning("get_positions failed: %s", exc)
         return []
 
 
@@ -120,6 +139,33 @@ def get_open_orders(client: ClobClient, token_id: str) -> list[dict]:
         return raw if isinstance(raw, list) else []
     except Exception:
         return []
+
+
+def get_all_open_orders(client: ClobClient) -> list[dict]:
+    """Return all open orders across all markets."""
+    try:
+        from py_clob_client.clob_types import OpenOrderParams
+        raw = client.get_orders(OpenOrderParams())
+        return raw if isinstance(raw, list) else []
+    except Exception:
+        return []
+
+
+def place_market_sell(
+    client: ClobClient,
+    token_id: str,
+    price: float,
+    size_shares: float,
+) -> dict:
+    """Place a FOK (Fill or Kill) sell order — acts as a market sell at the given price."""
+    order_args = OrderArgs(
+        token_id=token_id,
+        price=price,
+        size=round(size_shares, 2),
+        side=SELL,
+    )
+    signed_order = client.create_order(order_args)
+    return client.post_order(signed_order, OrderType.FOK)
 
 
 def place_sell_order(
