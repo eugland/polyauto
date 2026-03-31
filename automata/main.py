@@ -477,10 +477,6 @@ if __name__ == "__main__":
 
     required = ["POLYMARKET_PRIVATE_KEY", "POLYMARKET_HOST"]
 
-    # Print the key being used so you can verify it's correct
-    raw_key = os.getenv("POLYMARKET_PRIVATE_KEY", "")
-    log.info("Using POLYMARKET_PRIVATE_KEY: %s", raw_key)
-
     # ── Derive fresh API credentials from the private key ─────────────────────
     from automata.client import derive_api_credentials
     try:
