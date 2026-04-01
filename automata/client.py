@@ -63,6 +63,25 @@ def get_best_bid(host: str, token_id: str) -> float | None:
         return None
 
 
+def get_best_bid_ask(host: str, token_id: str) -> tuple[float | None, float | None]:
+    """
+    Fetch live best bid/ask for a token from the public order book.
+    Returns (best_bid, best_ask); each side can be None if empty/unavailable.
+    """
+    import requests
+    try:
+        resp = requests.get(f"{host}/book", params={"token_id": token_id}, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+        best_bid = max(float(b["price"]) for b in bids) if bids else None
+        best_ask = min(float(a["price"]) for a in asks) if asks else None
+        return best_bid, best_ask
+    except Exception:
+        return None, None
+
+
 def get_best_ask(host: str, token_id: str) -> float | None:
     """
     Fetch the live best ask price for a single token from the public order book.
@@ -151,6 +170,11 @@ def get_all_open_orders(client: ClobClient) -> list[dict]:
         return []
 
 
+def cancel_order(client: ClobClient, order_id: str) -> dict:
+    """Cancel a single open order by id."""
+    return client.cancel(order_id)
+
+
 def place_market_sell(
     client: ClobClient,
     token_id: str,
@@ -161,7 +185,7 @@ def place_market_sell(
     order_args = OrderArgs(
         token_id=token_id,
         price=price,
-        size=round(size_shares, 2),
+        size=size_shares,
         side=SELL,
     )
     signed_order = client.create_order(order_args)
@@ -178,7 +202,7 @@ def place_sell_order(
     order_args = OrderArgs(
         token_id=token_id,
         price=price,
-        size=round(size_shares, 2),
+        size=size_shares,
         side=SELL,
     )
     signed_order = client.create_order(order_args)
@@ -190,6 +214,7 @@ def place_no_order(
     token_id: str,
     price: float,
     size_shares: float,
+    post_only: bool = False,
 ) -> dict:
     """
     Place a GTC limit buy order on the No token.
@@ -198,8 +223,8 @@ def place_no_order(
     order_args = OrderArgs(
         token_id=token_id,
         price=price,
-        size=round(size_shares, 2),
+        size=size_shares,
         side=BUY,
     )
     signed_order = client.create_order(order_args)
-    return client.post_order(signed_order, OrderType.GTC)
+    return client.post_order(signed_order, OrderType.GTC, post_only=post_only)

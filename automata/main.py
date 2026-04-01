@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 import sys
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -107,6 +109,70 @@ def _temp_sort_key(question: str) -> float:
     return float(m.group()) if m else 0.0
 
 
+def _as_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _order_open_shares(order: dict[str, Any]) -> float:
+    """
+    Best-effort remaining shares from an open-order payload.
+    """
+    for key in ("remaining_size", "size_left", "sizeLeft", "open_size"):
+        v = _as_float(order.get(key))
+        if v is not None and v >= 0:
+            return v
+    size = _as_float(order.get("size")) or _as_float(order.get("original_size")) or 0.0
+    filled = _as_float(order.get("matched_size")) or _as_float(order.get("filled_size")) or 0.0
+    return max(0.0, size - filled)
+
+
+def _order_price(order: dict[str, Any]) -> float | None:
+    return _as_float(order.get("price"))
+
+
+def _round_down_to_tick(price: float, tick: float) -> float:
+    if tick <= 0:
+        return round(price, 6)
+    return math.floor((price + 1e-12) / tick) * tick
+
+
+def _compute_maker_buy_price(
+    best_bid: float | None,
+    best_ask: float | None,
+    min_no_price: float,
+    max_no_price: float,
+    tick_size: float,
+    join_bid_ticks: int,
+) -> float | None:
+    """
+    Build a maker-only buy quote within price limits.
+    """
+    if best_bid is None and best_ask is None:
+        return None
+
+    quote_cap = max_no_price
+    if best_ask is not None:
+        quote_cap = min(quote_cap, best_ask - tick_size)
+    if quote_cap < min_no_price:
+        return None
+
+    if best_bid is not None:
+        quote = max(min_no_price, best_bid + max(0, join_bid_ticks) * tick_size)
+    else:
+        quote = quote_cap
+
+    quote = min(quote, quote_cap)
+    quote = round(_round_down_to_tick(quote, tick_size), 6)
+    if quote < min_no_price:
+        return None
+    if best_ask is not None and quote >= best_ask:
+        return None
+    return quote
+
+
 def run(dry_run: bool = True) -> None:
     from backendapp.services.polymarket_service import fetch_temperature_markets_payload
     from automata.parser import _parse_threshold
@@ -121,6 +187,10 @@ def run(dry_run: bool = True) -> None:
     max_no_price  = float(os.getenv("MAX_NO_PRICE", "0.998"))
     bet_threshold = float(os.getenv("BET_THRESHOLD", "0.95"))   # auto-bet above this
     bet_shares    = float(os.getenv("BET_SIZE_SHARES", "10.0"))
+    mm_tick_size = float(os.getenv("MM_TICK_SIZE", "0.001"))
+    mm_join_bid_ticks = int(os.getenv("MM_JOIN_BID_TICKS", "1"))
+    mm_reprice_cents = float(os.getenv("MM_REPRICE_CENTS", "0.10"))
+    mm_reprice_delta = mm_reprice_cents / 100.0
     city_blacklist = {c.strip() for c in os.getenv("CITY_BLACKLIST", "").split(",") if c.strip()}
 
     # ── Fetch markets ─────────────────────────────────────────────────────────
@@ -278,7 +348,15 @@ def run(dry_run: bool = True) -> None:
         return
 
     # ── Live betting: one bet per city-date, skip if position or open order exists ──
-    from automata.client import build_client, place_no_order, get_positions, get_all_open_orders
+    from automata.client import (
+        build_client,
+        cancel_order,
+        get_all_open_orders,
+        get_best_bid_ask,
+        get_positions,
+        get_usdc_balance,
+        place_no_order,
+    )
 
     required = ["POLYMARKET_PRIVATE_KEY", "CLOB_API_KEY", "CLOB_SECRET", "CLOB_PASS", "POLYMARKET_HOST"]
     missing = [k for k in required if not os.getenv(k)]
@@ -296,6 +374,11 @@ def run(dry_run: bool = True) -> None:
         funder=funder or None,
         signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
     )
+    try:
+        balance = get_usdc_balance(client)
+    except Exception as exc:
+        log.error("Failed to fetch USDC balance: %s", exc)
+        return
 
     # Build token_id → (city, date) lookup from all candidates
     token_to_city_date: dict[str, tuple[str, str]] = {
@@ -308,12 +391,13 @@ def run(dry_run: bool = True) -> None:
     }
 
     # city-dates with an open buy order in the book (order in flight — don't touch)
-    open_buy_city_dates: set[tuple[str, str]] = set()
+    open_buy_orders_by_city_date: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for o in get_all_open_orders(client):
         if str(o.get("side", "")).upper() == "BUY":
-            cd = token_to_city_date.get(str(o.get("asset_id") or o.get("token_id", "")))
+            token_id = str(o.get("asset_id") or o.get("token_id", ""))
+            cd = token_to_city_date.get(token_id)
             if cd:
-                open_buy_city_dates.add(cd)
+                open_buy_orders_by_city_date[cd].append(o)
 
     # city-dates where we hold any position (possibly a different token than today's best)
     held_city_dates: set[tuple[str, str]] = set()
@@ -325,17 +409,29 @@ def run(dry_run: bool = True) -> None:
     bets_to_place: list[dict] = []  # (candidate, shares_to_buy)
     for city, best in best_per_city.items():
         key = (city, best["end_date"])
+        open_orders_for_key = open_buy_orders_by_city_date.get(key, [])
+        open_orders_same_token = [
+            o for o in open_orders_for_key
+            if str(o.get("asset_id") or o.get("token_id", "")) == best["token_id"]
+        ]
 
-        # Open order already in flight for this city-date → skip entirely
-        if key in open_buy_city_dates:
-            log.info("Open buy order in book  %s %s — skipping", city, best["end_date"])
+        # If another token for this city-date is already quoted, do not mix tokens.
+        if any(
+            str(o.get("asset_id") or o.get("token_id", "")) != best["token_id"]
+            for o in open_orders_for_key
+        ):
+            log.info("Open buy in different token  %s %s — skipping", city, best["end_date"])
             continue
 
         held = position_size.get(best["token_id"], 0.0)
+        open_order_shares = sum(_order_open_shares(o) for o in open_orders_same_token)
 
-        if held >= bet_shares:
+        if held + open_order_shares >= bet_shares:
             # Fully filled — nothing to do
-            log.info("Position full  %s %s  %.2f shares — skipping", city, best["end_date"], held)
+            log.info(
+                "Target already covered  %s %s  held=%.2f open=%.2f — skipping",
+                city, best["end_date"], held, open_order_shares
+            )
             continue
 
         if held == 0 and key in held_city_dates:
@@ -343,9 +439,13 @@ def run(dry_run: bool = True) -> None:
             log.info("Position in different token  %s %s — skipping", city, best["end_date"])
             continue
 
-        shares_needed = round(bet_shares - held, 2)
+        shares_needed = round(bet_shares - held - open_order_shares, 2)
+        if shares_needed <= 0:
+            continue
         best["_shares_to_buy"] = shares_needed
         best["_top_up"] = held > 0
+        best["_held_shares"] = held
+        best["_existing_orders"] = open_orders_same_token
         bets_to_place.append(best)
 
     if not bets_to_place:
@@ -357,17 +457,56 @@ def run(dry_run: bool = True) -> None:
 
     for b in bets_to_place:
         shares_to_buy = b["_shares_to_buy"]
-        cost = round(shares_to_buy * b["price"], 2)
+        best_bid, best_ask = get_best_bid_ask(os.environ["POLYMARKET_HOST"], b["token_id"])
+        quote_price = _compute_maker_buy_price(
+            best_bid=best_bid,
+            best_ask=best_ask,
+            min_no_price=min_no_price,
+            max_no_price=max_no_price,
+            tick_size=mm_tick_size,
+            join_bid_ticks=mm_join_bid_ticks,
+        )
+        if quote_price is None:
+            log.info("No valid maker quote  %s %s — skipping", b["city"], b["question"])
+            continue
+
+        existing_orders = b.get("_existing_orders", [])
+        needs_reprice = any(
+            (_order_price(o) is not None) and (abs(_order_price(o) - quote_price) >= mm_reprice_delta)
+            for o in existing_orders
+            if _order_open_shares(o) > 0
+        )
+        if needs_reprice:
+            cancel_failed = False
+            for o in existing_orders:
+                if _order_open_shares(o) <= 0:
+                    continue
+                order_id = str(o.get("id") or o.get("orderID") or "")
+                if not order_id:
+                    continue
+                try:
+                    cancel_order(client, order_id)
+                except Exception as exc:
+                    cancel_failed = True
+                    log.warning("Failed to cancel order %s: %s", order_id, exc)
+            if cancel_failed:
+                continue
+            shares_to_buy = round(max(0.0, bet_shares - b["_held_shares"]), 2)
+            if shares_to_buy <= 0:
+                continue
+
+        cost = round(shares_to_buy * quote_price, 2)
         if cost > balance:
             log.warning("  Insufficient balance $%.2f for %s %s (need $%.2f) — skipping",
                         balance, b["city"], b["question"], cost)
             continue
         label = f"TOP-UP +{shares_to_buy}" if b["_top_up"] else f"{shares_to_buy:.0f} shares"
         try:
-            resp = place_no_order(client, b["token_id"], b["price"], shares_to_buy)
+            resp = place_no_order(client, b["token_id"], quote_price, shares_to_buy, post_only=True)
             order_id = resp.get("orderID") or resp.get("id") or "?"
             status   = resp.get("status") or "submitted"
             result   = f"{status}  id={order_id}"
+            balance = round(balance - cost, 2)
             from automata.db import record_bet
             record_bet(
                 city=b["city"],
@@ -378,7 +517,7 @@ def run(dry_run: bool = True) -> None:
                 token_id=b["token_id"],
                 order_id=order_id,
                 shares=shares_to_buy,
-                no_price=b["price"],
+                no_price=quote_price,
                 yes_price=b.get("yes_price"),
                 cost_usdc=cost,
                 unit=b.get("unit"),
@@ -389,7 +528,10 @@ def run(dry_run: bool = True) -> None:
             )
         except Exception as exc:
             result = f"ERROR: {exc}"
-        print(f"  BUY No @ {b['price']*100:.2f}¢  {label} (${cost:.2f})  {b['city']}  {b['title_date']}  {b['question']}  → {result}")
+        print(
+            f"  BUY No (maker) @ {quote_price*100:.2f}¢  {label} (${cost:.2f})"
+            f"  {b['city']}  {b['title_date']}  {b['question']}  → {result}"
+        )
 
     print()
 
