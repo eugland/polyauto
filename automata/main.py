@@ -148,14 +148,15 @@ def _compute_maker_buy_price(
     join_bid_ticks: int,
 ) -> float | None:
     """
-    Build a maker-only buy quote within price limits.
+    Build a buy quote within price limits. Will pay up to the ask price but
+    never above max_no_price (0.998).
     """
     if best_bid is None and best_ask is None:
         return None
 
     quote_cap = max_no_price
     if best_ask is not None:
-        quote_cap = min(quote_cap, best_ask - tick_size)
+        quote_cap = min(quote_cap, best_ask)
     if quote_cap < min_no_price:
         return None
 
@@ -167,8 +168,6 @@ def _compute_maker_buy_price(
     quote = min(quote, quote_cap)
     quote = round(_round_down_to_tick(quote, tick_size), 6)
     if quote < min_no_price:
-        return None
-    if best_ask is not None and quote >= best_ask:
         return None
     return quote
 
@@ -502,7 +501,7 @@ def run(dry_run: bool = True) -> None:
             continue
         label = f"TOP-UP +{shares_to_buy}" if b["_top_up"] else f"{shares_to_buy:.0f} shares"
         try:
-            resp = place_no_order(client, b["token_id"], quote_price, shares_to_buy, post_only=True)
+            resp = place_no_order(client, b["token_id"], quote_price, shares_to_buy, post_only=False)
             order_id = resp.get("orderID") or resp.get("id") or "?"
             status   = resp.get("status") or "submitted"
             result   = f"{status}  id={order_id}"
