@@ -97,14 +97,13 @@ def get_best_ask(host: str, token_id: str) -> float | None:
         return None
 
 
-def get_best_asks_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -> dict[str, float]:
+def get_best_books_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -> dict[str, dict]:
     """
-    Fetch live best ask prices for multiple tokens via POST to /books.
-    Splits into chunks to stay within the API limit.
-    Returns {token_id: best_ask_price} for tokens that have an ask.
+    Fetch live best bid and ask prices for multiple tokens via POST to /books.
+    Returns {token_id: {"bid": float|None, "ask": float|None}}.
     """
     import requests
-    result: dict[str, float] = {}
+    result: dict[str, dict] = {}
     for i in range(0, len(token_ids), chunk_size):
         chunk = token_ids[i: i + chunk_size]
         try:
@@ -116,12 +115,27 @@ def get_best_asks_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -
             resp.raise_for_status()
             for book in resp.json():
                 asset_id = book.get("asset_id") or book.get("token_id")
+                if not asset_id:
+                    continue
+                bids = book.get("bids", [])
                 asks = book.get("asks", [])
-                if asset_id and asks:
-                    result[str(asset_id)] = min(float(a["price"]) for a in asks)
+                result[str(asset_id)] = {
+                    "bid": max(float(b["price"]) for b in bids) if bids else None,
+                    "ask": min(float(a["price"]) for a in asks) if asks else None,
+                }
         except Exception:
             pass
     return result
+
+
+def get_best_asks_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -> dict[str, float]:
+    """
+    Fetch live best ask prices for multiple tokens via POST to /books.
+    Splits into chunks to stay within the API limit.
+    Returns {token_id: best_ask_price} for tokens that have an ask.
+    """
+    books = get_best_books_bulk(host, token_ids, chunk_size)
+    return {tid: b["ask"] for tid, b in books.items() if b["ask"] is not None}
 
 
 

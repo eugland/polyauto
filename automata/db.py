@@ -50,6 +50,22 @@ def init_db() -> None:
         """)
 
 
+def get_token_city_map() -> dict[str, str]:
+    """Return {token_id: city} for all recorded bets."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute("SELECT token_id, city FROM placed_bets WHERE token_id IS NOT NULL").fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def get_token_city_date_map() -> dict[str, tuple[str, str]]:
+    """Return {token_id: (city, event_date)} for all recorded bets."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT token_id, city, event_date FROM placed_bets WHERE token_id IS NOT NULL"
+        ).fetchall()
+    return {row[0]: (row[1], row[2]) for row in rows}
+
+
 def already_bet(city: str, event_date: str, question: str) -> bool:
     """Return True if this city/date/question combo was already placed."""
     with sqlite3.connect(DB_PATH) as conn:
