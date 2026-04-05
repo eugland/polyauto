@@ -757,6 +757,147 @@ def _scan_positions(dry_run: bool = True) -> None:
                 log.error("  token %s — sell order failed: %s", token_id[:12], exc)
 
 
+def run_btc_daily(dry_run: bool = True) -> None:
+    """
+    Bet on the BTC daily 'above X' market when no position already exists.
+    Called before the weather loop so it takes priority.
+
+    Strategy: buy YES on the market where our momentum-based terminal
+    probability exceeds the market ask by >= BTC_REACH_MIN_EDGE (default 3%).
+
+    Env vars (optional):
+        BTC_REACH_SHARES   — shares to buy (default 20)
+        BTC_REACH_MIN_EDGE — minimum edge to trigger a bet, decimal (default 0.03)
+    """
+    from automata.btc_reach import analyze, build_daily_slug, fetch_event
+    from datetime import timedelta
+
+    funder     = os.getenv("POLYMARKET_FUNDER") or ""
+    host       = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
+    bet_shares = float(os.getenv("BTC_REACH_SHARES", "20.0"))
+    min_edge   = float(os.getenv("BTC_REACH_MIN_EDGE", "0.03"))
+
+    # Discover event — only try dates whose noon ET hasn't passed yet
+    now_utc = datetime.now(timezone.utc)
+    from automata.btc_reach import slug_resolution_utc
+    event      = None
+    used_slug  = None
+    for delta in [1, 0, 2]:
+        s   = build_daily_slug(now_utc + timedelta(days=delta))
+        res = slug_resolution_utc(s)
+        if not res or now_utc >= res:
+            continue          # already resolved, skip
+        e = fetch_event(s)
+        if e:
+            event     = e
+            used_slug = s
+            break
+
+    if not event:
+        log.info("[btc_daily] No active BTC daily event found")
+        return
+
+    # Check for existing position in this event
+    if funder:
+        from automata.client import get_positions
+        positions   = get_positions(funder)
+        held_tokens = {p["token_id"] for p in positions}
+
+        # Collect all token IDs belonging to this event's markets
+        from automata.btc_reach import parse_btc_markets
+        event_markets = parse_btc_markets(event)
+        event_tokens  = set()
+        for m in event_markets:
+            if m.get("yes_token_id"):
+                event_tokens.add(m["yes_token_id"])
+            if m.get("no_token_id"):
+                event_tokens.add(m["no_token_id"])
+
+        if held_tokens & event_tokens:
+            log.info("[btc_daily] Already holding a position in '%s' — skipping", used_slug)
+            return
+    else:
+        log.warning("[btc_daily] POLYMARKET_FUNDER not set — cannot check positions, proceeding anyway")
+
+    # Full analysis + display
+    markets = analyze(slug=used_slug, host=host)
+    if not markets:
+        return
+
+    # Momentum-based pick: NO on the side BTC is moving away from
+    from automata.btc_reach import momentum_pick
+    spot_now = markets[0].get("_spot")
+    drift    = markets[0].get("_drift")
+    if spot_now is None or drift is None:
+        log.error("[btc_daily] Missing spot/drift from analysis — skipping")
+        return
+
+    pick = momentum_pick(markets, spot_now, drift)
+    if not pick:
+        direction = "UP" if drift >= 0 else "DOWN"
+        log.info("[btc_daily] No momentum NO candidate on %s side — skipping", direction)
+        return
+
+    side  = "NO"
+    token = pick["no_token_id"]
+    ask   = pick["no_ask"]
+    direction = "UP" if drift >= 0 else "DOWN"
+    log.info(
+        "[btc_daily] Momentum %s -> NO on %s  model=%.1f%%  no_ask=%.1f%%  edge=%+.1f%%",
+        direction, pick["label"],
+        pick["model_prob"] * 100,
+        ask * 100,
+        pick["no_edge"] * 100,
+    )
+
+    if dry_run:
+        log.info(
+            "[btc_daily] [DRY RUN] Would buy %.0f NO shares @ %.1fc  $%.2f  '%s'",
+            bet_shares, ask * 100, bet_shares * ask, pick["label"],
+        )
+        return
+
+    # ── Live bet ──────────────────────────────────────────────────────────────
+    required = ["POLYMARKET_PRIVATE_KEY", "CLOB_API_KEY", "CLOB_SECRET", "CLOB_PASS", "POLYMARKET_HOST"]
+    if any(not os.getenv(k) for k in required):
+        log.error("[btc_daily] Missing .env keys for live betting")
+        return
+
+    from automata.client import build_client, get_best_bid_ask, place_no_order
+
+    client = build_client(
+        host=os.environ["POLYMARKET_HOST"],
+        private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
+        api_key=os.environ["CLOB_API_KEY"],
+        api_secret=os.environ["CLOB_SECRET"],
+        api_passphrase=os.environ["CLOB_PASS"],
+        funder=funder or None,
+        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+    )
+
+    live_bid, live_ask = get_best_bid_ask(host, token)
+    if live_ask is None:
+        log.warning("[btc_daily] No live ask for NO '%s' — skipping", pick["label"])
+        return
+
+    quote = round(min(live_ask, 0.998), 4)
+    cost  = round(bet_shares * quote, 2)
+
+    try:
+        resp     = place_no_order(client, token, quote, bet_shares)
+        order_id = resp.get("orderID") or resp.get("id") or "?"
+        status   = resp.get("status") or "submitted"
+        log.info(
+            "[btc_daily] Placed NO order %.0f shares @ %.1fc  cost=$%.2f  %s  id=%s",
+            bet_shares, quote * 100, cost, status, order_id,
+        )
+        print(
+            f"  [btc_daily] BUY NO @ {quote*100:.1f}c  {bet_shares:.0f}sh  ${cost:.2f}"
+            f"  {pick['label']}  -> {status}  id={order_id}"
+        )
+    except Exception as exc:
+        log.error("[btc_daily] Order failed: %s", exc)
+
 
 if __name__ == "__main__":
     import argparse
@@ -786,6 +927,24 @@ if __name__ == "__main__":
 
     from automata.db import init_db
     init_db()
+
+    # ── ETH 1H background thread — polls every 10 s independently ─────────────
+    import threading
+
+    def _eth_loop():
+        import time as _t
+        from automata.eth_1h import run_eth_1h
+        _host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
+        while True:
+            try:
+                run_eth_1h(dry_run=not args.bet, host=_host)
+            except Exception as _e:
+                log.error("[eth_1h] Unhandled error: %s", _e)
+            _t.sleep(10)
+
+    _eth_thread = threading.Thread(target=_eth_loop, daemon=True, name="eth-1h")
+    _eth_thread.start()
+    log.info("[eth_1h] Background scanner started (10 s interval)")
 
     iteration = 0
     while True:
@@ -825,6 +984,7 @@ if __name__ == "__main__":
                 time.sleep(60)
                 continue
 
+        # ── Weather temperature markets ────────────────────────────────────────
         run(dry_run=not args.bet)
 
         log.info("Sleeping 60 s...")
