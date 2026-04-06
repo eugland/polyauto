@@ -9,9 +9,10 @@ Strategy:
     1. Buy BET_SHARES at market ask
     2. Immediately post a GTC limit sell at SELL_TARGET (0.99)
 
-  Entry threshold is time-adjusted: require higher bid earlier in the window.
-    min_bid = 0.97 - 0.004 * mins_remaining
-    T-20: 0.89+   T-10: 0.93+   T-5: 0.95+
+  Entry threshold uses a Brownian Bridge-inspired formula:
+    min_bid = 1 - 0.12 / sqrt(mins_remaining)
+    T-20: 0.973+   T-10: 0.962+   T-3: 0.931+
+  k=0.12 is self-calibrated from trade history when >= 10 outcomes exist.
 
   Stop-loss: if held position bid drops below STOP_LOSS (0.75),
   cancel the sell and exit immediately at market.
@@ -19,7 +20,7 @@ Strategy:
   The probability naturally decays toward 1.0 as the candle closes.
   Either the sell fills before resolution, or it resolves at $1.00.
 
-  One position per candle.  $10 max per trade.
+  One position per candle.  Sizing: 20 shares or balance * 0.9 if short.
 
 Run:  python -m automata.eth_1h
 """
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -40,9 +42,9 @@ log = logging.getLogger("automata.eth_1h")
 BUY_MAX      = 0.98    # skip if already too close to 1.0 (tiny upside left)
 SELL_TARGET  = 0.99    # immediately post sell here after buying
 STOP_LOSS    = 0.75    # exit immediately if position bid drops below this
-BET_SHARES   = 10
-MAX_COST     = 10.0    # hard cap per trade
-MIN_MINUTES  = 5       # don't enter with less time than this
+BET_SHARES   = 20      # target shares per trade
+K_DEFAULT    = 0.12   # Brownian Bridge k — auto-calibrated when >= 10 outcomes exist
+MIN_MINUTES  = 3       # don't enter with less time than this
 MAX_MINUTES  = 20      # don't enter too early (price can still flip)
 
 DB_PATH = Path(__file__).resolve().parent.parent / "bets.db"
@@ -188,19 +190,54 @@ def _init_table() -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS eth_1h_trades (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                slug        TEXT NOT NULL,
-                direction   TEXT NOT NULL,
-                token_id    TEXT NOT NULL,
-                buy_order   TEXT,
-                sell_order  TEXT,
-                shares      REAL NOT NULL,
-                entry_price REAL NOT NULL,
-                sell_target REAL NOT NULL,
-                cost_usdc   REAL NOT NULL,
-                placed_at   TEXT NOT NULL
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                slug           TEXT NOT NULL,
+                direction      TEXT NOT NULL,
+                token_id       TEXT NOT NULL,
+                buy_order      TEXT,
+                sell_order     TEXT,
+                shares         REAL NOT NULL,
+                entry_price    REAL NOT NULL,
+                sell_target    REAL NOT NULL,
+                cost_usdc      REAL NOT NULL,
+                placed_at      TEXT NOT NULL,
+                mins_remaining REAL,
+                outcome        TEXT
             )
         """)
+        # Migrate existing rows that may lack the new columns
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(eth_1h_trades)")}
+        if "mins_remaining" not in existing:
+            conn.execute("ALTER TABLE eth_1h_trades ADD COLUMN mins_remaining REAL")
+        if "outcome" not in existing:
+            conn.execute("ALTER TABLE eth_1h_trades ADD COLUMN outcome TEXT")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS eth_1h_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "INSERT OR IGNORE INTO eth_1h_settings (key, value) VALUES ('k', ?)",
+            (str(K_DEFAULT),)
+        )
+
+
+def _get_k() -> float:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT value FROM eth_1h_settings WHERE key = 'k'"
+        ).fetchone()
+    return float(row[0]) if row else K_DEFAULT
+
+
+def _set_k(k: float) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO eth_1h_settings (key, value) VALUES ('k', ?)",
+            (str(round(k, 2)),)
+        )
+    log.info("[eth_1h] k updated to %.2f in DB", k)
 
 
 def _has_trade(slug: str) -> bool:
@@ -212,17 +249,75 @@ def _has_trade(slug: str) -> bool:
 
 
 def _record_trade(slug, direction, token_id, buy_order, sell_order,
-                  shares, entry_price, sell_target, cost_usdc) -> None:
+                  shares, entry_price, sell_target, cost_usdc,
+                  mins_remaining: float | None = None) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             """INSERT INTO eth_1h_trades
                (slug, direction, token_id, buy_order, sell_order,
-                shares, entry_price, sell_target, cost_usdc, placed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                shares, entry_price, sell_target, cost_usdc, placed_at,
+                mins_remaining, outcome)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
             (slug, direction, token_id, buy_order, sell_order,
              shares, entry_price, sell_target, cost_usdc,
-             datetime.now(timezone.utc).isoformat()),
+             datetime.now(timezone.utc).isoformat(),
+             mins_remaining),
         )
+
+
+def _update_outcome(slug: str, outcome: str) -> None:
+    """Set outcome for the trade with this slug (win / stop_loss / expired)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "UPDATE eth_1h_trades SET outcome = ? WHERE slug = ? AND outcome IS NULL",
+            (outcome, slug),
+        )
+    log.info("[eth_1h] outcome recorded: %s → %s", slug[-24:], outcome)
+
+
+def _calibrate_k() -> float:
+    """
+    Grid-search the best k for min_bid = 1 - k / sqrt(mins).
+    Uses resolved trades (outcome = 'win' or 'stop_loss') from the DB.
+    Auto-saves the best k to the DB when >= 10 outcomes exist.
+    Returns the current k (updated or unchanged).
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            """SELECT entry_price, mins_remaining, outcome
+               FROM eth_1h_trades
+               WHERE outcome IN ('win', 'stop_loss')
+               AND mins_remaining IS NOT NULL"""
+        ).fetchall()
+
+    current_k = _get_k()
+
+    if len(rows) < 10:
+        log.info("[eth_1h] calibration: only %d resolved trades — need 10, using k=%.2f",
+                 len(rows), current_k)
+        return current_k
+
+    best_k, best_score = current_k, -1.0
+    for k in [round(0.06 + 0.01 * i, 2) for i in range(15)]:  # 0.06 .. 0.20
+        taken = [(ep, out) for ep, mins, out in rows
+                 if mins and ep >= 1 - k / math.sqrt(mins)]
+        if not taken:
+            continue
+        win_rate = sum(1 for _, out in taken if out == "win") / len(taken)
+        score = win_rate * math.log1p(len(taken))
+        if score > best_score:
+            best_score, best_k = score, k
+
+    wins   = sum(1 for _, _, o in rows if o == "win")
+    losses = sum(1 for _, _, o in rows if o == "stop_loss")
+    log.info(
+        "[eth_1h] calibration: %d resolved trades (%d W / %d L) — "
+        "best k=%.2f (score=%.3f)  previous k=%.2f",
+        len(rows), wins, losses, best_k, best_score, current_k,
+    )
+    if best_k != current_k:
+        _set_k(best_k)
+    return best_k
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -242,14 +337,25 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
     # ── Monitor open position ──────────────────────────────────────────────────
     if _position["active"]:
         if _position["slug"] != slug:
-            # New candle — position resolved (win or loss), reset
+            # New candle — position resolved, record outcome and calibrate
+            prev_slug = _position["slug"] or ""
             log.info("[eth_1h] New candle — position on %s resolved, resetting",
-                     (_position["slug"] or "")[-24:])
+                     prev_slug[-24:])
+            _update_outcome(prev_slug, "expired")
             _reset_position()
+            _calibrate_k()
         else:
-            # Same candle — check stop-loss
+            # Same candle — check stop-loss and win detection
             books    = get_books(host, [_position["token_id"]])
             cur_bid  = books.get(_position["token_id"], {}).get("bid")
+
+            if cur_bid is not None and cur_bid >= SELL_TARGET:
+                log.info("[eth_1h] WIN detected — bid=%.3f >= sell target %.2f",
+                         cur_bid, SELL_TARGET)
+                _update_outcome(_position["slug"], "win")
+                _reset_position()
+                _calibrate_k()
+                return
 
             if cur_bid is not None and cur_bid < STOP_LOSS:
                 log.warning("[eth_1h] STOP-LOSS  bid=%.3f < %.2f — exiting %s",
@@ -276,7 +382,9 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
                         log.error("[eth_1h] Stop-loss exit failed: %s", exc)
                 else:
                     log.info("[eth_1h] [DRY RUN] Would stop-loss exit @ ~%.3f", cur_bid)
+                _update_outcome(_position["slug"], "stop_loss")
                 _reset_position()
+                _calibrate_k()
             else:
                 log.info("[eth_1h] Holding %s — bid=%s  entry=%.3f",
                          _position["direction"],
@@ -302,8 +410,10 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
                  mins, MIN_MINUTES, MAX_MINUTES)
         return
 
-    # Time-adjusted minimum bid: stricter earlier in the window
-    min_bid = round(0.97 - 0.004 * mins, 3)
+    k = _calibrate_k()
+
+    # Time-adjusted minimum bid (Brownian Bridge): stricter earlier in the window
+    min_bid = round(1 - k / mins ** 0.5, 3)
 
     # Live order book
     books     = get_books(host, [mkt["up_token"], mkt["down_token"]])
@@ -334,11 +444,8 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
         if ask is None or bid is None:
             continue
         if bid >= min_bid and ask <= BUY_MAX:
-            cost = round(BET_SHARES * ask, 2)
-            if cost <= MAX_COST:
-                candidate = {"direction": direction, "ask": ask, "bid": bid,
-                             "token": token, "cost": cost}
-                break
+            candidate = {"direction": direction, "ask": ask, "bid": bid, "token": token}
+            break
 
     if not candidate:
         up_str   = f"{up_ask:.3f}"   if up_ask   else "n/a"
@@ -351,15 +458,15 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
     direction = candidate["direction"]
     ask       = candidate["ask"]
     token     = candidate["token"]
-    cost      = candidate["cost"]
-
-    print(f"  --> ENTRY: {direction} @ {ask:.3f}  "
-          f"{BET_SHARES}sh  ${cost:.2f}  sell target {SELL_TARGET:.2f}")
-    print(f"{div}\n")
 
     if dry_run:
+        shares = BET_SHARES
+        cost   = round(shares * ask, 2)
+        print(f"  --> ENTRY: {direction} @ {ask:.3f}  "
+              f"{shares}sh  ${cost:.2f}  sell target {SELL_TARGET:.2f}")
+        print(f"{div}\n")
         log.info("[eth_1h] [DRY RUN] Would buy %d %s @ %.3f  $%.2f  then sell @ %.2f",
-                 BET_SHARES, direction, ask, cost, SELL_TARGET)
+                 shares, direction, ask, cost, SELL_TARGET)
         return
 
     # ── Live: buy then immediately post sell ───────────────────────────────────
@@ -369,7 +476,7 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
         log.error("[eth_1h] Missing .env keys")
         return
 
-    from automata.client import build_client, place_no_order, place_sell_order
+    from automata.client import build_client, get_usdc_balance, place_no_order, place_sell_order
 
     client = build_client(
         host=os.environ["POLYMARKET_HOST"],
@@ -381,12 +488,35 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
         signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
     )
 
+    # Determine shares based on available balance
+    try:
+        balance = get_usdc_balance(client)
+    except Exception as exc:
+        log.warning("[eth_1h] Could not fetch balance, defaulting to %d shares: %s", BET_SHARES, exc)
+        balance = BET_SHARES * ask  # assume enough
+
+    if balance >= BET_SHARES:
+        shares = BET_SHARES
+    else:
+        shares = round(balance * 0.9, 2)
+
+    cost = round(shares * ask, 2)
+    log.info("[eth_1h] Balance $%.2f — using %.2f shares (target %d)", balance, shares, BET_SHARES)
+
+    print(f"  --> ENTRY: {direction} @ {ask:.3f}  "
+          f"{shares}sh  ${cost:.2f}  sell target {SELL_TARGET:.2f}")
+    print(f"{div}\n")
+
+    if shares <= 0:
+        log.error("[eth_1h] Insufficient balance (%.2f), skipping", balance)
+        return
+
     # Step 1 — buy
     try:
-        buy_resp = place_no_order(client, token, ask, BET_SHARES)
+        buy_resp = place_no_order(client, token, ask, shares)
         buy_id   = buy_resp.get("orderID") or buy_resp.get("id") or "?"
-        log.info("[eth_1h] Bought %d %s @ %.3f  $%.2f  id=%s",
-                 BET_SHARES, direction, ask, cost, buy_id)
+        log.info("[eth_1h] Bought %.2f %s @ %.3f  $%.2f  id=%s",
+                 shares, direction, ask, cost, buy_id)
     except Exception as exc:
         log.error("[eth_1h] Buy failed: %s", exc)
         return
@@ -394,14 +524,14 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
     # Step 2 — post sell at SELL_TARGET immediately
     sell_id = "?"
     try:
-        sell_resp = place_sell_order(client, token, SELL_TARGET, BET_SHARES)
+        sell_resp = place_sell_order(client, token, SELL_TARGET, shares)
         sell_id   = sell_resp.get("orderID") or sell_resp.get("id") or "?"
         log.info("[eth_1h] Sell posted @ %.2f  id=%s", SELL_TARGET, sell_id)
     except Exception as exc:
         log.warning("[eth_1h] Sell order failed (holding to resolution): %s", exc)
 
     _record_trade(slug, direction, token, buy_id, sell_id,
-                  BET_SHARES, ask, SELL_TARGET, cost)
+                  shares, ask, SELL_TARGET, cost, mins_remaining=mins)
 
     # Track in memory for stop-loss monitoring
     _position.update({
@@ -410,11 +540,11 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
         "direction":     direction,
         "token_id":      token,
         "sell_order_id": sell_id,
-        "shares":        BET_SHARES,
+        "shares":        shares,
         "entry_price":   ask,
     })
 
-    print(f"  [eth_1h] BUY {direction} {BET_SHARES}sh @ {ask:.3f}  ${cost:.2f}"
+    print(f"  [eth_1h] BUY {direction} {shares}sh @ {ask:.3f}  ${cost:.2f}"
           f"  buy={buy_id}  sell@{SELL_TARGET}={sell_id}")
 
 
@@ -443,7 +573,7 @@ def analyze(host: str = "https://clob.polymarket.com") -> None:
     down_book = books.get(mkt["down_token"], {})
 
     mins    = mkt["minutes_remaining"]
-    min_bid = round(0.97 - 0.004 * mins, 3)
+    min_bid = round(1 - 0.12 / mins ** 0.5, 3)
     div     = "=" * 65
     print(f"\n{div}")
     print(f"  ETH 1H TAIL CAPTURE  {mkt['title']}")
@@ -464,7 +594,7 @@ def analyze(host: str = "https://clob.polymarket.com") -> None:
         if ask and bid and bid >= min_bid and ask <= BUY_MAX and in_window:
             cost = round(BET_SHARES * ask, 2)
             print(f"  --> SIGNAL: buy {label} @ {ask:.3f}  "
-                  f"{BET_SHARES}sh  ${cost:.2f}  then sell @ {SELL_TARGET}")
+                  f"{BET_SHARES}sh (balance-adjusted at trade time)  ${cost:.2f}  then sell @ {SELL_TARGET}")
     print(f"{div}\n")
 
 

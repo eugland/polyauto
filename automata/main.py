@@ -72,10 +72,17 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 load_dotenv()
 
+_LOG_FILE = Path(__file__).resolve().parent.parent / "automata.log"
+_file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter(
+    "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+))
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(message)s",
     datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(), _file_handler],
 )
 log = logging.getLogger("automata")
 

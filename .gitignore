@@ -71,3 +71,7 @@ ENV/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Project data & logs
+*.db
+*.log
