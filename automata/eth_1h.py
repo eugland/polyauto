@@ -104,6 +104,100 @@ def _get(url: str) -> any:
         return json.loads(r.read())
 
 
+def _normal_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _realized_annual_vol(symbol: str = "ETHUSDT", lookback_hours: int = 168) -> float | None:
+    """
+    Estimate annualized volatility from hourly log returns.
+    """
+    try:
+        klines = _get(
+            f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={lookback_hours}"
+        )
+    except Exception:
+        return None
+    if not isinstance(klines, list) or len(klines) < 3:
+        return None
+    closes: list[float] = []
+    for row in klines:
+        try:
+            closes.append(float(row[4]))
+        except Exception:
+            continue
+    if len(closes) < 3:
+        return None
+    rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0 and closes[i] > 0]
+    if len(rets) < 2:
+        return None
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
+    hourly_vol = math.sqrt(max(var, 0.0))
+    return hourly_vol * math.sqrt(365.0 * 24.0)
+
+
+def _black_scholes_digital_up_prob(spot: float, strike: float, years_to_expiry: float, sigma: float, r: float = 0.0) -> float | None:
+    """
+    Risk-neutral probability P(S_T >= K) for a cash-or-nothing digital call.
+    """
+    if spot <= 0 or strike <= 0 or years_to_expiry <= 0 or sigma <= 0:
+        return None
+    sqrt_t = math.sqrt(years_to_expiry)
+    d2 = (math.log(spot / strike) + (r - 0.5 * sigma * sigma) * years_to_expiry) / (sigma * sqrt_t)
+    return min(1.0, max(0.0, _normal_cdf(d2)))
+
+
+def _fetch_eth_bs_fair(end_utc: datetime | None, mins_remaining: int | None) -> tuple[float | None, float | None]:
+    """
+    Returns (fair_up, fair_down) from Black-Scholes, or (None, None) if unavailable.
+    Strike is the ETH/USDT open of the target 1h candle; spot is current ETH/USDT.
+    """
+    if not end_utc or mins_remaining is None:
+        return None, None
+    try:
+        ticker = _get("https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT")
+        spot = float(ticker["price"])
+    except Exception:
+        return None, None
+
+    try:
+        start_utc = end_utc - timedelta(hours=1)
+        start_ms = int(start_utc.timestamp() * 1000)
+        kline = _get(
+            f"https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=1h&startTime={start_ms}&limit=1"
+        )
+        strike = float(kline[0][1]) if isinstance(kline, list) and kline else None
+    except Exception:
+        strike = None
+    if strike is None:
+        return None, None
+
+    sigma = _realized_annual_vol("ETHUSDT", 168)
+    if sigma is None or sigma <= 0:
+        return None, None
+
+    # Keep fair probabilistic even at/after 0 min by flooring T to a tiny value.
+    effective_mins = max(float(mins_remaining), 1.0 / 60.0)  # 1 second
+    years = effective_mins / (365.0 * 24.0 * 60.0)
+    fair_up = _black_scholes_digital_up_prob(spot=spot, strike=strike, years_to_expiry=years, sigma=sigma, r=0.0)
+    if fair_up is None:
+        return None, None
+    fair_down = 1.0 - fair_up
+    return fair_up, fair_down
+
+
+def _fmt_matrix_cell(v: float | None) -> str:
+    return f"{v * 100:.1f}" if v is not None else "n/a"
+
+
+def _print_price_matrix(up_ask: float | None, down_ask: float | None, up_bid: float | None, down_bid: float | None, fair_up: float | None, fair_down: float | None) -> None:
+    print("              Up     Down")
+    print(f"  ask       {_fmt_matrix_cell(up_ask):>6}  {_fmt_matrix_cell(down_ask):>6}")
+    print(f"  bid       {_fmt_matrix_cell(up_bid):>6}  {_fmt_matrix_cell(down_bid):>6}")
+    print(f"  fair      {_fmt_matrix_cell(fair_up):>6}  {_fmt_matrix_cell(fair_down):>6}")
+
+
 def fetch_and_parse(slug: str) -> dict | None:
     """
     Returns dict: slug, title, up_token, down_token, minutes_remaining, end_utc
@@ -431,8 +525,8 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
     print(f"  ETH 1H TAIL CAPTURE  {mkt['title']}")
     print(f"  {'-'*63}")
     print(f"  Time remaining: {mins} min  (window {MIN_MINUTES}-{MAX_MINUTES}min)")
-    print(f"  Up   ask={_fmt(up_ask)}  bid={_fmt(up_bid)}")
-    print(f"  Down ask={_fmt(down_ask)}  bid={_fmt(down_bid)}")
+    fair_up, fair_down = _fetch_eth_bs_fair(mkt.get("end_utc"), mins)
+    _print_price_matrix(up_ask, down_ask, up_bid, down_bid, fair_up, fair_down)
     print(f"  Min bid (T-{mins}m): {min_bid:.3f}  |  max ask: {BUY_MAX:.2f}  |  sell: {SELL_TARGET:.2f}")
 
     # ── Find entry ─────────────────────────────────────────────────────────────
@@ -572,17 +666,25 @@ def analyze(host: str = "https://clob.polymarket.com") -> None:
     up_book   = books.get(mkt["up_token"],   {})
     down_book = books.get(mkt["down_token"], {})
 
-    mins    = mkt["minutes_remaining"]
-    min_bid = round(1 - 0.12 / mins ** 0.5, 3)
+    mins = mkt["minutes_remaining"]
+    min_bid = round(1 - 0.12 / mins ** 0.5, 3) if mins > 0 else None
     div     = "=" * 65
     print(f"\n{div}")
     print(f"  ETH 1H TAIL CAPTURE  {mkt['title']}")
     print(f"  {'-'*63}")
     print(f"  Slug:           {mkt['slug']}")
     print(f"  Time remaining: {mins} min")
-    print(f"  Up   ask={_fmt(up_book.get('ask'))}  bid={_fmt(up_book.get('bid'))}")
-    print(f"  Down ask={_fmt(down_book.get('ask'))}  bid={_fmt(down_book.get('bid'))}")
-    print(f"  Min bid (T-{mins}m): {min_bid:.3f}  |  max ask: {BUY_MAX:.2f}  |  sell: {SELL_TARGET:.2f}")
+    fair_up, fair_down = _fetch_eth_bs_fair(mkt.get("end_utc"), mins)
+    _print_price_matrix(
+        up_book.get("ask"),
+        down_book.get("ask"),
+        up_book.get("bid"),
+        down_book.get("bid"),
+        fair_up,
+        fair_down,
+    )
+    min_bid_str = f"{min_bid:.3f}" if min_bid is not None else "n/a"
+    print(f"  Min bid (T-{mins}m): {min_bid_str}  |  max ask: {BUY_MAX:.2f}  |  sell: {SELL_TARGET:.2f}")
     print(f"  Stop-loss: {STOP_LOSS:.2f}  |  Entry window: {MIN_MINUTES}-{MAX_MINUTES} min remaining")
 
     in_window = MIN_MINUTES <= mins <= MAX_MINUTES
@@ -591,7 +693,7 @@ def analyze(host: str = "https://clob.polymarket.com") -> None:
     for label, book in [("Up", up_book), ("Down", down_book)]:
         ask = book.get("ask")
         bid = book.get("bid")
-        if ask and bid and bid >= min_bid and ask <= BUY_MAX and in_window:
+        if ask and bid and min_bid is not None and bid >= min_bid and ask <= BUY_MAX and in_window:
             cost = round(BET_SHARES * ask, 2)
             print(f"  --> SIGNAL: buy {label} @ {ask:.3f}  "
                   f"{BET_SHARES}sh (balance-adjusted at trade time)  ${cost:.2f}  then sell @ {SELL_TARGET}")

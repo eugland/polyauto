@@ -4,8 +4,8 @@ import json
 import re
 from typing import Any
 
-from backendapp.domains.constants import EVENT_SLUG_RE
 from automata.models import Market, ParsedMarket
+from automata.polymarket import EVENT_SLUG_RE
 
 # "95°F or higher" | "50°F or below" | "30°C or higher"
 THRESHOLD_RE = re.compile(

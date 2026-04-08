@@ -1,4 +1,4 @@
-# Running the App
+﻿# Running This Project
 
 ## Prerequisites
 
@@ -7,7 +7,7 @@ pip install -r requirements.txt
 cp .env.example .env   # fill in your keys
 ```
 
-Required `.env` keys:
+Required `.env` keys (live trading):
 
 | Key | Description |
 |---|---|
@@ -23,52 +23,58 @@ Required `.env` keys:
 
 ---
 
-## Frontend (market dashboard)
-
-```bash
-python app.py
-```
-
-Opens at **http://localhost:5000** (port configured in `webapp.json`).
-
-Displays active Polymarket temperature markets paired with live ICAO weather data. Refreshes weather cache every 10 minutes in the background.
-
----
-
 ## Automata (betting engine)
 
-**Dry run** — shows what would be bet, no orders placed, no credentials needed beyond `POLYMARKET_HOST`:
+Backend app was removed. Current runnable modules are under `automata/`.
+
+Dry run (no real orders):
 
 ```bash
 python -m automata.main
 ```
 
-**Live betting** — places real GTC limit orders on Polymarket:
+Live betting (real orders):
 
 ```bash
 python -m automata.main --bet
 ```
 
-Runs in a loop (60 s sleep between iterations). Each cycle:
+Runs in a loop (60 s between iterations).
 
-1. *(live only)* Scans open positions — places take-profit sell orders where missing.
-2. *(live only)* Checks USDC balance — skips new bets if insufficient.
-3. Fetches active temperature markets from Polymarket.
-4. Pulls ICAO station coordinates and Open-Meteo forecast highs for each event date.
-5. Fetches live order-book ask prices in bulk.
-6. Selects the best No-token candidate per city (lowest implied Yes probability).
-7. Dry run: prints table. Live: places orders and records each bet to `bets.db`.
+---
 
-### Output columns (dry run)
+## Other modules
 
-| Column | Description |
-|---|---|
-| No | Ask price of the No token |
-| Yes | Ask price of the Yes token |
-| shares | Shares that would be bought |
-| cost | USDC cost |
-| local time | Current local time in that city |
-| city | City name |
-| date | Event date |
-| forecast | Open-Meteo forecast high for the event date |
-| question | The market question |
+BTC daily range analyzer:
+
+```bash
+python -m automata.btc_reach
+```
+
+ETH 1H analyzer:
+
+```bash
+python -m automata.eth_1h
+```
+
+Bets database web UI:
+
+```bash
+python -m automata.view_bets
+```
+
+Open: `http://localhost:5050`
+
+---
+
+## docs/ folder (static files)
+
+`docs/` contains static HTML/CSS/JS only.
+
+Preview locally:
+
+```bash
+python -m http.server 8000 --directory docs
+```
+
+Open: `http://localhost:8000`

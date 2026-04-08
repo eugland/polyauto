@@ -168,7 +168,7 @@ def _compute_maker_buy_price(
 
 
 def run(dry_run: bool = True) -> None:
-    from backendapp.services.polymarket_service import fetch_temperature_markets_payload
+    from automata.polymarket import fetch_temperature_markets_payload
     from automata.parser import _parse_threshold
     from automata.weather import (
         extract_all_urls, extract_icao_from_wunderground_url,
@@ -293,7 +293,9 @@ def run(dry_run: bool = True) -> None:
                 c["yes_price"] = books.get(c["yes_token_id"], {}).get("ask")
             c["price"] = live_ask or 0.0
             c["bid"] = live_bid
-            if live_bid is None:
+            if live_ask is None:
+                c["skip_reason"] = "no asks in book"
+            elif live_bid is None:
                 c["skip_reason"] = "no bids in book"
             elif live_bid > max_no_price:
                 c["skip_reason"] = f"bid {live_bid*100:.2f}¢ > max {max_no_price*100:.2f}¢"
