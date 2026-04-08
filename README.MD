@@ -2,7 +2,7 @@
 
 ## Folder quick map
 
-- `automata/`: betting engine modules (`main`, `btc_reach`, `eth_1h`, `view_bets`).
+- `automata/`: betting engine modules (`weather`, `eth`, `btc_reach`, `eth_1h`, `view_bets`).
 - `docs/`: static docs/demo files (`index.html`, `app.js`, `styles.css`, `running.md`).
 - `.venv/`: local virtual environment.
 - `.idea/`: IDE project settings.
@@ -16,16 +16,34 @@ pip install -r requirements.txt
 
 ## How to run (with examples)
 
-- Main loop (dry run):
+- Combined loop (dry run):
 
 ```bash
-python -m automata.main
+python -m automata
 ```
 
-- Main loop (live orders):
+- Combined loop (live orders):
 
 ```bash
-python -m automata.main --bet
+python -m automata --bet
+```
+
+- Combined loop with per-daemon spend caps:
+
+```bash
+python -m automata --bet --weather-max-balance 40 --eth-max-balance 20
+```
+
+- Weather daemon only:
+
+```bash
+python -m automata.weather --bet --once --max-balance 30
+```
+
+- ETH daemon only:
+
+```bash
+python -m automata.eth --bet --once --max-balance 30
 ```
 
 - BTC range analyzer:
@@ -50,5 +68,6 @@ Open: `http://localhost:5050`
 
 ## Parameters
 
-- `--bet` (only for `automata.main`): enables real order placement.
-- Other modules currently run without CLI flags.
+- `automata`: `--bet`, `--weather-interval`, `--eth-interval`, `--weather-max-balance`, `--eth-max-balance`
+- `automata.weather`: `--bet`, `--interval`, `--once`, `--max-balance`
+- `automata.eth`: `--bet`, `--interval`, `--once`, `--max-balance`

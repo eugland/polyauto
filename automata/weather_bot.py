@@ -52,18 +52,6 @@ CITY_TZ: dict[str, str] = {
     "Wuhan":         "Asia/Shanghai",
 }
 
-
-def _local_datetime(end_datetime: str, city: str) -> str:
-    """Return full local datetime string (e.g. '2026-03-30 15:00') for the city."""
-    if not end_datetime:
-        return "?"
-    try:
-        dt = datetime.fromisoformat(end_datetime.replace("Z", "+00:00"))
-        tz_name = CITY_TZ.get(city, "UTC")
-        return dt.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return end_datetime[:16]
-
 from dotenv import load_dotenv
 
 # Ensure UTF-8 output on Windows
@@ -107,13 +95,6 @@ def _extract_title_date(event_title: str) -> str:
     import re
     m = re.search(r" on (.+?)\??$", event_title, re.IGNORECASE)
     return m.group(1).strip() if m else ""
-
-
-def _temp_sort_key(question: str) -> float:
-    """Extract the first number from a question string for sort ordering."""
-    import re
-    m = re.search(r"-?\d+(?:\.\d+)?", question)
-    return float(m.group()) if m else 0.0
 
 
 def _as_float(value: Any) -> float | None:
@@ -167,7 +148,11 @@ def _compute_maker_buy_price(
     return quote
 
 
-def run(dry_run: bool = True) -> None:
+def run(
+    dry_run: bool = True,
+    max_spend_usdc: float | None = None,
+    max_orders: int | None = None,
+) -> None:
     from automata.polymarket import fetch_temperature_markets_payload
     from automata.parser import _parse_threshold
     from automata.weather import (
@@ -376,6 +361,10 @@ def run(dry_run: bool = True) -> None:
     except Exception as exc:
         log.error("Failed to fetch USDC balance: %s", exc)
         return
+    if max_spend_usdc is not None:
+        capped_balance = min(balance, max_spend_usdc)
+        log.info("Balance cap enabled: available $%.2f, capped spend $%.2f", balance, capped_balance)
+        balance = capped_balance
 
     # Build token_id → (city, date) lookup from all candidates
     token_to_city_date: dict[str, tuple[str, str]] = {
@@ -393,6 +382,7 @@ def run(dry_run: bool = True) -> None:
     import time as _time
     stale_minutes = float(os.getenv("STALE_ORDER_MINUTES", "5"))
     max_passes = int(os.getenv("BET_PASSES", "3"))
+    orders_placed = 0
 
     for pass_num in range(1, max_passes + 1):
         log.info("── Bet pass %d/%d ──", pass_num, max_passes)
@@ -605,6 +595,9 @@ def run(dry_run: bool = True) -> None:
             print()
 
             for b in bets_to_place:
+                if max_orders is not None and orders_placed >= max_orders:
+                    log.info("Reached max_orders=%d for this run — stopping order placement", max_orders)
+                    break
                 best_bid, best_ask = get_best_bid_ask(os.environ["POLYMARKET_HOST"], b["token_id"])
                 quote_price = _compute_maker_buy_price(
                     best_bid=best_bid,
@@ -661,6 +654,7 @@ def run(dry_run: bool = True) -> None:
                     status   = resp.get("status") or "submitted"
                     result   = f"{status}  id={order_id}"
                     balance = round(balance - cost, 2)
+                    orders_placed += 1
                     from automata.db import record_bet
                     record_bet(
                         city=b["city"],
@@ -687,6 +681,8 @@ def run(dry_run: bool = True) -> None:
                     f"  {b['city']}  {b['title_date']}  {b['question']}  → {result}"
                 )
             print()
+            if max_orders is not None and orders_placed >= max_orders:
+                break
 
         if pass_num < max_passes:
             wait = int(os.getenv("BET_PASS_WAIT_SECONDS", "10"))
@@ -764,237 +760,3 @@ def _scan_positions(dry_run: bool = True) -> None:
                 log.info("  token %s  %.2f shares — sell @ %.1f¢ placed  id=%s", token_id[:12], size, take_profit * 100, order_id)
             except Exception as exc:
                 log.error("  token %s — sell order failed: %s", token_id[:12], exc)
-
-
-def run_btc_daily(dry_run: bool = True) -> None:
-    """
-    Bet on the BTC daily 'above X' market when no position already exists.
-    Called before the weather loop so it takes priority.
-
-    Strategy: buy YES on the market where our momentum-based terminal
-    probability exceeds the market ask by >= BTC_REACH_MIN_EDGE (default 3%).
-
-    Env vars (optional):
-        BTC_REACH_SHARES   — shares to buy (default 20)
-        BTC_REACH_MIN_EDGE — minimum edge to trigger a bet, decimal (default 0.03)
-    """
-    from automata.btc_reach import analyze, build_daily_slug, fetch_event
-    from datetime import timedelta
-
-    funder     = os.getenv("POLYMARKET_FUNDER") or ""
-    host       = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
-    bet_shares = float(os.getenv("BTC_REACH_SHARES", "20.0"))
-    min_edge   = float(os.getenv("BTC_REACH_MIN_EDGE", "0.03"))
-
-    # Discover event — only try dates whose noon ET hasn't passed yet
-    now_utc = datetime.now(timezone.utc)
-    from automata.btc_reach import slug_resolution_utc
-    event      = None
-    used_slug  = None
-    for delta in [1, 0, 2]:
-        s   = build_daily_slug(now_utc + timedelta(days=delta))
-        res = slug_resolution_utc(s)
-        if not res or now_utc >= res:
-            continue          # already resolved, skip
-        e = fetch_event(s)
-        if e:
-            event     = e
-            used_slug = s
-            break
-
-    if not event:
-        log.info("[btc_daily] No active BTC daily event found")
-        return
-
-    # Check for existing position in this event
-    if funder:
-        from automata.client import get_positions
-        positions   = get_positions(funder)
-        held_tokens = {p["token_id"] for p in positions}
-
-        # Collect all token IDs belonging to this event's markets
-        from automata.btc_reach import parse_btc_markets
-        event_markets = parse_btc_markets(event)
-        event_tokens  = set()
-        for m in event_markets:
-            if m.get("yes_token_id"):
-                event_tokens.add(m["yes_token_id"])
-            if m.get("no_token_id"):
-                event_tokens.add(m["no_token_id"])
-
-        if held_tokens & event_tokens:
-            log.info("[btc_daily] Already holding a position in '%s' — skipping", used_slug)
-            return
-    else:
-        log.warning("[btc_daily] POLYMARKET_FUNDER not set — cannot check positions, proceeding anyway")
-
-    # Full analysis + display
-    markets = analyze(slug=used_slug, host=host)
-    if not markets:
-        return
-
-    # Momentum-based pick: NO on the side BTC is moving away from
-    from automata.btc_reach import momentum_pick
-    spot_now = markets[0].get("_spot")
-    drift    = markets[0].get("_drift")
-    if spot_now is None or drift is None:
-        log.error("[btc_daily] Missing spot/drift from analysis — skipping")
-        return
-
-    pick = momentum_pick(markets, spot_now, drift)
-    if not pick:
-        direction = "UP" if drift >= 0 else "DOWN"
-        log.info("[btc_daily] No momentum NO candidate on %s side — skipping", direction)
-        return
-
-    side  = "NO"
-    token = pick["no_token_id"]
-    ask   = pick["no_ask"]
-    direction = "UP" if drift >= 0 else "DOWN"
-    log.info(
-        "[btc_daily] Momentum %s -> NO on %s  model=%.1f%%  no_ask=%.1f%%  edge=%+.1f%%",
-        direction, pick["label"],
-        pick["model_prob"] * 100,
-        ask * 100,
-        pick["no_edge"] * 100,
-    )
-
-    if dry_run:
-        log.info(
-            "[btc_daily] [DRY RUN] Would buy %.0f NO shares @ %.1fc  $%.2f  '%s'",
-            bet_shares, ask * 100, bet_shares * ask, pick["label"],
-        )
-        return
-
-    # ── Live bet ──────────────────────────────────────────────────────────────
-    required = ["POLYMARKET_PRIVATE_KEY", "CLOB_API_KEY", "CLOB_SECRET", "CLOB_PASS", "POLYMARKET_HOST"]
-    if any(not os.getenv(k) for k in required):
-        log.error("[btc_daily] Missing .env keys for live betting")
-        return
-
-    from automata.client import build_client, get_best_bid_ask, place_no_order
-
-    client = build_client(
-        host=os.environ["POLYMARKET_HOST"],
-        private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
-        api_key=os.environ["CLOB_API_KEY"],
-        api_secret=os.environ["CLOB_SECRET"],
-        api_passphrase=os.environ["CLOB_PASS"],
-        funder=funder or None,
-        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
-    )
-
-    live_bid, live_ask = get_best_bid_ask(host, token)
-    if live_ask is None:
-        log.warning("[btc_daily] No live ask for NO '%s' — skipping", pick["label"])
-        return
-
-    quote = round(min(live_ask, 0.998), 4)
-    cost  = round(bet_shares * quote, 2)
-
-    try:
-        resp     = place_no_order(client, token, quote, bet_shares)
-        order_id = resp.get("orderID") or resp.get("id") or "?"
-        status   = resp.get("status") or "submitted"
-        log.info(
-            "[btc_daily] Placed NO order %.0f shares @ %.1fc  cost=$%.2f  %s  id=%s",
-            bet_shares, quote * 100, cost, status, order_id,
-        )
-        print(
-            f"  [btc_daily] BUY NO @ {quote*100:.1f}c  {bet_shares:.0f}sh  ${cost:.2f}"
-            f"  {pick['label']}  -> {status}  id={order_id}"
-        )
-    except Exception as exc:
-        log.error("[btc_daily] Order failed: %s", exc)
-
-
-if __name__ == "__main__":
-    import argparse
-    import time
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--bet", action="store_true", help="Place real orders (default: dry run)")
-    args = parser.parse_args()
-
-    required = ["POLYMARKET_PRIVATE_KEY", "POLYMARKET_HOST"]
-
-    # ── Derive fresh API credentials from the private key ─────────────────────
-    from automata.client import derive_api_credentials
-    try:
-        _creds = derive_api_credentials(
-            host=os.environ["POLYMARKET_HOST"],
-            private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
-            funder=os.getenv("POLYMARKET_FUNDER") or None,
-            signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
-        )
-        os.environ["CLOB_API_KEY"]  = _creds.api_key
-        os.environ["CLOB_SECRET"]   = _creds.api_secret
-        os.environ["CLOB_PASS"]     = _creds.api_passphrase
-    except Exception as exc:
-        log.error("Failed to derive API credentials: %s", exc)
-        raise SystemExit(1)
-
-    from automata.db import init_db
-    init_db()
-
-    # ── ETH 1H background thread — polls every 10 s independently ─────────────
-    import threading
-
-    def _eth_loop():
-        import time as _t
-        from automata.eth_1h import run_eth_1h
-        _host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
-        while True:
-            try:
-                run_eth_1h(dry_run=not args.bet, host=_host)
-            except Exception as _e:
-                log.error("[eth_1h] Unhandled error: %s", _e)
-            _t.sleep(10)
-
-    _eth_thread = threading.Thread(target=_eth_loop, daemon=True, name="eth-1h")
-    _eth_thread.start()
-    log.info("[eth_1h] Background scanner started (10 s interval)")
-
-    iteration = 0
-    while True:
-        iteration += 1
-        log.info("=== Iteration %d ===", iteration)
-
-        if args.bet:
-            # ── Position scan ─────────────────────────────────────────────────
-            _scan_positions(dry_run=False)
-
-            # ── Balance check — gates new bets ────────────────────────────────
-            bet_shares = float(os.getenv("BET_SIZE_SHARES", "20.0"))
-            try:
-                from automata.client import build_client, get_usdc_balance
-                _client = build_client(
-                    host=os.environ["POLYMARKET_HOST"],
-                    private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
-                    api_key=os.environ["CLOB_API_KEY"],
-                    api_secret=os.environ["CLOB_SECRET"],
-                    api_passphrase=os.environ["CLOB_PASS"],
-                    funder=os.getenv("POLYMARKET_FUNDER") or None,
-                    signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
-                )
-                balance = get_usdc_balance(_client)
-                max_no_price = float(os.getenv("MAX_NO_PRICE", "0.998"))
-                min_required = bet_shares * max_no_price
-                log.info("USDC balance: $%.2f  (need at least $%.2f for %g shares)", balance, min_required, bet_shares)
-            except Exception as exc:
-                log.warning("Balance check failed: %s — skipping new bets this cycle", exc)
-                log.info("Sleeping 60 s...")
-                time.sleep(60)
-                continue
-
-            if balance < min_required:
-                log.warning("Balance $%.2f < $%.2f needed — skipping new bets", balance, min_required)
-                log.info("Sleeping 60 s...")
-                time.sleep(60)
-                continue
-
-        # ── Weather temperature markets ────────────────────────────────────────
-        run(dry_run=not args.bet)
-
-        log.info("Sleeping 60 s...")
-        time.sleep(60)

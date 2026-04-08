@@ -416,7 +416,11 @@ def _calibrate_k() -> float:
 
 # ── Main entry point ───────────────────────────────────────────────────────────
 
-def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") -> None:
+def run_eth_1h(
+    dry_run: bool = True,
+    host: str = "https://clob.polymarket.com",
+    max_spend_usdc: float | None = None,
+) -> None:
     """
     Called every 10 s.  Monitors open position for stop-loss,
     then looks for a new entry if none is active.
@@ -588,6 +592,10 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
     except Exception as exc:
         log.warning("[eth_1h] Could not fetch balance, defaulting to %d shares: %s", BET_SHARES, exc)
         balance = BET_SHARES * ask  # assume enough
+    if max_spend_usdc is not None:
+        capped = min(balance, max_spend_usdc)
+        log.info("[eth_1h] Balance cap enabled: available $%.2f, capped spend $%.2f", balance, capped)
+        balance = capped
 
     if balance >= BET_SHARES:
         shares = BET_SHARES
@@ -640,10 +648,6 @@ def run_eth_1h(dry_run: bool = True, host: str = "https://clob.polymarket.com") 
 
     print(f"  [eth_1h] BUY {direction} {shares}sh @ {ask:.3f}  ${cost:.2f}"
           f"  buy={buy_id}  sell@{SELL_TARGET}={sell_id}")
-
-
-def _fmt(v) -> str:
-    return f"{v:.3f}" if v is not None else " n/a "
 
 
 # ── Standalone display ─────────────────────────────────────────────────────────

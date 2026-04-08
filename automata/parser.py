@@ -4,9 +4,6 @@ import json
 import re
 from typing import Any
 
-from automata.models import Market, ParsedMarket
-from automata.polymarket import EVENT_SLUG_RE
-
 # "95°F or higher" | "50°F or below" | "30°C or higher"
 THRESHOLD_RE = re.compile(
     r"(-?\d+(?:\.\d+)?)\s*°?\s*([CF])\s+(or\s+higher|or\s+below|or\s+lower)",
@@ -84,56 +81,3 @@ def _parse_threshold(text: str) -> tuple[float, float | None, str, str] | None:
         return float(m.group(1)), None, m.group(2).upper(), "exact"
 
     return None
-
-
-def parse_markets(
-    raw_markets: list[dict[str, Any]],
-    mapping: dict,
-) -> list[ParsedMarket]:
-    results: list[ParsedMarket] = []
-
-    for raw in raw_markets:
-        if raw.get("closed"):
-            continue
-        if raw.get("active") is not None and not raw.get("active"):
-            continue
-
-        event_slug = str(raw.get("event_slug") or "")
-        slug_match = EVENT_SLUG_RE.match(event_slug)
-        if not slug_match:
-            continue
-
-        location_key = slug_match.group(1)
-        location_cfg = mapping.get(location_key)
-        if not location_cfg or not location_cfg.enabled:
-            continue
-
-        question = str(raw.get("groupItemTitle") or raw.get("question") or "")
-        parsed = _parse_threshold(question)
-        if not parsed:
-            continue
-
-        no_token_id = _extract_no_token_id(raw)
-        no_price = _extract_no_price(raw)
-        if no_token_id is None or no_price is None:
-            continue
-
-        market = Market(
-            market_id=str(raw.get("id") or ""),
-            question=question,
-            event_slug=event_slug,
-            no_token_id=no_token_id,
-            no_price=no_price,
-        )
-
-        lo, hi, unit, direction = parsed
-        results.append(ParsedMarket(
-            market=market,
-            location_key=location_key,
-            threshold_lo=lo,
-            threshold_hi=hi,
-            unit=unit,
-            direction=direction,
-        ))
-
-    return results

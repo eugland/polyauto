@@ -66,16 +66,6 @@ def get_token_city_date_map() -> dict[str, tuple[str, str]]:
     return {row[0]: (row[1], row[2]) for row in rows}
 
 
-def already_bet(city: str, event_date: str, question: str) -> bool:
-    """Return True if this city/date/question combo was already placed."""
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM placed_bets WHERE city = ? AND event_date = ? AND question = ?",
-            (city, event_date, question),
-        ).fetchone()
-    return row is not None
-
-
 def record_bet(
     *,
     city: str,

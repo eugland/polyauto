@@ -82,21 +82,6 @@ def get_best_bid_ask(host: str, token_id: str) -> tuple[float | None, float | No
         return None, None
 
 
-def get_best_ask(host: str, token_id: str) -> float | None:
-    """
-    Fetch the live best ask price for a single token from the public order book.
-    Returns None if the book is empty or the call fails.
-    """
-    import requests
-    try:
-        resp = requests.get(f"{host}/book", params={"token_id": token_id}, timeout=5)
-        resp.raise_for_status()
-        asks = resp.json().get("asks", [])
-        return min(float(a["price"]) for a in asks) if asks else None
-    except Exception:
-        return None
-
-
 def get_best_books_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -> dict[str, dict]:
     """
     Fetch live best bid and ask prices for multiple tokens via POST to /books.
@@ -126,18 +111,6 @@ def get_best_books_bulk(host: str, token_ids: list[str], chunk_size: int = 200) 
         except Exception:
             pass
     return result
-
-
-def get_best_asks_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -> dict[str, float]:
-    """
-    Fetch live best ask prices for multiple tokens via POST to /books.
-    Splits into chunks to stay within the API limit.
-    Returns {token_id: best_ask_price} for tokens that have an ask.
-    """
-    books = get_best_books_bulk(host, token_ids, chunk_size)
-    return {tid: b["ask"] for tid, b in books.items() if b["ask"] is not None}
-
-
 
 
 def get_positions(funder: str) -> list[dict]:

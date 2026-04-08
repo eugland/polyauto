@@ -1,14 +1,24 @@
+"""
+Weather betting daemon + weather data helpers.
+
+Usage:
+  python -m automata.weather
+  python -m automata.weather --bet
+  python -m automata.weather --bet --once --max-balance 30
+
+Flags:
+  --bet          Place real orders (default is dry-run).
+  --interval     Loop interval in seconds (default 60).
+  --once         Run one cycle, place at most one order, then exit.
+  --max-balance  Max USDC this process can spend.
+"""
+
 from __future__ import annotations
 
-import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any
 
 import requests
-
-WEATHER_CURRENT_URL = "https://api.weather.com/v3/wx/observations/current"
-DEFAULT_WEATHER_API_KEY = "e1f10a1e78da46f5b10a1e78da96f525"
 
 _ALL_URLS_RE = re.compile(r"https?://[^\s\"'<>)\]]+", re.IGNORECASE)
 
@@ -48,49 +58,6 @@ def extract_icao_from_wunderground_url(url: str) -> str | None:
     """Extract ICAO station code from the last path segment of a Wunderground URL."""
     m = _WUNDERGROUND_STATION_RE.search(url)
     return m.group(1).upper() if m else None
-
-
-def fetch_station_weather(icao: str, units: str = "e") -> dict[str, Any]:
-    """
-    Fetch current conditions for a station from Weather.com API.
-    Returns dict with: current_temp, forecast_high, local_time (all may be None on failure).
-    units: "e" = imperial (°F), "m" = metric (°C)
-    """
-    api_key = os.environ.get("WEATHER_API_KEY", DEFAULT_WEATHER_API_KEY).strip()
-    params = {
-        "apiKey": api_key,
-        "icaoCode": icao,
-        "units": units,
-        "language": "en-US",
-        "format": "json",
-    }
-    try:
-        resp = requests.get(WEATHER_CURRENT_URL, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        return {
-            "current_temp": data.get("temperature"),
-            "local_time": data.get("obsTimeLocal"),
-        }
-    except Exception:
-        return {"current_temp": None, "forecast_high": None, "local_time": None}
-
-
-def fetch_weather_for_stations(
-    stations: list[str], units: str = "e"
-) -> dict[str, dict[str, Any]]:
-    """Fetch weather for multiple stations in parallel."""
-    results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_station_weather, icao, units): icao for icao in stations}
-        for future in as_completed(futures):
-            icao = futures[future]
-            results[icao] = future.result()
-    return results
-
-
-def c_to_f(c: float) -> float:
-    return c * 9.0 / 5.0 + 32.0
 
 
 # ── Station coordinates ───────────────────────────────────────────────────────
@@ -224,3 +191,134 @@ def fetch_forecasts_for_events(
             results[key] = val
 
     return results
+
+
+def _derive_clob_credentials() -> None:
+    import os
+
+    required = ["POLYMARKET_PRIVATE_KEY", "POLYMARKET_HOST"]
+    missing = [k for k in required if not os.getenv(k)]
+    if missing:
+        raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
+
+    from automata.client import derive_api_credentials
+
+    creds = derive_api_credentials(
+        host=os.environ["POLYMARKET_HOST"],
+        private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
+        funder=os.getenv("POLYMARKET_FUNDER") or None,
+        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+    )
+    os.environ["CLOB_API_KEY"] = creds.api_key
+    os.environ["CLOB_SECRET"] = creds.api_secret
+    os.environ["CLOB_PASS"] = creds.api_passphrase
+
+
+def run_weather_daemon(
+    bet: bool = False,
+    interval_seconds: int = 60,
+    once: bool = False,
+    max_balance_usdc: float | None = None,
+) -> None:
+    import logging
+    import os
+    import time
+
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-7s  %(message)s")
+    log = logging.getLogger("automata.weather")
+
+    from automata.db import init_db
+    from automata.weather_bot import _scan_positions, run
+
+    if bet:
+        _derive_clob_credentials()
+    init_db()
+
+    iteration = 0
+    while True:
+        iteration += 1
+        log.info("[weather] Iteration %d", iteration)
+
+        if bet:
+            _scan_positions(dry_run=False)
+            bet_shares = float(os.getenv("BET_SIZE_SHARES", "20.0"))
+            try:
+                from automata.client import build_client, get_usdc_balance
+
+                client = build_client(
+                    host=os.environ["POLYMARKET_HOST"],
+                    private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
+                    api_key=os.environ["CLOB_API_KEY"],
+                    api_secret=os.environ["CLOB_SECRET"],
+                    api_passphrase=os.environ["CLOB_PASS"],
+                    funder=os.getenv("POLYMARKET_FUNDER") or None,
+                    signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+                )
+                balance = get_usdc_balance(client)
+                max_no_price = float(os.getenv("MAX_NO_PRICE", "0.998"))
+                min_required = bet_shares * max_no_price
+                log.info(
+                    "[weather] USDC balance: $%.2f  (need at least $%.2f for %g shares)",
+                    balance,
+                    min_required,
+                    bet_shares,
+                )
+            except Exception as exc:
+                log.warning("[weather] Balance check failed: %s — skipping cycle", exc)
+                if once:
+                    log.info("[weather] --once set, exiting after failed pre-check")
+                    break
+                time.sleep(interval_seconds)
+                continue
+
+            capped_balance = min(balance, max_balance_usdc) if max_balance_usdc is not None else balance
+            if balance < min_required:
+                log.warning("[weather] Balance $%.2f < $%.2f needed — skipping cycle", balance, min_required)
+                if once:
+                    log.info("[weather] --once set, exiting after insufficient balance")
+                    break
+                time.sleep(interval_seconds)
+                continue
+            if capped_balance < min_required:
+                log.warning(
+                    "[weather] Capped balance $%.2f < $%.2f needed — skipping cycle",
+                    capped_balance,
+                    min_required,
+                )
+                if once:
+                    log.info("[weather] --once set, exiting after capped-balance check")
+                    break
+                time.sleep(interval_seconds)
+                continue
+
+        run(
+            dry_run=not bet,
+            max_spend_usdc=max_balance_usdc if bet else None,
+            max_orders=1 if (bet and once) else None,
+        )
+        if once:
+            log.info("[weather] --once set, exiting after single cycle")
+            break
+        time.sleep(interval_seconds)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Weather betting daemon")
+    parser.add_argument("--bet", action="store_true", help="Place real orders (default: dry-run)")
+    parser.add_argument("--interval", type=int, default=60, help="Loop interval in seconds (default: 60)")
+    parser.add_argument("--once", action="store_true", help="Run one cycle, place at most one order, then exit")
+    parser.add_argument("--max-balance", type=float, default=None, help="Max USDC this process is allowed to spend")
+    args = parser.parse_args()
+
+    run_weather_daemon(
+        bet=args.bet,
+        interval_seconds=max(1, args.interval),
+        once=args.once,
+        max_balance_usdc=args.max_balance,
+    )
