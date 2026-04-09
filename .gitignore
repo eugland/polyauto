@@ -75,3 +75,4 @@ Thumbs.db
 # Project data & logs
 *.db
 *.log
+experiment/cache/

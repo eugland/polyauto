@@ -1,0 +1,1735 @@
+{
+  "config": {
+    "years": 2.0,
+    "initial_balance": 100.0,
+    "close_T": 1,
+    "k_values": [
+      0.12,
+      0.13,
+      0.14,
+      0.15,
+      0.16,
+      0.17,
+      0.18,
+      0.19,
+      0.2
+    ],
+    "T_values": [
+      20,
+      19,
+      18,
+      17,
+      16,
+      15,
+      14,
+      13,
+      12,
+      11,
+      10,
+      9,
+      8,
+      7,
+      6,
+      5,
+      4,
+      3,
+      2
+    ]
+  },
+  "best_by_return": {
+    "T": 2,
+    "k": 0.2,
+    "trades": 2420,
+    "wins": 2344,
+    "win_rate_pct": 96.8595,
+    "return_pct": 1.1442106854836544e+18,
+    "end_balance": 1.1442106854836547e+18
+  },
+  "best_by_win_rate": {
+    "T": 2,
+    "k": 0.12,
+    "trades": 1464,
+    "wins": 1437,
+    "win_rate_pct": 98.1557,
+    "return_pct": 275969347.074438,
+    "end_balance": 275969447.074438
+  },
+  "top_by_return": [
+    {
+      "T": 2,
+      "k": 0.2,
+      "trades": 2420,
+      "wins": 2344,
+      "win_rate_pct": 96.8595,
+      "return_pct": 1.1442106854836544e+18,
+      "end_balance": 1.1442106854836547e+18
+    },
+    {
+      "T": 2,
+      "k": 0.19,
+      "trades": 2307,
+      "wins": 2241,
+      "win_rate_pct": 97.1391,
+      "return_pct": 6.847989353119105e+16,
+      "end_balance": 6.847989353119115e+16
+    },
+    {
+      "T": 2,
+      "k": 0.18,
+      "trades": 2189,
+      "wins": 2132,
+      "win_rate_pct": 97.3961,
+      "return_pct": 2812078728182402.5,
+      "end_balance": 2812078728182502.5
+    },
+    {
+      "T": 2,
+      "k": 0.17,
+      "trades": 2078,
+      "wins": 2029,
+      "win_rate_pct": 97.642,
+      "return_pct": 177947023975198.25,
+      "end_balance": 177947023975298.25
+    },
+    {
+      "T": 3,
+      "k": 0.2,
+      "trades": 2182,
+      "wins": 2107,
+      "win_rate_pct": 96.5628,
+      "return_pct": 49982163922381.94,
+      "end_balance": 49982163922481.94
+    },
+    {
+      "T": 2,
+      "k": 0.16,
+      "trades": 1958,
+      "wins": 1914,
+      "win_rate_pct": 97.7528,
+      "return_pct": 9771892104607.645,
+      "end_balance": 9771892104707.645
+    },
+    {
+      "T": 3,
+      "k": 0.19,
+      "trades": 2074,
+      "wins": 2006,
+      "win_rate_pct": 96.7213,
+      "return_pct": 4593533513154.181,
+      "end_balance": 4593533513254.181
+    },
+    {
+      "T": 2,
+      "k": 0.15,
+      "trades": 1829,
+      "wins": 1789,
+      "win_rate_pct": 97.813,
+      "return_pct": 340471453907.3281,
+      "end_balance": 340471454007.3281
+    },
+    {
+      "T": 3,
+      "k": 0.18,
+      "trades": 1943,
+      "wins": 1884,
+      "win_rate_pct": 96.9635,
+      "return_pct": 277779009283.9818,
+      "end_balance": 277779009383.9818
+    },
+    {
+      "T": 2,
+      "k": 0.14,
+      "trades": 1731,
+      "wins": 1695,
+      "win_rate_pct": 97.9203,
+      "return_pct": 47015284832.73341,
+      "end_balance": 47015284932.73341
+    },
+    {
+      "T": 3,
+      "k": 0.17,
+      "trades": 1826,
+      "wins": 1772,
+      "win_rate_pct": 97.0427,
+      "return_pct": 20723450002.265488,
+      "end_balance": 20723450102.265488
+    },
+    {
+      "T": 4,
+      "k": 0.2,
+      "trades": 1963,
+      "wins": 1876,
+      "win_rate_pct": 95.568,
+      "return_pct": 16165317027.771893,
+      "end_balance": 16165317127.771894
+    },
+    {
+      "T": 3,
+      "k": 0.16,
+      "trades": 1722,
+      "wins": 1673,
+      "win_rate_pct": 97.1545,
+      "return_pct": 3268851930.06291,
+      "end_balance": 3268852030.06291
+    },
+    {
+      "T": 4,
+      "k": 0.19,
+      "trades": 1857,
+      "wins": 1778,
+      "win_rate_pct": 95.7458,
+      "return_pct": 3245027665.133259,
+      "end_balance": 3245027765.133259
+    },
+    {
+      "T": 2,
+      "k": 0.13,
+      "trades": 1589,
+      "wins": 1558,
+      "win_rate_pct": 98.0491,
+      "return_pct": 3232478215.419377,
+      "end_balance": 3232478315.419377
+    }
+  ],
+  "all_results": [
+    {
+      "T": 20,
+      "k": 0.12,
+      "trades": 0,
+      "wins": 0,
+      "win_rate_pct": 0.0,
+      "return_pct": 0.0,
+      "end_balance": 100.0
+    },
+    {
+      "T": 20,
+      "k": 0.13,
+      "trades": 19,
+      "wins": 17,
+      "win_rate_pct": 89.4737,
+      "return_pct": -7.56398,
+      "end_balance": 92.43602
+    },
+    {
+      "T": 20,
+      "k": 0.14,
+      "trades": 79,
+      "wins": 66,
+      "win_rate_pct": 83.5443,
+      "return_pct": -59.869472,
+      "end_balance": 40.130528
+    },
+    {
+      "T": 20,
+      "k": 0.15,
+      "trades": 142,
+      "wins": 121,
+      "win_rate_pct": 85.2113,
+      "return_pct": -71.001217,
+      "end_balance": 28.998783
+    },
+    {
+      "T": 20,
+      "k": 0.16,
+      "trades": 192,
+      "wins": 161,
+      "win_rate_pct": 83.8542,
+      "return_pct": -85.720036,
+      "end_balance": 14.279964
+    },
+    {
+      "T": 20,
+      "k": 0.17,
+      "trades": 265,
+      "wins": 224,
+      "win_rate_pct": 84.5283,
+      "return_pct": -89.504078,
+      "end_balance": 10.495922
+    },
+    {
+      "T": 20,
+      "k": 0.18,
+      "trades": 328,
+      "wins": 279,
+      "win_rate_pct": 85.061,
+      "return_pct": -93.068523,
+      "end_balance": 6.931477
+    },
+    {
+      "T": 20,
+      "k": 0.19,
+      "trades": 391,
+      "wins": 331,
+      "win_rate_pct": 84.6547,
+      "return_pct": -95.311718,
+      "end_balance": 4.688282
+    },
+    {
+      "T": 20,
+      "k": 0.2,
+      "trades": 440,
+      "wins": 374,
+      "win_rate_pct": 85.0,
+      "return_pct": -95.717195,
+      "end_balance": 4.282805
+    },
+    {
+      "T": 19,
+      "k": 0.12,
+      "trades": 0,
+      "wins": 0,
+      "win_rate_pct": 0.0,
+      "return_pct": 0.0,
+      "end_balance": 100.0
+    },
+    {
+      "T": 19,
+      "k": 0.13,
+      "trades": 68,
+      "wins": 57,
+      "win_rate_pct": 83.8235,
+      "return_pct": -52.10257,
+      "end_balance": 47.89743
+    },
+    {
+      "T": 19,
+      "k": 0.14,
+      "trades": 133,
+      "wins": 116,
+      "win_rate_pct": 87.218,
+      "return_pct": -59.564041,
+      "end_balance": 40.435959
+    },
+    {
+      "T": 19,
+      "k": 0.15,
+      "trades": 205,
+      "wins": 175,
+      "win_rate_pct": 85.3659,
+      "return_pct": -83.749846,
+      "end_balance": 16.250154
+    },
+    {
+      "T": 19,
+      "k": 0.16,
+      "trades": 276,
+      "wins": 235,
+      "win_rate_pct": 85.1449,
+      "return_pct": -91.123583,
+      "end_balance": 8.876417
+    },
+    {
+      "T": 19,
+      "k": 0.17,
+      "trades": 338,
+      "wins": 284,
+      "win_rate_pct": 84.0237,
+      "return_pct": -95.427931,
+      "end_balance": 4.572069
+    },
+    {
+      "T": 19,
+      "k": 0.18,
+      "trades": 394,
+      "wins": 330,
+      "win_rate_pct": 83.7563,
+      "return_pct": -96.715532,
+      "end_balance": 3.284468
+    },
+    {
+      "T": 19,
+      "k": 0.19,
+      "trades": 464,
+      "wins": 389,
+      "win_rate_pct": 83.8362,
+      "return_pct": -98.189764,
+      "end_balance": 1.810236
+    },
+    {
+      "T": 19,
+      "k": 0.2,
+      "trades": 518,
+      "wins": 435,
+      "win_rate_pct": 83.9768,
+      "return_pct": -98.718454,
+      "end_balance": 1.281546
+    },
+    {
+      "T": 18,
+      "k": 0.12,
+      "trades": 19,
+      "wins": 15,
+      "win_rate_pct": 78.9474,
+      "return_pct": -18.23335,
+      "end_balance": 81.76665
+    },
+    {
+      "T": 18,
+      "k": 0.13,
+      "trades": 69,
+      "wins": 59,
+      "win_rate_pct": 85.5072,
+      "return_pct": -36.367876,
+      "end_balance": 63.632124
+    },
+    {
+      "T": 18,
+      "k": 0.14,
+      "trades": 147,
+      "wins": 123,
+      "win_rate_pct": 83.6735,
+      "return_pct": -74.698864,
+      "end_balance": 25.301136
+    },
+    {
+      "T": 18,
+      "k": 0.15,
+      "trades": 217,
+      "wins": 181,
+      "win_rate_pct": 83.4101,
+      "return_pct": -88.901146,
+      "end_balance": 11.098854
+    },
+    {
+      "T": 18,
+      "k": 0.16,
+      "trades": 294,
+      "wins": 253,
+      "win_rate_pct": 86.0544,
+      "return_pct": -87.125478,
+      "end_balance": 12.874522
+    },
+    {
+      "T": 18,
+      "k": 0.17,
+      "trades": 351,
+      "wins": 304,
+      "win_rate_pct": 86.6097,
+      "return_pct": -88.42147,
+      "end_balance": 11.57853
+    },
+    {
+      "T": 18,
+      "k": 0.18,
+      "trades": 428,
+      "wins": 373,
+      "win_rate_pct": 87.1495,
+      "return_pct": -89.388584,
+      "end_balance": 10.611416
+    },
+    {
+      "T": 18,
+      "k": 0.19,
+      "trades": 494,
+      "wins": 429,
+      "win_rate_pct": 86.8421,
+      "return_pct": -93.116171,
+      "end_balance": 6.883829
+    },
+    {
+      "T": 18,
+      "k": 0.2,
+      "trades": 550,
+      "wins": 475,
+      "win_rate_pct": 86.3636,
+      "return_pct": -95.147466,
+      "end_balance": 4.852534
+    },
+    {
+      "T": 17,
+      "k": 0.12,
+      "trades": 42,
+      "wins": 36,
+      "win_rate_pct": 85.7143,
+      "return_pct": -43.519687,
+      "end_balance": 56.480313
+    },
+    {
+      "T": 17,
+      "k": 0.13,
+      "trades": 98,
+      "wins": 85,
+      "win_rate_pct": 86.7347,
+      "return_pct": -58.936657,
+      "end_balance": 41.063343
+    },
+    {
+      "T": 17,
+      "k": 0.14,
+      "trades": 180,
+      "wins": 160,
+      "win_rate_pct": 88.8889,
+      "return_pct": -64.969163,
+      "end_balance": 35.030837
+    },
+    {
+      "T": 17,
+      "k": 0.15,
+      "trades": 256,
+      "wins": 220,
+      "win_rate_pct": 85.9375,
+      "return_pct": -87.422801,
+      "end_balance": 12.577199
+    },
+    {
+      "T": 17,
+      "k": 0.16,
+      "trades": 324,
+      "wins": 277,
+      "win_rate_pct": 85.4938,
+      "return_pct": -93.296463,
+      "end_balance": 6.703537
+    },
+    {
+      "T": 17,
+      "k": 0.17,
+      "trades": 386,
+      "wins": 335,
+      "win_rate_pct": 86.7876,
+      "return_pct": -92.190891,
+      "end_balance": 7.809109
+    },
+    {
+      "T": 17,
+      "k": 0.18,
+      "trades": 457,
+      "wins": 399,
+      "win_rate_pct": 87.3085,
+      "return_pct": -91.826484,
+      "end_balance": 8.173516
+    },
+    {
+      "T": 17,
+      "k": 0.19,
+      "trades": 515,
+      "wins": 447,
+      "win_rate_pct": 86.7961,
+      "return_pct": -94.124218,
+      "end_balance": 5.875782
+    },
+    {
+      "T": 17,
+      "k": 0.2,
+      "trades": 588,
+      "wins": 512,
+      "win_rate_pct": 87.0748,
+      "return_pct": -93.869634,
+      "end_balance": 6.130366
+    },
+    {
+      "T": 16,
+      "k": 0.12,
+      "trades": 97,
+      "wins": 80,
+      "win_rate_pct": 82.4742,
+      "return_pct": -66.970482,
+      "end_balance": 33.029518
+    },
+    {
+      "T": 16,
+      "k": 0.13,
+      "trades": 172,
+      "wins": 149,
+      "win_rate_pct": 86.6279,
+      "return_pct": -66.848811,
+      "end_balance": 33.151189
+    },
+    {
+      "T": 16,
+      "k": 0.14,
+      "trades": 232,
+      "wins": 201,
+      "win_rate_pct": 86.6379,
+      "return_pct": -79.664804,
+      "end_balance": 20.335196
+    },
+    {
+      "T": 16,
+      "k": 0.15,
+      "trades": 312,
+      "wins": 273,
+      "win_rate_pct": 87.5,
+      "return_pct": -82.930453,
+      "end_balance": 17.069547
+    },
+    {
+      "T": 16,
+      "k": 0.16,
+      "trades": 382,
+      "wins": 334,
+      "win_rate_pct": 87.4346,
+      "return_pct": -85.534516,
+      "end_balance": 14.465484
+    },
+    {
+      "T": 16,
+      "k": 0.17,
+      "trades": 458,
+      "wins": 398,
+      "win_rate_pct": 86.8996,
+      "return_pct": -91.255983,
+      "end_balance": 8.744017
+    },
+    {
+      "T": 16,
+      "k": 0.18,
+      "trades": 530,
+      "wins": 459,
+      "win_rate_pct": 86.6038,
+      "return_pct": -93.627501,
+      "end_balance": 6.372499
+    },
+    {
+      "T": 16,
+      "k": 0.19,
+      "trades": 598,
+      "wins": 517,
+      "win_rate_pct": 86.4548,
+      "return_pct": -94.82997,
+      "end_balance": 5.17003
+    },
+    {
+      "T": 16,
+      "k": 0.2,
+      "trades": 673,
+      "wins": 573,
+      "win_rate_pct": 85.1412,
+      "return_pct": -98.261372,
+      "end_balance": 1.738628
+    },
+    {
+      "T": 15,
+      "k": 0.12,
+      "trades": 130,
+      "wins": 113,
+      "win_rate_pct": 86.9231,
+      "return_pct": -62.51858,
+      "end_balance": 37.48142
+    },
+    {
+      "T": 15,
+      "k": 0.13,
+      "trades": 216,
+      "wins": 189,
+      "win_rate_pct": 87.5,
+      "return_pct": -72.857279,
+      "end_balance": 27.142721
+    },
+    {
+      "T": 15,
+      "k": 0.14,
+      "trades": 285,
+      "wins": 249,
+      "win_rate_pct": 87.3684,
+      "return_pct": -84.466923,
+      "end_balance": 15.533077
+    },
+    {
+      "T": 15,
+      "k": 0.15,
+      "trades": 370,
+      "wins": 321,
+      "win_rate_pct": 86.7568,
+      "return_pct": -89.461439,
+      "end_balance": 10.538561
+    },
+    {
+      "T": 15,
+      "k": 0.16,
+      "trades": 436,
+      "wins": 374,
+      "win_rate_pct": 85.7798,
+      "return_pct": -95.487206,
+      "end_balance": 4.512794
+    },
+    {
+      "T": 15,
+      "k": 0.17,
+      "trades": 509,
+      "wins": 435,
+      "win_rate_pct": 85.4617,
+      "return_pct": -97.279153,
+      "end_balance": 2.720847
+    },
+    {
+      "T": 15,
+      "k": 0.18,
+      "trades": 589,
+      "wins": 507,
+      "win_rate_pct": 86.0781,
+      "return_pct": -96.916704,
+      "end_balance": 3.083296
+    },
+    {
+      "T": 15,
+      "k": 0.19,
+      "trades": 667,
+      "wins": 567,
+      "win_rate_pct": 85.0075,
+      "return_pct": -98.886864,
+      "end_balance": 1.113136
+    },
+    {
+      "T": 15,
+      "k": 0.2,
+      "trades": 756,
+      "wins": 636,
+      "win_rate_pct": 84.127,
+      "return_pct": -99.551094,
+      "end_balance": 0.448906
+    },
+    {
+      "T": 14,
+      "k": 0.12,
+      "trades": 154,
+      "wins": 135,
+      "win_rate_pct": 87.6623,
+      "return_pct": -60.947061,
+      "end_balance": 39.052939
+    },
+    {
+      "T": 14,
+      "k": 0.13,
+      "trades": 232,
+      "wins": 202,
+      "win_rate_pct": 87.069,
+      "return_pct": -73.09542,
+      "end_balance": 26.90458
+    },
+    {
+      "T": 14,
+      "k": 0.14,
+      "trades": 323,
+      "wins": 282,
+      "win_rate_pct": 87.3065,
+      "return_pct": -79.202041,
+      "end_balance": 20.797959
+    },
+    {
+      "T": 14,
+      "k": 0.15,
+      "trades": 414,
+      "wins": 358,
+      "win_rate_pct": 86.4734,
+      "return_pct": -88.589456,
+      "end_balance": 11.410544
+    },
+    {
+      "T": 14,
+      "k": 0.16,
+      "trades": 499,
+      "wins": 431,
+      "win_rate_pct": 86.3727,
+      "return_pct": -93.576552,
+      "end_balance": 6.423448
+    },
+    {
+      "T": 14,
+      "k": 0.17,
+      "trades": 579,
+      "wins": 496,
+      "win_rate_pct": 85.6649,
+      "return_pct": -97.638875,
+      "end_balance": 2.361125
+    },
+    {
+      "T": 14,
+      "k": 0.18,
+      "trades": 657,
+      "wins": 561,
+      "win_rate_pct": 85.3881,
+      "return_pct": -98.489053,
+      "end_balance": 1.510947
+    },
+    {
+      "T": 14,
+      "k": 0.19,
+      "trades": 732,
+      "wins": 624,
+      "win_rate_pct": 85.2459,
+      "return_pct": -98.973523,
+      "end_balance": 1.026477
+    },
+    {
+      "T": 14,
+      "k": 0.2,
+      "trades": 807,
+      "wins": 691,
+      "win_rate_pct": 85.6258,
+      "return_pct": -98.77889,
+      "end_balance": 1.22111
+    },
+    {
+      "T": 13,
+      "k": 0.12,
+      "trades": 199,
+      "wins": 180,
+      "win_rate_pct": 90.4523,
+      "return_pct": -43.277741,
+      "end_balance": 56.722259
+    },
+    {
+      "T": 13,
+      "k": 0.13,
+      "trades": 266,
+      "wins": 238,
+      "win_rate_pct": 89.4737,
+      "return_pct": -63.963113,
+      "end_balance": 36.036887
+    },
+    {
+      "T": 13,
+      "k": 0.14,
+      "trades": 354,
+      "wins": 314,
+      "win_rate_pct": 88.7006,
+      "return_pct": -71.712122,
+      "end_balance": 28.287878
+    },
+    {
+      "T": 13,
+      "k": 0.15,
+      "trades": 436,
+      "wins": 388,
+      "win_rate_pct": 88.9908,
+      "return_pct": -75.654414,
+      "end_balance": 24.345586
+    },
+    {
+      "T": 13,
+      "k": 0.16,
+      "trades": 531,
+      "wins": 475,
+      "win_rate_pct": 89.4539,
+      "return_pct": -74.880843,
+      "end_balance": 25.119157
+    },
+    {
+      "T": 13,
+      "k": 0.17,
+      "trades": 601,
+      "wins": 537,
+      "win_rate_pct": 89.3511,
+      "return_pct": -78.912603,
+      "end_balance": 21.087397
+    },
+    {
+      "T": 13,
+      "k": 0.18,
+      "trades": 682,
+      "wins": 611,
+      "win_rate_pct": 89.5894,
+      "return_pct": -76.495028,
+      "end_balance": 23.504972
+    },
+    {
+      "T": 13,
+      "k": 0.19,
+      "trades": 770,
+      "wins": 681,
+      "win_rate_pct": 88.4416,
+      "return_pct": -89.283531,
+      "end_balance": 10.716469
+    },
+    {
+      "T": 13,
+      "k": 0.2,
+      "trades": 859,
+      "wins": 763,
+      "win_rate_pct": 88.8242,
+      "return_pct": -82.488146,
+      "end_balance": 17.511854
+    },
+    {
+      "T": 12,
+      "k": 0.12,
+      "trades": 252,
+      "wins": 222,
+      "win_rate_pct": 88.0952,
+      "return_pct": -79.216465,
+      "end_balance": 20.783535
+    },
+    {
+      "T": 12,
+      "k": 0.13,
+      "trades": 348,
+      "wins": 304,
+      "win_rate_pct": 87.3563,
+      "return_pct": -87.506916,
+      "end_balance": 12.493084
+    },
+    {
+      "T": 12,
+      "k": 0.14,
+      "trades": 422,
+      "wins": 365,
+      "win_rate_pct": 86.4929,
+      "return_pct": -93.242949,
+      "end_balance": 6.757051
+    },
+    {
+      "T": 12,
+      "k": 0.15,
+      "trades": 520,
+      "wins": 447,
+      "win_rate_pct": 85.9615,
+      "return_pct": -96.42294,
+      "end_balance": 3.57706
+    },
+    {
+      "T": 12,
+      "k": 0.16,
+      "trades": 607,
+      "wins": 522,
+      "win_rate_pct": 85.9967,
+      "return_pct": -97.294069,
+      "end_balance": 2.705931
+    },
+    {
+      "T": 12,
+      "k": 0.17,
+      "trades": 676,
+      "wins": 584,
+      "win_rate_pct": 86.3905,
+      "return_pct": -97.028952,
+      "end_balance": 2.971048
+    },
+    {
+      "T": 12,
+      "k": 0.18,
+      "trades": 763,
+      "wins": 658,
+      "win_rate_pct": 86.2385,
+      "return_pct": -97.339363,
+      "end_balance": 2.660637
+    },
+    {
+      "T": 12,
+      "k": 0.19,
+      "trades": 838,
+      "wins": 720,
+      "win_rate_pct": 85.9189,
+      "return_pct": -98.220503,
+      "end_balance": 1.779497
+    },
+    {
+      "T": 12,
+      "k": 0.2,
+      "trades": 927,
+      "wins": 798,
+      "win_rate_pct": 86.0841,
+      "return_pct": -98.140203,
+      "end_balance": 1.859797
+    },
+    {
+      "T": 11,
+      "k": 0.12,
+      "trades": 287,
+      "wins": 247,
+      "win_rate_pct": 86.0627,
+      "return_pct": -86.443392,
+      "end_balance": 13.556608
+    },
+    {
+      "T": 11,
+      "k": 0.13,
+      "trades": 372,
+      "wins": 321,
+      "win_rate_pct": 86.2903,
+      "return_pct": -93.808324,
+      "end_balance": 6.191676
+    },
+    {
+      "T": 11,
+      "k": 0.14,
+      "trades": 459,
+      "wins": 391,
+      "win_rate_pct": 85.1852,
+      "return_pct": -97.462583,
+      "end_balance": 2.537417
+    },
+    {
+      "T": 11,
+      "k": 0.15,
+      "trades": 547,
+      "wins": 468,
+      "win_rate_pct": 85.5576,
+      "return_pct": -98.157346,
+      "end_balance": 1.842654
+    },
+    {
+      "T": 11,
+      "k": 0.16,
+      "trades": 631,
+      "wins": 540,
+      "win_rate_pct": 85.5784,
+      "return_pct": -98.693087,
+      "end_balance": 1.306913
+    },
+    {
+      "T": 11,
+      "k": 0.17,
+      "trades": 718,
+      "wins": 614,
+      "win_rate_pct": 85.5153,
+      "return_pct": -99.068816,
+      "end_balance": 0.931184
+    },
+    {
+      "T": 11,
+      "k": 0.18,
+      "trades": 802,
+      "wins": 684,
+      "win_rate_pct": 85.2868,
+      "return_pct": -99.392393,
+      "end_balance": 0.607607
+    },
+    {
+      "T": 11,
+      "k": 0.19,
+      "trades": 889,
+      "wins": 752,
+      "win_rate_pct": 84.5894,
+      "return_pct": -99.762689,
+      "end_balance": 0.237311
+    },
+    {
+      "T": 11,
+      "k": 0.2,
+      "trades": 969,
+      "wins": 821,
+      "win_rate_pct": 84.7265,
+      "return_pct": -99.740993,
+      "end_balance": 0.259007
+    },
+    {
+      "T": 10,
+      "k": 0.12,
+      "trades": 341,
+      "wins": 310,
+      "win_rate_pct": 90.9091,
+      "return_pct": -57.884223,
+      "end_balance": 42.115777
+    },
+    {
+      "T": 10,
+      "k": 0.13,
+      "trades": 432,
+      "wins": 389,
+      "win_rate_pct": 90.0463,
+      "return_pct": -83.544411,
+      "end_balance": 16.455589
+    },
+    {
+      "T": 10,
+      "k": 0.14,
+      "trades": 516,
+      "wins": 461,
+      "win_rate_pct": 89.3411,
+      "return_pct": -90.486449,
+      "end_balance": 9.513551
+    },
+    {
+      "T": 10,
+      "k": 0.15,
+      "trades": 613,
+      "wins": 545,
+      "win_rate_pct": 88.907,
+      "return_pct": -93.242918,
+      "end_balance": 6.757082
+    },
+    {
+      "T": 10,
+      "k": 0.16,
+      "trades": 697,
+      "wins": 620,
+      "win_rate_pct": 88.9527,
+      "return_pct": -93.259769,
+      "end_balance": 6.740231
+    },
+    {
+      "T": 10,
+      "k": 0.17,
+      "trades": 780,
+      "wins": 692,
+      "win_rate_pct": 88.7179,
+      "return_pct": -93.626881,
+      "end_balance": 6.373119
+    },
+    {
+      "T": 10,
+      "k": 0.18,
+      "trades": 860,
+      "wins": 762,
+      "win_rate_pct": 88.6047,
+      "return_pct": -93.322851,
+      "end_balance": 6.677149
+    },
+    {
+      "T": 10,
+      "k": 0.19,
+      "trades": 947,
+      "wins": 835,
+      "win_rate_pct": 88.1732,
+      "return_pct": -94.467119,
+      "end_balance": 5.532881
+    },
+    {
+      "T": 10,
+      "k": 0.2,
+      "trades": 1052,
+      "wins": 927,
+      "win_rate_pct": 88.1179,
+      "return_pct": -94.084343,
+      "end_balance": 5.915657
+    },
+    {
+      "T": 9,
+      "k": 0.12,
+      "trades": 431,
+      "wins": 400,
+      "win_rate_pct": 92.8074,
+      "return_pct": -6.520233,
+      "end_balance": 93.479767
+    },
+    {
+      "T": 9,
+      "k": 0.13,
+      "trades": 513,
+      "wins": 477,
+      "win_rate_pct": 92.9825,
+      "return_pct": 20.260728,
+      "end_balance": 120.260728
+    },
+    {
+      "T": 9,
+      "k": 0.14,
+      "trades": 617,
+      "wins": 568,
+      "win_rate_pct": 92.0583,
+      "return_pct": -20.013995,
+      "end_balance": 79.986005
+    },
+    {
+      "T": 9,
+      "k": 0.15,
+      "trades": 711,
+      "wins": 647,
+      "win_rate_pct": 90.9986,
+      "return_pct": -42.027247,
+      "end_balance": 57.972753
+    },
+    {
+      "T": 9,
+      "k": 0.16,
+      "trades": 806,
+      "wins": 733,
+      "win_rate_pct": 90.9429,
+      "return_pct": -34.534684,
+      "end_balance": 65.465316
+    },
+    {
+      "T": 9,
+      "k": 0.17,
+      "trades": 909,
+      "wins": 822,
+      "win_rate_pct": 90.429,
+      "return_pct": -51.755016,
+      "end_balance": 48.244984
+    },
+    {
+      "T": 9,
+      "k": 0.18,
+      "trades": 1015,
+      "wins": 917,
+      "win_rate_pct": 90.3448,
+      "return_pct": -34.265489,
+      "end_balance": 65.734511
+    },
+    {
+      "T": 9,
+      "k": 0.19,
+      "trades": 1117,
+      "wins": 1007,
+      "win_rate_pct": 90.1522,
+      "return_pct": -7.129161,
+      "end_balance": 92.870839
+    },
+    {
+      "T": 9,
+      "k": 0.2,
+      "trades": 1202,
+      "wins": 1085,
+      "win_rate_pct": 90.2662,
+      "return_pct": 50.733677,
+      "end_balance": 150.733677
+    },
+    {
+      "T": 8,
+      "k": 0.12,
+      "trades": 559,
+      "wins": 520,
+      "win_rate_pct": 93.0233,
+      "return_pct": -32.724701,
+      "end_balance": 67.275299
+    },
+    {
+      "T": 8,
+      "k": 0.13,
+      "trades": 658,
+      "wins": 610,
+      "win_rate_pct": 92.7052,
+      "return_pct": -24.853873,
+      "end_balance": 75.146127
+    },
+    {
+      "T": 8,
+      "k": 0.14,
+      "trades": 749,
+      "wins": 694,
+      "win_rate_pct": 92.6569,
+      "return_pct": -5.188314,
+      "end_balance": 94.811686
+    },
+    {
+      "T": 8,
+      "k": 0.15,
+      "trades": 841,
+      "wins": 779,
+      "win_rate_pct": 92.6278,
+      "return_pct": 17.213543,
+      "end_balance": 117.213543
+    },
+    {
+      "T": 8,
+      "k": 0.16,
+      "trades": 941,
+      "wins": 865,
+      "win_rate_pct": 91.9235,
+      "return_pct": 23.689673,
+      "end_balance": 123.689673
+    },
+    {
+      "T": 8,
+      "k": 0.17,
+      "trades": 1043,
+      "wins": 959,
+      "win_rate_pct": 91.9463,
+      "return_pct": 94.68765,
+      "end_balance": 194.68765
+    },
+    {
+      "T": 8,
+      "k": 0.18,
+      "trades": 1129,
+      "wins": 1029,
+      "win_rate_pct": 91.1426,
+      "return_pct": 32.067661,
+      "end_balance": 132.067661
+    },
+    {
+      "T": 8,
+      "k": 0.19,
+      "trades": 1235,
+      "wins": 1122,
+      "win_rate_pct": 90.8502,
+      "return_pct": 94.376917,
+      "end_balance": 194.376917
+    },
+    {
+      "T": 8,
+      "k": 0.2,
+      "trades": 1335,
+      "wins": 1211,
+      "win_rate_pct": 90.7116,
+      "return_pct": 242.611637,
+      "end_balance": 342.611637
+    },
+    {
+      "T": 7,
+      "k": 0.12,
+      "trades": 576,
+      "wins": 534,
+      "win_rate_pct": 92.7083,
+      "return_pct": -12.013448,
+      "end_balance": 87.986552
+    },
+    {
+      "T": 7,
+      "k": 0.13,
+      "trades": 690,
+      "wins": 642,
+      "win_rate_pct": 93.0435,
+      "return_pct": 68.18925,
+      "end_balance": 168.18925
+    },
+    {
+      "T": 7,
+      "k": 0.14,
+      "trades": 783,
+      "wins": 732,
+      "win_rate_pct": 93.4866,
+      "return_pct": 307.322259,
+      "end_balance": 407.322259
+    },
+    {
+      "T": 7,
+      "k": 0.15,
+      "trades": 893,
+      "wins": 829,
+      "win_rate_pct": 92.8331,
+      "return_pct": 286.742588,
+      "end_balance": 386.742588
+    },
+    {
+      "T": 7,
+      "k": 0.16,
+      "trades": 997,
+      "wins": 926,
+      "win_rate_pct": 92.8786,
+      "return_pct": 697.765852,
+      "end_balance": 797.765852
+    },
+    {
+      "T": 7,
+      "k": 0.17,
+      "trades": 1100,
+      "wins": 1019,
+      "win_rate_pct": 92.6364,
+      "return_pct": 1196.477592,
+      "end_balance": 1296.477592
+    },
+    {
+      "T": 7,
+      "k": 0.18,
+      "trades": 1190,
+      "wins": 1093,
+      "win_rate_pct": 91.8487,
+      "return_pct": 1299.569682,
+      "end_balance": 1399.569682
+    },
+    {
+      "T": 7,
+      "k": 0.19,
+      "trades": 1301,
+      "wins": 1191,
+      "win_rate_pct": 91.545,
+      "return_pct": 2209.274573,
+      "end_balance": 2309.274573
+    },
+    {
+      "T": 7,
+      "k": 0.2,
+      "trades": 1396,
+      "wins": 1271,
+      "win_rate_pct": 91.0458,
+      "return_pct": 1947.291751,
+      "end_balance": 2047.291751
+    },
+    {
+      "T": 6,
+      "k": 0.12,
+      "trades": 721,
+      "wins": 690,
+      "win_rate_pct": 95.7004,
+      "return_pct": 850.300241,
+      "end_balance": 950.300241
+    },
+    {
+      "T": 6,
+      "k": 0.13,
+      "trades": 836,
+      "wins": 798,
+      "win_rate_pct": 95.4545,
+      "return_pct": 1600.101279,
+      "end_balance": 1700.101279
+    },
+    {
+      "T": 6,
+      "k": 0.14,
+      "trades": 947,
+      "wins": 897,
+      "win_rate_pct": 94.7202,
+      "return_pct": 1566.796373,
+      "end_balance": 1666.796373
+    },
+    {
+      "T": 6,
+      "k": 0.15,
+      "trades": 1050,
+      "wins": 994,
+      "win_rate_pct": 94.6667,
+      "return_pct": 3984.478697,
+      "end_balance": 4084.478697
+    },
+    {
+      "T": 6,
+      "k": 0.16,
+      "trades": 1148,
+      "wins": 1081,
+      "win_rate_pct": 94.1638,
+      "return_pct": 5761.898247,
+      "end_balance": 5861.898247
+    },
+    {
+      "T": 6,
+      "k": 0.17,
+      "trades": 1273,
+      "wins": 1195,
+      "win_rate_pct": 93.8727,
+      "return_pct": 13353.945114,
+      "end_balance": 13453.945114
+    },
+    {
+      "T": 6,
+      "k": 0.18,
+      "trades": 1382,
+      "wins": 1293,
+      "win_rate_pct": 93.5601,
+      "return_pct": 24145.136328,
+      "end_balance": 24245.136328
+    },
+    {
+      "T": 6,
+      "k": 0.19,
+      "trades": 1486,
+      "wins": 1393,
+      "win_rate_pct": 93.7416,
+      "return_pct": 124636.27543,
+      "end_balance": 124736.27543
+    },
+    {
+      "T": 6,
+      "k": 0.2,
+      "trades": 1590,
+      "wins": 1486,
+      "win_rate_pct": 93.4591,
+      "return_pct": 307738.005554,
+      "end_balance": 307838.005554
+    },
+    {
+      "T": 5,
+      "k": 0.12,
+      "trades": 882,
+      "wins": 839,
+      "win_rate_pct": 95.1247,
+      "return_pct": 2370.298568,
+      "end_balance": 2470.298568
+    },
+    {
+      "T": 5,
+      "k": 0.13,
+      "trades": 1009,
+      "wins": 955,
+      "win_rate_pct": 94.6482,
+      "return_pct": 3909.000663,
+      "end_balance": 4009.000663
+    },
+    {
+      "T": 5,
+      "k": 0.14,
+      "trades": 1118,
+      "wins": 1058,
+      "win_rate_pct": 94.6333,
+      "return_pct": 9421.535525,
+      "end_balance": 9521.535525
+    },
+    {
+      "T": 5,
+      "k": 0.15,
+      "trades": 1227,
+      "wins": 1158,
+      "win_rate_pct": 94.3765,
+      "return_pct": 20522.856319,
+      "end_balance": 20622.856319
+    },
+    {
+      "T": 5,
+      "k": 0.16,
+      "trades": 1322,
+      "wins": 1248,
+      "win_rate_pct": 94.4024,
+      "return_pct": 56324.951777,
+      "end_balance": 56424.951777
+    },
+    {
+      "T": 5,
+      "k": 0.17,
+      "trades": 1447,
+      "wins": 1369,
+      "win_rate_pct": 94.6095,
+      "return_pct": 370421.181759,
+      "end_balance": 370521.181759
+    },
+    {
+      "T": 5,
+      "k": 0.18,
+      "trades": 1553,
+      "wins": 1469,
+      "win_rate_pct": 94.5911,
+      "return_pct": 1283120.653999,
+      "end_balance": 1283220.653999
+    },
+    {
+      "T": 5,
+      "k": 0.19,
+      "trades": 1665,
+      "wins": 1574,
+      "win_rate_pct": 94.5345,
+      "return_pct": 5253269.164311,
+      "end_balance": 5253369.164311
+    },
+    {
+      "T": 5,
+      "k": 0.2,
+      "trades": 1773,
+      "wins": 1676,
+      "win_rate_pct": 94.529,
+      "return_pct": 29812103.334259,
+      "end_balance": 29812203.334259
+    },
+    {
+      "T": 4,
+      "k": 0.12,
+      "trades": 1002,
+      "wins": 973,
+      "win_rate_pct": 97.1058,
+      "return_pct": 59749.69474,
+      "end_balance": 59849.69474
+    },
+    {
+      "T": 4,
+      "k": 0.13,
+      "trades": 1138,
+      "wins": 1103,
+      "win_rate_pct": 96.9244,
+      "return_pct": 216069.11842,
+      "end_balance": 216169.11842
+    },
+    {
+      "T": 4,
+      "k": 0.14,
+      "trades": 1253,
+      "wins": 1218,
+      "win_rate_pct": 97.2067,
+      "return_pct": 1453978.57388,
+      "end_balance": 1454078.57388
+    },
+    {
+      "T": 4,
+      "k": 0.15,
+      "trades": 1376,
+      "wins": 1335,
+      "win_rate_pct": 97.0203,
+      "return_pct": 6017054.453191,
+      "end_balance": 6017154.453191
+    },
+    {
+      "T": 4,
+      "k": 0.16,
+      "trades": 1502,
+      "wins": 1451,
+      "win_rate_pct": 96.6045,
+      "return_pct": 22238628.569705,
+      "end_balance": 22238728.569705
+    },
+    {
+      "T": 4,
+      "k": 0.17,
+      "trades": 1626,
+      "wins": 1567,
+      "win_rate_pct": 96.3715,
+      "return_pct": 105100311.837911,
+      "end_balance": 105100411.837911
+    },
+    {
+      "T": 4,
+      "k": 0.18,
+      "trades": 1743,
+      "wins": 1674,
+      "win_rate_pct": 96.0413,
+      "return_pct": 579031636.609497,
+      "end_balance": 579031736.609497
+    },
+    {
+      "T": 4,
+      "k": 0.19,
+      "trades": 1857,
+      "wins": 1778,
+      "win_rate_pct": 95.7458,
+      "return_pct": 3245027665.133259,
+      "end_balance": 3245027765.133259
+    },
+    {
+      "T": 4,
+      "k": 0.2,
+      "trades": 1963,
+      "wins": 1876,
+      "win_rate_pct": 95.568,
+      "return_pct": 16165317027.771893,
+      "end_balance": 16165317127.771894
+    },
+    {
+      "T": 3,
+      "k": 0.12,
+      "trades": 1242,
+      "wins": 1213,
+      "win_rate_pct": 97.6651,
+      "return_pct": 1496890.908836,
+      "end_balance": 1496990.908836
+    },
+    {
+      "T": 3,
+      "k": 0.13,
+      "trades": 1362,
+      "wins": 1330,
+      "win_rate_pct": 97.6505,
+      "return_pct": 9075546.267163,
+      "end_balance": 9075646.267163
+    },
+    {
+      "T": 3,
+      "k": 0.14,
+      "trades": 1490,
+      "wins": 1454,
+      "win_rate_pct": 97.5839,
+      "return_pct": 64414310.679287,
+      "end_balance": 64414410.679287
+    },
+    {
+      "T": 3,
+      "k": 0.15,
+      "trades": 1597,
+      "wins": 1557,
+      "win_rate_pct": 97.4953,
+      "return_pct": 448796662.933777,
+      "end_balance": 448796762.933777
+    },
+    {
+      "T": 3,
+      "k": 0.16,
+      "trades": 1722,
+      "wins": 1673,
+      "win_rate_pct": 97.1545,
+      "return_pct": 3268851930.06291,
+      "end_balance": 3268852030.06291
+    },
+    {
+      "T": 3,
+      "k": 0.17,
+      "trades": 1826,
+      "wins": 1772,
+      "win_rate_pct": 97.0427,
+      "return_pct": 20723450002.265488,
+      "end_balance": 20723450102.265488
+    },
+    {
+      "T": 3,
+      "k": 0.18,
+      "trades": 1943,
+      "wins": 1884,
+      "win_rate_pct": 96.9635,
+      "return_pct": 277779009283.9818,
+      "end_balance": 277779009383.9818
+    },
+    {
+      "T": 3,
+      "k": 0.19,
+      "trades": 2074,
+      "wins": 2006,
+      "win_rate_pct": 96.7213,
+      "return_pct": 4593533513154.181,
+      "end_balance": 4593533513254.181
+    },
+    {
+      "T": 3,
+      "k": 0.2,
+      "trades": 2182,
+      "wins": 2107,
+      "win_rate_pct": 96.5628,
+      "return_pct": 49982163922381.94,
+      "end_balance": 49982163922481.94
+    },
+    {
+      "T": 2,
+      "k": 0.12,
+      "trades": 1464,
+      "wins": 1437,
+      "win_rate_pct": 98.1557,
+      "return_pct": 275969347.074438,
+      "end_balance": 275969447.074438
+    },
+    {
+      "T": 2,
+      "k": 0.13,
+      "trades": 1589,
+      "wins": 1558,
+      "win_rate_pct": 98.0491,
+      "return_pct": 3232478215.419377,
+      "end_balance": 3232478315.419377
+    },
+    {
+      "T": 2,
+      "k": 0.14,
+      "trades": 1731,
+      "wins": 1695,
+      "win_rate_pct": 97.9203,
+      "return_pct": 47015284832.73341,
+      "end_balance": 47015284932.73341
+    },
+    {
+      "T": 2,
+      "k": 0.15,
+      "trades": 1829,
+      "wins": 1789,
+      "win_rate_pct": 97.813,
+      "return_pct": 340471453907.3281,
+      "end_balance": 340471454007.3281
+    },
+    {
+      "T": 2,
+      "k": 0.16,
+      "trades": 1958,
+      "wins": 1914,
+      "win_rate_pct": 97.7528,
+      "return_pct": 9771892104607.645,
+      "end_balance": 9771892104707.645
+    },
+    {
+      "T": 2,
+      "k": 0.17,
+      "trades": 2078,
+      "wins": 2029,
+      "win_rate_pct": 97.642,
+      "return_pct": 177947023975198.25,
+      "end_balance": 177947023975298.25
+    },
+    {
+      "T": 2,
+      "k": 0.18,
+      "trades": 2189,
+      "wins": 2132,
+      "win_rate_pct": 97.3961,
+      "return_pct": 2812078728182402.5,
+      "end_balance": 2812078728182502.5
+    },
+    {
+      "T": 2,
+      "k": 0.19,
+      "trades": 2307,
+      "wins": 2241,
+      "win_rate_pct": 97.1391,
+      "return_pct": 6.847989353119105e+16,
+      "end_balance": 6.847989353119115e+16
+    },
+    {
+      "T": 2,
+      "k": 0.2,
+      "trades": 2420,
+      "wins": 2344,
+      "win_rate_pct": 96.8595,
+      "return_pct": 1.1442106854836544e+18,
+      "end_balance": 1.1442106854836547e+18
+    }
+  ]
+}
