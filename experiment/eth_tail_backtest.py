@@ -23,7 +23,7 @@ import time
 from time import perf_counter
 from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -280,7 +280,7 @@ def _hourly_sigma_annual_from_closes(hourly_closes: deque[float]) -> float | Non
 
 def run_backtest(params: SimParams) -> dict[str, Any]:
     t0 = perf_counter()
-    end_dt = datetime.now(tz=UTC).replace(second=0, microsecond=0)
+    end_dt = datetime.now(tz=timezone.utc).replace(second=0, microsecond=0)
     start_dt = end_dt - timedelta(days=365 * params.years)
     start_ms = int(start_dt.timestamp() * 1000)
     end_ms = int(end_dt.timestamp() * 1000)
@@ -293,7 +293,7 @@ def run_backtest(params: SimParams) -> dict[str, Any]:
 
     by_hour: dict[str, list[dict[str, Any]]] = {}
     for row in klines_1m:
-        ts = datetime.fromtimestamp(int(row[0]) / 1000, tz=UTC)
+        ts = datetime.fromtimestamp(int(row[0]) / 1000, tz=timezone.utc)
         hour_key = ts.strftime("%Y-%m-%dT%H:00:00+00:00")
         by_hour.setdefault(hour_key, []).append(
             {"ts": ts, "minute": ts.minute, "open": float(row[1]), "close": float(row[4])}

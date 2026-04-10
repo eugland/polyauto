@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds, AssetType, BalanceAllowanceParams, OrderArgs, OrderType
 from py_clob_client.constants import POLYGON
@@ -167,8 +169,12 @@ def place_market_sell(
     token_id: str,
     price: float,
     size_shares: float,
+    ttl_seconds: int | None = 60,
 ) -> dict:
-    """Place a FOK (Fill or Kill) sell order — acts as a market sell at the given price."""
+    """
+    Place an aggressive sell order up to the given price without using FOK.
+    Always uses GTC.
+    """
     order_args = OrderArgs(
         token_id=token_id,
         price=price,
@@ -176,7 +182,28 @@ def place_market_sell(
         side=SELL,
     )
     signed_order = client.create_order(order_args)
-    return client.post_order(signed_order, OrderType.FOK)
+    return client.post_order(signed_order, OrderType.GTC)
+
+
+def place_market_buy(
+    client: ClobClient,
+    token_id: str,
+    price: float,
+    size_shares: float,
+    ttl_seconds: int | None = 60,
+) -> dict:
+    """
+    Place an aggressive buy order up to the given price without using FOK.
+    Always uses GTC.
+    """
+    order_args = OrderArgs(
+        token_id=token_id,
+        price=price,
+        size=size_shares,
+        side=BUY,
+    )
+    signed_order = client.create_order(order_args)
+    return client.post_order(signed_order, OrderType.GTC)
 
 
 def place_sell_order(
@@ -202,10 +229,12 @@ def place_no_order(
     price: float,
     size_shares: float,
     post_only: bool = False,
+    ttl_seconds: int | None = None,
 ) -> dict:
     """
-    Place a GTC limit buy order on the No token.
+    Place a limit buy order on the No token.
     size_shares: number of shares to buy.
+    ttl_seconds: retained for call compatibility; orders are placed as GTC.
     """
     order_args = OrderArgs(
         token_id=token_id,

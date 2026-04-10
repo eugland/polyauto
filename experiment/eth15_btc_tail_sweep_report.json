@@ -1,0 +1,104 @@
+{
+  "config": {
+    "years": 1.0,
+    "start_utc": "2025-04-09T06:36:00+00:00",
+    "end_utc": "2026-04-09T06:36:00+00:00",
+    "market": "ETH 15m up/down",
+    "entry_constraint": "Live-style entry gate: bid >= min_bid(seconds), no ask cap",
+    "balance_fraction": 0.25,
+    "k_values": [
+      0.12
+    ],
+    "t_seconds_values": [
+      120,
+      60
+    ],
+    "lookback_hours": 168,
+    "sell_target": 0.999,
+    "stop_loss": 0.75,
+    "stop_fill_below_bid": 0.01,
+    "cache_db_path": "experiment/cache/binance_klines.sqlite"
+  },
+  "summary": {
+    "runs": 2,
+    "best": {
+      "k_value": 0.12,
+      "t_seconds": 60,
+      "entry_bucket_minutes": 1,
+      "trades": 23688,
+      "wins": 23688,
+      "losses": 0,
+      "success_rate_pct": 100.0,
+      "target_exits": 0,
+      "stop_loss_exits": 0,
+      "resolution_wins": 23688,
+      "start_balance": 100.0,
+      "end_balance": 8.565367682270686e+52,
+      "return_pct": 8.565367682270685e+52
+    },
+    "top_10": [
+      {
+        "k_value": 0.12,
+        "t_seconds": 60,
+        "entry_bucket_minutes": 1,
+        "trades": 23688,
+        "wins": 23688,
+        "losses": 0,
+        "success_rate_pct": 100.0,
+        "target_exits": 0,
+        "stop_loss_exits": 0,
+        "resolution_wins": 23688,
+        "start_balance": 100.0,
+        "end_balance": 8.565367682270686e+52,
+        "return_pct": 8.565367682270685e+52
+      },
+      {
+        "k_value": 0.12,
+        "t_seconds": 120,
+        "entry_bucket_minutes": 2,
+        "trades": 17846,
+        "wins": 17695,
+        "losses": 151,
+        "success_rate_pct": 99.1539,
+        "target_exits": 0,
+        "stop_loss_exits": 151,
+        "resolution_wins": 17695,
+        "start_balance": 100.0,
+        "end_balance": 6.97326838443657e+24,
+        "return_pct": 6.97326838443657e+24
+      }
+    ]
+  },
+  "results": [
+    {
+      "k_value": 0.12,
+      "t_seconds": 120,
+      "entry_bucket_minutes": 2,
+      "trades": 17846,
+      "wins": 17695,
+      "losses": 151,
+      "success_rate_pct": 99.1539,
+      "target_exits": 0,
+      "stop_loss_exits": 151,
+      "resolution_wins": 17695,
+      "start_balance": 100.0,
+      "end_balance": 6.97326838443657e+24,
+      "return_pct": 6.97326838443657e+24
+    },
+    {
+      "k_value": 0.12,
+      "t_seconds": 60,
+      "entry_bucket_minutes": 1,
+      "trades": 23688,
+      "wins": 23688,
+      "losses": 0,
+      "success_rate_pct": 100.0,
+      "target_exits": 0,
+      "stop_loss_exits": 0,
+      "resolution_wins": 23688,
+      "start_balance": 100.0,
+      "end_balance": 8.565367682270686e+52,
+      "return_pct": 8.565367682270685e+52
+    }
+  ]
+}
