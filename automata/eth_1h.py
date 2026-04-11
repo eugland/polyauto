@@ -53,11 +53,11 @@ def _init_file_logging() -> None:
 # ── Parameters ─────────────────────────────────────────────────────────────────
 
 SELL_TARGET  = 0.99    # used only when redeem-only mode is disabled
-STOP_LOSS    = 0.75    # exit immediately if position bid drops below this
+STOP_LOSS    = 0.60    # exit immediately if position bid drops below this
 BET_SHARES   = 20      # target shares per trade
 K_DEFAULT    = 0.09   # Brownian Bridge k — auto-calibrated when >= 10 outcomes exist
 MIN_MINUTES  = 0       # allow entry from expiry up to MAX_MINUTES remaining
-MAX_MINUTES  = 10      # only enter in the last 10 minutes before expiry
+MAX_MINUTES  = 7       # only enter in the last 7 minutes before expiry
 REDEEM_ONLY_MODE = True  # hold to resolution/redeem; no TP sell placement
 
 DB_PATH  = Path(__file__).resolve().parent.parent / "bets.db"
@@ -1103,7 +1103,7 @@ def run_eth_1h(
                 _calibrate_k()
                 return
 
-            if not REDEEM_ONLY_MODE and cur_bid is not None and cur_bid < STOP_LOSS:
+            if cur_bid is not None and cur_bid < STOP_LOSS:
                 log.warning("[eth_1h] STOP-LOSS  bid=%.3f < %.2f — exiting %s",
                             cur_bid, STOP_LOSS, _position["direction"])
                 if not dry_run:
