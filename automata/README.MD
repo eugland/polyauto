@@ -115,6 +115,67 @@ Flags:
 Default URL:
 - `http://localhost:5050`
 
+## 7) `experiment.crypto_5m_scanner` (multi-asset 5m penny scanner)
+
+Run in one terminal:
+
+```bash
+python -m experiment.crypto_5m_scanner
+```
+
+What it does:
+- Discovers all active `*-updown-5m-*` markets on Polymarket (BTC, ETH, XRP, BNB, SOL, DOGE, and any new assets) automatically.
+- Every 5 seconds, fetches all order books in a single bulk request.
+- When either side's best ask ≤ `--max-price` ($0.03 by default), records a signal row to `experiment/crypto_5m.db`.
+- Tracks the **cheapest ask ever seen** per (candle, side) — if the price drops further, the row is updated.
+- After each candle closes, resolves the winner from Polymarket and writes P/L to the signal row.
+- No orders are placed — purely a paper/observation recorder.
+
+Flags:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--max-price` | `0.03` | Max ask to record ($0.01 / $0.02 / $0.03) |
+| `--poll` | `5` | Seconds between order-book polls |
+| `--db` | `experiment/crypto_5m.db` | SQLite DB path |
+
+DB schema:
+- `candles` — one row per slug: `asset`, `candle_start`, `candle_end`, `up_token`, `down_token`, `winner`
+- `signals` — one row per (slug, side): `min_price`, `secs_remaining`, `won`, `pnl`
+
+---
+
+## 8) `experiment.crypto_5m_stats` (penny signal stats UI)
+
+Run in a second terminal:
+
+```bash
+python -m experiment.crypto_5m_stats
+```
+
+What it does:
+- Flask web app that reads `experiment/crypto_5m.db` and shows interactive charts.
+- Available at `http://localhost:5051` and on your LAN (IP shown at startup).
+- Auto-refreshes every 30 seconds.
+
+Charts — per asset tab:
+- **Cumulative P/L line chart** with three series:
+  - ≤1¢ (red) — signals where `min_price ≤ $0.01`
+  - ≤2¢ (yellow) — signals where `min_price ≤ $0.02`
+  - ≤3¢ (green) — signals where `min_price ≤ $0.03`
+- Each series is cumulative and assumes 1 share per signal entry.
+- **Stats boxes** per tier: win rate, W/L count, net P/L, ROI, resolved vs pending.
+
+Flags:
+
+| Flag | Default | Description |
+|---|---|---|
+| `--port` | `5051` | HTTP port |
+| `--host` | `0.0.0.0` | Bind address (0.0.0.0 = all interfaces = LAN-accessible) |
+| `--db` | `experiment/crypto_5m.db` | SQLite DB path |
+
+---
+
 ## 6) `automata` (combined runner)
 
 Run:
