@@ -959,6 +959,7 @@ def _init_table() -> None:
 
 
 def _get_k() -> float:
+    _init_table()
     with sqlite3.connect(DB_PATH) as conn:
         row = conn.execute(
             "SELECT value FROM eth_1h_settings WHERE key = 'k'"
@@ -1461,6 +1462,7 @@ def run_eth_1h(
 # ── Standalone display ─────────────────────────────────────────────────────────
 
 def analyze(host: str = "https://clob.polymarket.com") -> None:
+    _init_table()
     now_et       = current_et()
     candle_start = now_et.replace(minute=0, second=0, microsecond=0)
 
