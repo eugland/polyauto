@@ -702,7 +702,6 @@ def _settle_resolved_trades(private_key: str | None, rpc_url: str | None = None,
         _resolved_side_from_chain as _resolved_side_from_chain_15m,
     )
 
-    _init_table()
     if not private_key:
         log.warning("[eth_1h] POLYMARKET_PRIVATE_KEY missing; cannot redeem")
         return
@@ -712,57 +711,37 @@ def _settle_resolved_trades(private_key: str | None, rpc_url: str | None = None,
         log.warning("[eth_1h] POLYMARKET_FUNDER missing; cannot scan positions for redeem")
         return
 
-    from automata.client import get_positions
-    positions = get_positions(funder)
+    import requests as _requests
+    try:
+        r = _requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": funder, "sizeThreshold": "0.01"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        positions = r.json()
+    except Exception as exc:
+        log.warning("[eth_1h] get_positions failed: %s", exc)
+        return
+
     if not positions:
         return
 
-    open_token_ids = {str(p.get("token_id")) for p in positions if p.get("token_id")}
-    if not open_token_ids:
-        return
+    # Build condition_id -> set of token_ids from raw API data (no DB lookup needed)
+    condition_to_tokens: dict[str, set[str]] = {}
+    for p in positions:
+        cid = str(p.get("conditionId") or "")
+        tid = str(p.get("asset") or "")
+        size = float(p.get("size", 0) or 0)
+        if cid and tid and size > 0:
+            condition_to_tokens.setdefault(cid, set()).add(tid)
 
-    placeholders = ",".join("?" for _ in open_token_ids)
-    with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT DISTINCT token_id, slug, condition_id
-            FROM eth_1h_trades
-            WHERE COALESCE(dry_run, 0) = 0
-              AND token_id IN ({placeholders})
-              AND redeemed_at IS NULL
-            """,
-            tuple(open_token_ids),
-        ).fetchall()
-
-    if not rows:
-        return
-
-    enriched: list[tuple[str, str, str]] = []
-    for token_id, slug, condition_id in rows:
-        cid = str(condition_id or "")
-        if not cid:
-            event = _fetch_event_by_slug(str(slug))
-            if event and event.get("markets"):
-                cid = str(event["markets"][0].get("conditionId") or "")
-                if cid:
-                    with sqlite3.connect(DB_PATH) as conn:
-                        conn.execute(
-                            "UPDATE eth_1h_trades SET condition_id = ? WHERE slug = ?",
-                            (cid, slug),
-                        )
-        if cid:
-            enriched.append((str(token_id), str(slug), cid))
-
-    if not enriched:
+    if not condition_to_tokens:
         return
 
     _, ctf = _get_web3_and_ctf_15m(rpc_url)
 
-    condition_to_slugs: dict[str, set[str]] = {}
-    for _, slug, cid in enriched:
-        condition_to_slugs.setdefault(cid, set()).add(slug)
-
-    for cid, slugs in condition_to_slugs.items():
+    for cid, token_ids in condition_to_tokens.items():
         side = _resolved_side_from_chain_15m(ctf, str(cid))
         if side is None:
             continue
@@ -773,39 +752,7 @@ def _settle_resolved_trades(private_key: str | None, rpc_url: str | None = None,
         if not tx_hash:
             log.warning("[eth_1h] Redeem submit failed for condition=%s side=%s", cid, side)
             continue
-        now_iso = datetime.now(timezone.utc).isoformat()
-        for slug in slugs:
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute(
-                    """
-                    UPDATE eth_1h_trades
-                    SET redeemed_at = ?, redeem_tx_hash = ?
-                    WHERE slug = ? AND COALESCE(dry_run, 0) = 0 AND redeemed_at IS NULL
-                    """,
-                    (now_iso, tx_hash, slug),
-                )
-                if side in ("up", "down"):
-                    conn.execute(
-                        """
-                        UPDATE eth_1h_trades
-                        SET outcome = CASE
-                            WHEN lower(direction) = ? THEN 'win'
-                            ELSE 'loss'
-                        END
-                        WHERE slug = ? AND COALESCE(dry_run, 0) = 0 AND outcome IS NULL
-                        """,
-                        (side, slug),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        UPDATE eth_1h_trades
-                        SET outcome = 'invalid'
-                        WHERE slug = ? AND COALESCE(dry_run, 0) = 0 AND outcome IS NULL
-                        """,
-                        (slug,),
-                    )
-            log.info("[eth_1h] Settled slug=%s side=%s redeem_tx=%s", slug, side, tx_hash or "n/a")
+        log.info("[eth_1h] Settled condition=%s tokens=%s side=%s redeem_tx=%s", cid, token_ids, side, tx_hash)
 
 
 def fetch_and_parse(slug: str) -> dict | None:
