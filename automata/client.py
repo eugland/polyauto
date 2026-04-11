@@ -169,6 +169,7 @@ def place_market_sell(
     token_id: str,
     price: float,
     size_shares: float,
+    fee_rate_bps: int | None = None,
     ttl_seconds: int | None = 60,
 ) -> dict:
     """
@@ -180,9 +181,10 @@ def place_market_sell(
         price=price,
         size=size_shares,
         side=SELL,
+        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
-    return client.post_order(signed_order, OrderType.GTC)
+    return client.post_order(signed_order, OrderType.GTC, post_only=post_only)
 
 
 def place_market_buy(
@@ -190,6 +192,7 @@ def place_market_buy(
     token_id: str,
     price: float,
     size_shares: float,
+    fee_rate_bps: int | None = None,
     ttl_seconds: int | None = 60,
 ) -> dict:
     """
@@ -201,6 +204,7 @@ def place_market_buy(
         price=price,
         size=size_shares,
         side=BUY,
+        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
     return client.post_order(signed_order, OrderType.GTC)
@@ -211,6 +215,7 @@ def place_sell_order(
     token_id: str,
     price: float,
     size_shares: float,
+    fee_rate_bps: int | None = None,
 ) -> dict:
     """Place a GTC limit sell order on a token."""
     order_args = OrderArgs(
@@ -218,6 +223,7 @@ def place_sell_order(
         price=price,
         size=size_shares,
         side=SELL,
+        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
     return client.post_order(signed_order, OrderType.GTC)
@@ -228,6 +234,7 @@ def place_no_order(
     token_id: str,
     price: float,
     size_shares: float,
+    fee_rate_bps: int | None = None,
     post_only: bool = False,
     ttl_seconds: int | None = None,
 ) -> dict:
@@ -241,6 +248,7 @@ def place_no_order(
         price=price,
         size=size_shares,
         side=BUY,
+        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
-    return client.post_order(signed_order, OrderType.GTC, post_only=post_only)
+    return client.post_order(signed_order, OrderType.GTC)

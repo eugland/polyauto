@@ -10,9 +10,9 @@ Strategy:
     2. Hold position to market resolution (redeem flow)
 
   Entry threshold uses a Brownian Bridge-inspired formula:
-    min_bid = 1 - 0.12 / sqrt(mins_remaining)
-    T-20: 0.973+   T-10: 0.962+   T-3: 0.931+
-  k=0.12 is self-calibrated from trade history when >= 10 outcomes exist.
+    min_bid = 1 - 0.09 / sqrt(mins_remaining)
+    T-20: 0.980+   T-10: 0.972+   T-3: 0.948+
+  k=0.09 is self-calibrated from trade history when >= 10 outcomes exist.
 
   Stop-loss only applies when redeem-only mode is disabled.
 
@@ -55,9 +55,9 @@ def _init_file_logging() -> None:
 SELL_TARGET  = 0.99    # used only when redeem-only mode is disabled
 STOP_LOSS    = 0.75    # exit immediately if position bid drops below this
 BET_SHARES   = 20      # target shares per trade
-K_DEFAULT    = 0.12   # Brownian Bridge k — auto-calibrated when >= 10 outcomes exist
-MIN_MINUTES  = 0       # allow entry from 3 minutes down to expiry
-MAX_MINUTES  = 5       # only enter in the last 5 minutes before expiry
+K_DEFAULT    = 0.09   # Brownian Bridge k — auto-calibrated when >= 10 outcomes exist
+MIN_MINUTES  = 0       # allow entry from expiry up to MAX_MINUTES remaining
+MAX_MINUTES  = 10      # only enter in the last 10 minutes before expiry
 REDEEM_ONLY_MODE = True  # hold to resolution/redeem; no TP sell placement
 
 DB_PATH  = Path(__file__).resolve().parent.parent / "bets.db"
@@ -97,6 +97,7 @@ _position: dict = {
     "sell_order_id": None,
     "shares":        0,
     "entry_price":   None,
+    "fee_rate_bps":  0,
 }
 
 CTF_ABI = [
@@ -137,6 +138,7 @@ def _reset_position() -> None:
     _position = {k: None for k in _position}
     _position["active"] = False
     _position["shares"] = 0
+    _position["fee_rate_bps"] = 0
 
 
 def _fetch_event_by_slug(slug: str) -> dict | None:
@@ -657,9 +659,9 @@ def _assess_reversal_risk(
     )
 
     # ── Filters ───────────────────────────────────────────────────────────────
-    SKIP_GAP_SAFETY        = 1.5   # hard skip when reversal within ~1.5 sigma reach
-    SKIP_ADVERSE_STREAK    = 2     # skip on N+ consecutive adverse candles
-    SKIP_ADVERSE_TAKER_MAX = 0.60  # skip when adverse buying/selling > 60%
+    SKIP_GAP_SAFETY        = 1.2   # loosened: allow entries unless reversal is within ~1.2 sigma reach
+    SKIP_ADVERSE_STREAK    = 5     # loosened: require a longer adverse streak before skipping
+    SKIP_ADVERSE_TAKER_MAX = 0.75  # loosened: tolerate stronger adverse taker pressure
 
     skip_reasons = []
     if gap_safety < SKIP_GAP_SAFETY:
@@ -808,7 +810,8 @@ def _settle_resolved_trades(private_key: str | None, rpc_url: str | None = None,
 
 def fetch_and_parse(slug: str) -> dict | None:
     """
-    Returns dict: slug, title, up_token, down_token, minutes_remaining, end_utc, condition_id
+    Returns dict: slug, title, up_token, down_token, minutes_remaining, end_utc,
+    condition_id, maker_fee_bps
     or None if market is closed / not found.
     """
     try:
@@ -859,6 +862,12 @@ def fetch_and_parse(slug: str) -> dict | None:
     except (TypeError, ValueError):
         pass
 
+    maker_fee_bps = 0
+    try:
+        maker_fee_bps = max(0, int(m.get("makerBaseFee") or 0))
+    except (TypeError, ValueError):
+        maker_fee_bps = 0
+
     return {
         "slug":              event.get("slug", slug),
         "title":             event.get("title", ""),
@@ -868,6 +877,7 @@ def fetch_and_parse(slug: str) -> dict | None:
         "end_utc":           end_utc,
         "condition_id":      str(m.get("conditionId") or ""),
         "price_to_beat":     price_to_beat,
+        "maker_fee_bps":     maker_fee_bps,
     }
 
 
@@ -1110,8 +1120,13 @@ def run_eth_1h(
                         if _position["sell_order_id"] and _position["sell_order_id"] != "?":
                             cancel_order(client, _position["sell_order_id"])
                         exit_price = max(round(cur_bid - 0.01, 2), 0.01)
-                        place_market_sell(client, _position["token_id"],
-                                          exit_price, _position["shares"])
+                        place_market_sell(
+                            client,
+                            _position["token_id"],
+                            exit_price,
+                            _position["shares"],
+                            fee_rate_bps=int(_position.get("fee_rate_bps") or 0),
+                        )
                         log.info("[eth_1h] Stop-loss sell placed @ %.3f", exit_price)
                     except Exception as exc:
                         log.error("[eth_1h] Stop-loss exit failed: %s", exc)
@@ -1156,7 +1171,8 @@ def run_eth_1h(
     k = _calibrate_k()
 
     # Time-adjusted minimum bid (Brownian Bridge): stricter earlier in the window
-    min_bid = round(1 - k / mins ** 0.5, 3)
+    mins_for_bid = max(mins, 1)
+    min_bid = round(1 - k / mins_for_bid ** 0.5, 3)
 
     # Live order book
     books     = get_books(host, [mkt["up_token"], mkt["down_token"]])
@@ -1250,6 +1266,7 @@ def run_eth_1h(
     direction  = candidate["direction"]
     ask        = candidate["ask"]
     token      = candidate["token"]
+    fee_rate_bps = int(mkt.get("maker_fee_bps") or 0)
     entry_edge = edge_down if direction == "Down" else edge_up
     entry_fair = fair_down if direction == "Down" else fair_up
 
@@ -1327,6 +1344,7 @@ def run_eth_1h(
         f"{spot:.2f}"   if spot   is not None else "n/a",
         f"{strike:.2f}" if strike is not None else "n/a",
     )
+    log.info("[eth_1h] FEE  maker_fee_bps=%d", fee_rate_bps)
 
     if dry_run:
         shares = target_shares
@@ -1399,7 +1417,13 @@ def run_eth_1h(
 
     # Step 1 — buy
     try:
-        buy_resp = place_no_order(client, token, ask, shares)
+        buy_resp = place_no_order(
+            client,
+            token,
+            ask,
+            shares,
+            fee_rate_bps=fee_rate_bps,
+        )
         buy_id   = buy_resp.get("orderID") or buy_resp.get("id") or "?"
         log.info("[eth_1h] Bought %.2f %s @ %.3f  $%.2f  id=%s",
                  shares, direction, ask, cost, buy_id)
@@ -1427,6 +1451,7 @@ def run_eth_1h(
         "sell_order_id": sell_id,
         "shares":        shares,
         "entry_price":   ask,
+        "fee_rate_bps":  fee_rate_bps,
     })
 
     print(f"  [eth_1h] BUY {direction} {shares}sh @ {ask:.3f}  ${cost:.2f}"
@@ -1454,7 +1479,8 @@ def analyze(host: str = "https://clob.polymarket.com") -> None:
     down_book = books.get(mkt["down_token"], {})
 
     mins = mkt["minutes_remaining"]
-    min_bid = round(1 - 0.12 / mins ** 0.5, 3) if mins > 0 else None
+    mins_for_bid = max(mins, 1)
+    min_bid = round(1 - _get_k() / mins_for_bid ** 0.5, 3)
     div     = "=" * 65
     print(f"\n{div}")
     print(f"  ETH 1H TAIL CAPTURE  {mkt['title']}")
