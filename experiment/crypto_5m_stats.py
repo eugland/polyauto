@@ -45,7 +45,7 @@ def _query_stats() -> dict:
 
     # All resolved signals, ordered by candle_start
     rows = conn.execute("""
-        SELECT asset, side, min_price, candle_start, won, pnl
+        SELECT asset, side, tier, entry_price, candle_start, won, pnl
         FROM signals
         WHERE won IS NOT NULL
         ORDER BY asset, candle_start
@@ -53,7 +53,7 @@ def _query_stats() -> dict:
 
     # All signals including unresolved (for pending count)
     all_rows = conn.execute("""
-        SELECT asset, side, min_price, won
+        SELECT asset, side, tier, won
         FROM signals
     """).fetchall()
 
@@ -99,19 +99,19 @@ def _query_stats() -> dict:
             labels.append(dt.strftime("%m/%d %H:%M"))
 
             for tier_key, threshold in TIERS:
-                tier_rows = [r for r in candle_rows if r["min_price"] <= threshold]
+                tier_rows = [r for r in candle_rows if round(r["tier"], 2) <= threshold]
                 running[tier_key] += sum(r["pnl"] for r in tier_rows)
                 series[tier_key].append(round(running[tier_key], 4))
 
         # Summary stats per tier
         stats: dict[str, dict] = {}
         for tier_key, threshold in TIERS:
-            resolved = [r for r in asset_rows if r["min_price"] <= threshold]
+            resolved = [r for r in asset_rows if round(r["tier"], 2) <= threshold]
             pending  = [r for r in all_asset_rows
-                        if r["min_price"] <= threshold and r["won"] is None]
+                        if round(r["tier"], 2) <= threshold and r["won"] is None]
             wins     = [r for r in resolved if r["won"] == 1]
             total_pnl = sum(r["pnl"] for r in resolved)
-            total_cost = sum(r["min_price"] for r in resolved)
+            total_cost = sum(r["entry_price"] for r in resolved)
             stats[tier_key] = {
                 "signals":   len(resolved) + len(pending),
                 "resolved":  len(resolved),
@@ -251,13 +251,12 @@ async function loadData() {
         </div>`;
     });
 
-    const canvasId = `chart-${asset}`;
     contentEl.innerHTML += `
       <div class="card mb-4">
         <div class="card-header fw-bold fs-5">${asset}</div>
         <div class="card-body">
           <div class="row g-3 mb-3">${statBoxes}</div>
-          <canvas id="${canvasId}"></canvas>
+          <canvas id="chart-${asset}" style="max-height:320px"></canvas>
         </div>
       </div>`;
   });
@@ -268,68 +267,35 @@ async function loadData() {
 }
 
 function buildChart(asset, ad) {
-  const canvasId = `chart-${asset}`;
-  const ctx = document.getElementById(canvasId);
+  const ctx = document.getElementById(`chart-${asset}`);
   if (!ctx) return;
-
-  if (charts[asset]) {
-    charts[asset].destroy();
-  }
-
-  const labels = ad.chart.labels;
-  const datasets = [
-    {
-      label: "≤1¢",
-      data: ad.chart.series_1c,
-      borderColor: COLORS["1c"].border,
-      backgroundColor: COLORS["1c"].bg,
-      fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2,
-    },
-    {
-      label: "≤2¢",
-      data: ad.chart.series_2c,
-      borderColor: COLORS["2c"].border,
-      backgroundColor: COLORS["2c"].bg,
-      fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2,
-    },
-    {
-      label: "≤3¢",
-      data: ad.chart.series_3c,
-      borderColor: COLORS["3c"].border,
-      backgroundColor: COLORS["3c"].bg,
-      fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2,
-    },
-  ];
+  if (charts[asset]) charts[asset].destroy();
 
   charts[asset] = new Chart(ctx, {
     type: "line",
-    data: { labels, datasets },
+    data: {
+      labels: ad.chart.labels,
+      datasets: [
+        { label: "≤1¢", data: ad.chart.series_1c, borderColor: COLORS["1c"].border, backgroundColor: COLORS["1c"].bg, fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 },
+        { label: "≤2¢", data: ad.chart.series_2c, borderColor: COLORS["2c"].border, backgroundColor: COLORS["2c"].bg, fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 },
+        { label: "≤3¢", data: ad.chart.series_3c, borderColor: COLORS["3c"].border, backgroundColor: COLORS["3c"].bg, fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2 },
+      ],
+    },
     options: {
       responsive: true,
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { position: "top" },
-        title: {
-          display: true,
-          text: `${asset} — Cumulative P/L by price threshold`,
-          color: "#e6edf3",
-        },
         tooltip: {
           callbacks: {
-            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? "+" : ""}${ctx.parsed.y.toFixed(4)}`,
+            label: c => ` ${c.dataset.label}: ${c.parsed.y >= 0 ? "+" : ""}$${c.parsed.y.toFixed(3)}`,
           },
         },
       },
       scales: {
-        x: {
-          ticks: { color: "#8b949e", maxTicksLimit: 16, maxRotation: 45 },
-          grid: { color: "#21262d" },
-        },
+        x: { ticks: { color: "#8b949e", maxTicksLimit: 16, maxRotation: 45 }, grid: { color: "#21262d" } },
         y: {
-          ticks: {
-            color: "#8b949e",
-            callback: v => (v >= 0 ? "+" : "") + v.toFixed(3),
-          },
+          ticks: { color: "#8b949e", callback: v => (v >= 0 ? "+" : "") + "$" + v.toFixed(2) },
           grid: { color: "#21262d" },
           title: { display: true, text: "Cumulative P/L (USDC)", color: "#8b949e" },
         },

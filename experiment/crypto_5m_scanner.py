@@ -32,7 +32,9 @@ GAMMA_API        = "https://gamma-api.polymarket.com/events"
 CLOB_HOST        = "https://clob.polymarket.com"
 DB_PATH          = os.path.join("experiment", "crypto_5m.db")
 DEFAULT_MAX      = 0.03
-MIN_SHARES       = 5      # minimum shares available at the ask to fire a signal
+BET_SHARES       = 5      # shares placed per order at each tier
+MIN_BOOK_SHARES  = 1      # minimum shares needed in order book to fire
+TIERS            = [0.03, 0.02, 0.01]  # each tier gets its own independent order
 POLL_INTERVAL    = 5      # seconds between book polls
 REFRESH_INTERVAL = 60     # seconds between market-list refreshes
 RESOLVE_INTERVAL = 30     # seconds between resolution scans
@@ -74,15 +76,16 @@ CREATE TABLE IF NOT EXISTS signals (
     slug           TEXT    NOT NULL,
     asset          TEXT    NOT NULL,
     side           TEXT    NOT NULL,   -- 'Up' / 'Down'
-    min_price      REAL    NOT NULL,   -- cheapest ask ever seen for this side/candle
-    shares         REAL    NOT NULL DEFAULT 5,  -- shares available at min_price (min 5)
-    secs_remaining INTEGER,            -- secs left when min_price was first observed
+    tier           REAL    NOT NULL,   -- threshold that triggered this order: 0.01 / 0.02 / 0.03
+    entry_price    REAL    NOT NULL,   -- actual ask at time of entry
+    shares         REAL    NOT NULL DEFAULT 5,
+    secs_remaining INTEGER,
     candle_start   INTEGER NOT NULL,
-    signal_ts      INTEGER NOT NULL,   -- unix epoch of first signal
-    winner         TEXT,               -- filled after resolution
+    signal_ts      INTEGER NOT NULL,
+    winner         TEXT,
     won            INTEGER,            -- 1 / 0 / NULL
-    pnl            REAL,               -- shares*(1-min_price) if won, shares*(-min_price) if lost
-    UNIQUE(slug, side)
+    pnl            REAL,               -- shares*(1-entry_price) if won, shares*(-entry_price) if lost
+    UNIQUE(slug, side, tier)           -- one order per side per tier per candle
 );
 
 CREATE INDEX IF NOT EXISTS idx_sig_asset ON signals(asset, candle_start);
@@ -94,11 +97,12 @@ def _init_db(path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.executescript(_DDL)
-    # Migrate existing DBs that predate the shares column
+    # Migrate: if signals table uses old schema (no tier column), drop and recreate
     cols = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
-    if "shares" not in cols:
-        conn.execute(f"ALTER TABLE signals ADD COLUMN shares REAL NOT NULL DEFAULT {MIN_SHARES}")
+    if cols and "tier" not in cols:
+        log.info("Migrating signals table to per-tier schema (old data cleared)")
+        conn.execute("DROP TABLE IF EXISTS signals")
+    conn.executescript(_DDL)
     conn.commit()
     return conn
 
@@ -268,33 +272,25 @@ def _upsert_candle(conn: sqlite3.Connection, mkt: Market) -> None:
     conn.commit()
 
 
-def _upsert_signal(
+def _insert_signal(
     conn: sqlite3.Connection,
-    slug: str, asset: str, side: str,
-    price: float, shares: float, secs: int | None, candle_start: int,
+    slug: str, asset: str, side: str, tier: float,
+    entry_price: float, secs: int | None, candle_start: int,
 ) -> bool:
-    """Insert signal or update if we observed a cheaper price. Returns True on change."""
+    """Insert one order for this (slug, side, tier) if not already placed. Returns True if inserted."""
     now = int(datetime.now(timezone.utc).timestamp())
-    row = conn.execute(
-        "SELECT min_price FROM signals WHERE slug=? AND side=?", (slug, side)
+    exists = conn.execute(
+        "SELECT 1 FROM signals WHERE slug=? AND side=? AND tier=?", (slug, side, tier)
     ).fetchone()
-
-    if row is None:
-        conn.execute("""
-            INSERT INTO signals
-                (slug, asset, side, min_price, shares, secs_remaining, candle_start, signal_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (slug, asset, side, price, shares, secs, candle_start, now))
-        conn.commit()
-        return True
-    if price < row["min_price"]:
-        conn.execute("""
-            UPDATE signals SET min_price=?, shares=?, secs_remaining=?, signal_ts=?
-            WHERE slug=? AND side=?
-        """, (price, shares, secs, now, slug, side))
-        conn.commit()
-        return True
-    return False
+    if exists:
+        return False
+    conn.execute("""
+        INSERT INTO signals
+            (slug, asset, side, tier, entry_price, shares, secs_remaining, candle_start, signal_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (slug, asset, side, tier, entry_price, BET_SHARES, secs, candle_start, now))
+    conn.commit()
+    return True
 
 
 def _resolve_slug(conn: sqlite3.Connection, slug: str) -> bool:
@@ -322,12 +318,12 @@ def _resolve_slug(conn: sqlite3.Connection, slug: str) -> bool:
             "UPDATE candles SET winner=?, resolved_at=? WHERE slug=?", (winner, now, slug)
         )
         sigs = conn.execute(
-            "SELECT id, side, min_price, shares FROM signals WHERE slug=?", (slug,)
+            "SELECT id, side, entry_price, shares FROM signals WHERE slug=?", (slug,)
         ).fetchall()
         for sig in sigs:
             won = 1 if sig["side"] == winner else 0
-            shares = sig["shares"] if sig["shares"] else MIN_SHARES
-            pnl = round(shares * ((1.0 - sig["min_price"]) if won else -sig["min_price"]), 6)
+            shares = sig["shares"] or BET_SHARES
+            pnl = round(shares * ((1.0 - sig["entry_price"]) if won else -sig["entry_price"]), 6)
             conn.execute(
                 "UPDATE signals SET winner=?, won=?, pnl=? WHERE id=?",
                 (winner, won, pnl, sig["id"]),
@@ -403,13 +399,16 @@ def run(max_price: float, poll: float, db_path: str) -> None:
                     if not mkt:
                         continue
                     ask, size = _best_ask_with_size(book)
-                    if ask is not None and ask <= max_price and size >= MIN_SHARES:
-                        secs = mkt.candle_end - now
-                        if _upsert_signal(conn, slug, asset, side, ask, MIN_SHARES, secs, mkt.candle_start):
-                            log.info(
-                                "SIGNAL  %-5s %-4s  price=$%.2f  shares=%d  secs=%d",
-                                asset, side, ask, MIN_SHARES, max(0, secs),
-                            )
+                    if ask is None or size < MIN_BOOK_SHARES:
+                        continue
+                    secs = mkt.candle_end - now
+                    for tier in TIERS:
+                        if ask <= tier:
+                            if _insert_signal(conn, slug, asset, side, tier, ask, secs, mkt.candle_start):
+                                log.info(
+                                    "SIGNAL  %-5s %-4s  tier=$%.2f  price=$%.2f  shares=%d  secs=%d",
+                                    asset, side, tier, ask, BET_SHARES, max(0, secs),
+                                )
             except Exception as exc:
                 log.warning("Book poll error: %s", exc)
 
