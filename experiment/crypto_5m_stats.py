@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-Unified trading dashboard — Flask web app.
+Unified trading dashboard â€” Flask web app.
 
 Tabs:
   1. Crypto 5m signals  (reads experiment/crypto_5m.db)
-  2. ETH 1H bot         (reads bets.db → eth_1h_trades; streams eth_1h.log)
-  3. Weather bets        (reads bets.db → placed_bets)
+  2. ETH 1H bot         (reads bets.db â†’ eth_1h_trades; streams eth_1h.log)
+  3. Weather bets        (reads bets.db â†’ placed_bets)
 
 Start:  python -m experiment.crypto_5m_stats
 Opens:  http://localhost:5051   (accessible to any device on your LAN)
@@ -24,13 +24,14 @@ from flask import Flask, jsonify, render_template_string, request
 CRYPTO_DB_PATH = os.path.join("experiment", "crypto_5m.db")
 BETS_DB_PATH   = str(Path(__file__).resolve().parent.parent / "bets.db")
 ETH_LOG_PATH   = os.path.join("experiment", "logs", "eth_1h.log")
+BS_LOG_PATH    = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
 TIERS          = [("1c", 0.01), ("2c", 0.02), ("3c", 0.03)]
 LOG_TAIL       = 200
 
 app = Flask(__name__)
 
 
-# ── config helpers ────────────────────────────────────────────────────────────
+# â”€â”€ config helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _crypto_db() -> str:
     return app.config.get("CRYPTO_DB_PATH", CRYPTO_DB_PATH)
@@ -41,15 +42,25 @@ def _bets_db() -> str:
 def _eth_log() -> str:
     return app.config.get("ETH_LOG_PATH", ETH_LOG_PATH)
 
+def _bs_log() -> str:
+    return app.config.get("BS_LOG_PATH", BS_LOG_PATH)
 
-# ── crypto 5m ─────────────────────────────────────────────────────────────────
+
+# â”€â”€ crypto 5m â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _query_crypto_stats() -> dict:
     if not os.path.exists(_crypto_db()):
-        return {"error": "DB not found — start crypto_5m_scanner first.", "assets": []}
+        return {"error": "DB not found â€” start crypto_5m_scanner first.", "assets": []}
 
     conn = sqlite3.connect(_crypto_db())
     conn.row_factory = sqlite3.Row
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
+    if "tier" not in cols:
+        conn.close()
+        return {
+            "error": "Tier view is disabled in edge mode. Use the 'BS Forward Test' tab.",
+            "assets": [],
+        }
 
     rows = conn.execute("""
         SELECT asset, side, tier, entry_price, candle_start, won, pnl
@@ -119,7 +130,7 @@ def _query_crypto_stats() -> dict:
 
     last_update = (
         datetime.fromtimestamp(last_signal, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        if last_signal else "—"
+        if last_signal else "â€”"
     )
     return {
         "assets": all_assets, "data": assets_data,
@@ -128,14 +139,14 @@ def _query_crypto_stats() -> dict:
     }
 
 
-# ── ETH 1H ───────────────────────────────────────────────────────────────────
+# â”€â”€ ETH 1H â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _WIN_OUTCOMES  = {"win"}
 _LOSS_OUTCOMES = {"loss", "stop_loss", "expired"}
 
 def _query_eth_stats() -> dict:
     if not os.path.exists(_bets_db()):
-        return {"error": "bets.db not found — start automata.eth first."}
+        return {"error": "bets.db not found â€” start automata.eth first."}
 
     conn = sqlite3.connect(_bets_db())
     conn.row_factory = sqlite3.Row
@@ -149,7 +160,7 @@ def _query_eth_stats() -> dict:
         """).fetchall()
     except sqlite3.OperationalError:
         conn.close()
-        return {"error": "eth_1h_trades table not found — start automata.eth first."}
+        return {"error": "eth_1h_trades table not found â€” start automata.eth first."}
     conn.close()
 
     trades  = [dict(r) for r in rows]
@@ -197,7 +208,7 @@ def _query_eth_stats() -> dict:
     }
 
 
-# ── log tail ──────────────────────────────────────────────────────────────────
+# â”€â”€ log tail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _read_log_tail() -> list[str]:
     try:
@@ -207,7 +218,15 @@ def _read_log_tail() -> list[str]:
         return [f"Log file not found: {_eth_log()}"]
 
 
-# ── weather ───────────────────────────────────────────────────────────────────
+def _read_bs_log_tail() -> list[str]:
+    try:
+        with open(_bs_log(), "r", encoding="utf-8", errors="replace") as f:
+            return list(deque(f, maxlen=LOG_TAIL))
+    except FileNotFoundError:
+        return [f"Log file not found: {_bs_log()}"]
+
+
+# â”€â”€ weather â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _query_weather_stats() -> dict:
     if not os.path.exists(_bets_db()):
@@ -253,7 +272,112 @@ def _query_weather_stats() -> dict:
     return {"stats": stats, "bets": bets}
 
 
-# ── template ──────────────────────────────────────────────────────────────────
+# â”€â”€ BS forward test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
+    """
+    Reads from the live scanner's `signals` table.
+    Filters to rows that have a BS fair_price recorded (i.e. scanner ran with
+    --min-edge), and optionally applies a minimum edge filter.
+    """
+    db = _crypto_db()
+    if not os.path.exists(db):
+        return {"error": "DB not found â€” start crypto_5m_scanner first.", "assets": []}
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+
+    # Check columns exist (older DBs may not have fair_price/edge yet)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
+    has_bs = "fair_price" in cols and "edge" in cols
+
+    if has_bs:
+        rows = conn.execute("""
+            SELECT slug, asset, candle_start, signal_ts, secs_remaining,
+                   side, entry_price, shares,
+                   fair_price, edge, winner, won, pnl
+            FROM signals
+            WHERE fair_price IS NOT NULL
+              AND asset = 'BTC'
+              AND edge >= ?
+            ORDER BY signal_ts ASC
+        """, (min_edge_filter,)).fetchall()
+    else:
+        rows = []
+
+    all_rows_count = conn.execute(
+        "SELECT COUNT(*) FROM signals WHERE fair_price IS NOT NULL AND asset = 'BTC'"
+    ).fetchone()[0] if has_bs else 0
+    conn.close()
+
+    if not rows:
+        msg = (
+            "No BTC BS signals yet â€” run:  "
+            "python -m experiment.crypto_5m_scanner --min-edge 0.05"
+            if has_bs or all_rows_count == 0
+            else f"No signals with edge â‰¥ {min_edge_filter:.3f}"
+        )
+        return {"error": msg, "assets": [], "total": 0, "total_pnl": 0}
+
+    by_asset: dict[str, list] = {}
+    for r in rows:
+        by_asset.setdefault(r["asset"], []).append(dict(r))
+
+    all_assets = sorted(by_asset.keys())
+    assets_data: dict[str, dict] = {}
+
+    for asset in all_assets:
+        asset_rows = by_asset[asset]
+
+        # cumulative P&L series (time-ordered, resolved only)
+        resolved_rows  = [r for r in asset_rows if r["won"] is not None]
+        labels:    list[str]   = []
+        cum_series: list[float] = []
+        running = 0.0
+        for r in resolved_rows:
+            running += r["pnl"] or 0
+            dt = datetime.fromtimestamp(r["signal_ts"], tz=timezone.utc)
+            labels.append(dt.strftime("%m/%d %H:%M"))
+            cum_series.append(round(running, 4))
+
+        wins      = [r for r in resolved_rows if r["won"] == 1]
+        pending   = [r for r in asset_rows    if r["won"] is None]
+        total_pnl  = sum(r["pnl"] or 0 for r in resolved_rows)
+        total_cost = sum(r["entry_price"] * r["shares"] for r in asset_rows)
+        avg_edge   = (
+            sum(r["edge"] for r in asset_rows if r["edge"] is not None)
+            / max(1, len([r for r in asset_rows if r["edge"] is not None]))
+        )
+
+        stats = {
+            "signals":  len(asset_rows),
+            "resolved": len(resolved_rows),
+            "pending":  len(pending),
+            "wins":     len(wins),
+            "losses":   len(resolved_rows) - len(wins),
+            "win_rate": round(len(wins) / len(resolved_rows) * 100, 2) if resolved_rows else 0,
+            "total_pnl":  round(total_pnl, 4),
+            "total_cost": round(total_cost, 4),
+            "roi":        round(total_pnl / total_cost * 100, 2) if total_cost > 0 else 0,
+            "avg_edge":   round(avg_edge, 4),
+        }
+
+        assets_data[asset] = {
+            "chart":  {"labels": labels, "series": cum_series},
+            "stats":  stats,
+            "trades": list(reversed(asset_rows)),   # newest first
+        }
+
+    total_pnl = sum(r["pnl"] or 0 for r in rows if r["won"] is not None)
+    return {
+        "assets":    all_assets,
+        "data":      assets_data,
+        "total":     len(rows),
+        "total_pnl": round(total_pnl, 4),
+    }
+
+
+# â”€â”€ template â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _TEMPLATE = r"""<!doctype html>
 <html lang="en" data-bs-theme="dark">
@@ -328,13 +452,8 @@ _TEMPLATE = r"""<!doctype html>
   </div>
 
   <ul class="nav nav-tabs mb-3" id="mainTabs" role="tablist">
-    <li class="nav-item" role="presentation">
-      <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-crypto" type="button">
-        Crypto 5m Signals
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-eth" type="button">
+<li class="nav-item" role="presentation">
+      <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-eth" type="button">
         ETH 1H Bot
       </button>
     </li>
@@ -343,22 +462,24 @@ _TEMPLATE = r"""<!doctype html>
         Weather Bets
       </button>
     </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-bs" type="button"
+              onclick="if(!ftLoaded)loadFT()">
+        BTC 5m BS Test
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content">
 
-    <!-- ════════════════════════════ CRYPTO 5m ════════════════════════════ -->
-    <div class="tab-pane fade show active" id="tab-crypto" role="tabpanel">
-      <small class="text-muted d-block mb-3" id="crypto-meta">loading…</small>
-      <div id="crypto-content"></div>
-    </div>
+    <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• CRYPTO 5m â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
 
-    <!-- ════════════════════════════ ETH 1H ══════════════════════════════ -->
-    <div class="tab-pane fade" id="tab-eth" role="tabpanel">
+    <!-- ETH 1H â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+    <div class="tab-pane fade show active" id="tab-eth" role="tabpanel">
 
       <!-- stat row -->
       <div class="d-flex flex-wrap gap-3 mb-3" id="eth-stats">
-        <div class="stat-box text-muted text-center">loading…</div>
+        <div class="stat-box text-muted text-center">loadingâ€¦</div>
       </div>
 
       <!-- P/L chart -->
@@ -418,10 +539,10 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </div>
 
-    <!-- ════════════════════════════ WEATHER ═════════════════════════════ -->
+    <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• WEATHER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
     <div class="tab-pane fade" id="tab-weather" role="tabpanel">
       <div class="d-flex flex-wrap gap-3 mb-3" id="weather-stats">
-        <div class="stat-box text-muted text-center">loading…</div>
+        <div class="stat-box text-muted text-center">loadingâ€¦</div>
       </div>
       <div class="card">
         <div class="card-header fw-bold">Weather Bets</div>
@@ -443,11 +564,42 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </div>
 
+    <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• BS FORWARD TEST â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+    <div class="tab-pane fade" id="tab-bs" role="tabpanel">
+
+      <!-- filter row -->
+      <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+        <div class="d-flex align-items-center gap-2">
+          <label class="small text-muted">Min edge filter:</label>
+          <input type="number" id="ft-min-edge" value="0.00" step="0.01" min="0" max="1"
+                 class="edit-input" style="width:70px">
+          <button class="edit-btn" onclick="loadFT()">Apply</button>
+        </div>
+        <small class="text-muted" id="ft-meta"></small>
+      </div>
+
+      <!-- global stats -->
+      <div class="d-flex flex-wrap gap-3 mb-3" id="ft-global-stats"></div>
+
+      <!-- per-asset panels -->
+      <div id="ft-content"></div>
+
+      <div class="card mt-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span class="fw-bold">BS Bet Log</span>
+          <small class="text-muted" id="ft-log-ts"></small>
+        </div>
+        <div class="card-body p-2">
+          <div class="log-box" id="ft-log-box"></div>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /tab-content -->
 </div><!-- /container -->
 
 <script>
-// ── shared ────────────────────────────────────────────────────────────────────
+// â”€â”€ shared â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function esc(s) {
   return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
@@ -460,7 +612,7 @@ function statCard(label, value, cls) {
 function pnlClass(v) { return v > 0 ? "pos" : v < 0 ? "neg" : "neu"; }
 function pnlFmt(v)   { return (v >= 0 ? "+" : "") + "$" + Math.abs(v).toFixed(3); }
 
-// ── CRYPTO 5m ─────────────────────────────────────────────────────────────────
+// â”€â”€ CRYPTO 5m â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const C_COLORS = {
   "1c": { border:"#f87171", bg:"rgba(248,113,113,0.12)" },
   "2c": { border:"#fbbf24", bg:"rgba(251,191,36,0.12)"  },
@@ -476,7 +628,7 @@ async function loadCrypto() {
     return;
   }
   document.getElementById("crypto-meta").textContent =
-    `${d.total_candles} candles · ${d.total_resolved} resolved · last signal: ${d.last_update}`;
+    `${d.total_candles} candles Â· ${d.total_resolved} resolved Â· last signal: ${d.last_update}`;
 
   el.innerHTML = "";
   d.assets.forEach(asset => {
@@ -485,7 +637,7 @@ async function loadCrypto() {
     ["1c","2c","3c"].forEach(t => {
       const s  = ad.stats[t];
       const pc = pnlClass(s.total_pnl);
-      const lbl = t === "1c" ? "≤ 1¢" : t === "2c" ? "≤ 2¢" : "≤ 3¢";
+      const lbl = t === "1c" ? "â‰¤ 1Â¢" : t === "2c" ? "â‰¤ 2Â¢" : "â‰¤ 3Â¢";
       boxes += `
         <div class="col">
           <div class="stat-box h-100">
@@ -533,9 +685,9 @@ function buildCryptoChart(asset, ad) {
     data: {
       labels: ad.chart.labels,
       datasets: [
-        { label:"≤1¢", data:ad.chart.series_1c, borderColor:C_COLORS["1c"].border, backgroundColor:C_COLORS["1c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
-        { label:"≤2¢", data:ad.chart.series_2c, borderColor:C_COLORS["2c"].border, backgroundColor:C_COLORS["2c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
-        { label:"≤3¢", data:ad.chart.series_3c, borderColor:C_COLORS["3c"].border, backgroundColor:C_COLORS["3c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
+        { label:"â‰¤1Â¢", data:ad.chart.series_1c, borderColor:C_COLORS["1c"].border, backgroundColor:C_COLORS["1c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
+        { label:"â‰¤2Â¢", data:ad.chart.series_2c, borderColor:C_COLORS["2c"].border, backgroundColor:C_COLORS["2c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
+        { label:"â‰¤3Â¢", data:ad.chart.series_3c, borderColor:C_COLORS["3c"].border, backgroundColor:C_COLORS["3c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
       ],
     },
     options: {
@@ -554,7 +706,7 @@ function buildCryptoChart(asset, ad) {
   });
 }
 
-// ── ETH 1H ────────────────────────────────────────────────────────────────────
+// â”€â”€ ETH 1H â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let ethChart = null;
 let allTrades = [];
 
@@ -572,7 +724,7 @@ async function loadEth() {
     statCard("Wins",       s.wins,                           "pos"),
     statCard("Losses",     s.losses,                         "neg"),
     statCard("Pending",    s.pending,                        "neu"),
-    statCard("Win Rate",   s.resolved ? s.win_rate+"%" : "—", s.win_rate>=50?"pos":"neg"),
+    statCard("Win Rate",   s.resolved ? s.win_rate+"%" : "â€”", s.win_rate>=50?"pos":"neg"),
     statCard("Net P/L",    pnlFmt(s.total_pnl),              pc),
     statCard("ROI",        (s.roi>=0?"+":"")+s.roi.toFixed(1)+"%", pc),
     statCard("Total Cost", "$"+s.total_cost.toFixed(2),      ""),
@@ -592,11 +744,11 @@ function renderTrades() {
     return;
   }
   tbody.innerHTML = trades.map(t => {
-    const time  = (t.placed_at || "—").substring(0,16).replace("T"," ");
-    const slug  = (t.slug || "—").split("-").slice(-4).join("-");
+    const time  = (t.placed_at || "â€”").substring(0,16).replace("T"," ");
+    const slug  = (t.slug || "â€”").split("-").slice(-4).join("-");
     const dir   = t.direction === "Up"
-      ? `<span class="dir-up">▲ Up</span>`
-      : `<span class="dir-down">▼ Down</span>`;
+      ? `<span class="dir-up">â–² Up</span>`
+      : `<span class="dir-down">â–¼ Down</span>`;
     const mode  = t.dry_run
       ? `<span class="pill pill-dry">dry</span>`
       : `<span class="badge bg-success">live</span>`;
@@ -608,8 +760,8 @@ function renderTrades() {
                 :                     `<span class="pill pill-open">open</span>`;
     const pnl   = t.pnl !== null
       ? `<span class="${pnlClass(t.pnl)}">${t.pnl>=0?"+":""}$${Math.abs(t.pnl).toFixed(3)}</span>`
-      : `<span class="text-muted">—</span>`;
-    const mins  = t.mins_remaining !== null ? t.mins_remaining.toFixed(1) : "—";
+      : `<span class="text-muted">â€”</span>`;
+    const mins  = t.mins_remaining !== null ? t.mins_remaining.toFixed(1) : "â€”";
     return `<tr>
       <td>${esc(time)}</td>
       <td class="text-muted" style="font-size:11px">${esc(slug)}</td>
@@ -657,7 +809,7 @@ function buildEthChart(chart) {
   });
 }
 
-// ── log ──────────────────────────────────────────────────────────────────────
+// â”€â”€ log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const NOISE_RE = /outside entry window|min remaining/;
 
 async function loadLog() {
@@ -683,7 +835,7 @@ async function loadLog() {
 }
 document.getElementById("hideNoise").addEventListener("change", loadLog);
 
-// ── weather ───────────────────────────────────────────────────────────────────
+// â”€â”€ weather â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function loadWeather() {
   const d  = await fetch("/api/weather").then(r => r.json());
   const pc = pnlClass(d.stats?.total_pnl ?? 0);
@@ -698,7 +850,7 @@ async function loadWeather() {
     statCard("Wins",        s.wins,                           "pos"),
     statCard("Losses",      s.losses,                         "neg"),
     statCard("Pending",     s.pending,                        "neu"),
-    statCard("Win Rate",    s.resolved ? s.win_rate+"%" : "—", s.win_rate>=50?"pos":"neg"),
+    statCard("Win Rate",    s.resolved ? s.win_rate+"%" : "â€”", s.win_rate>=50?"pos":"neg"),
     statCard("Net P/L",     pnlFmt(s.total_pnl),              pc),
     statCard("Total Cost",  "$"+s.total_cost.toFixed(2),      ""),
   ].join("");
@@ -709,37 +861,37 @@ async function loadWeather() {
     return;
   }
   tbody.innerHTML = d.bets.map(b => {
-    const time = (b.placed_at_utc || "—").substring(0,16).replace("T"," ");
+    const time = (b.placed_at_utc || "â€”").substring(0,16).replace("T"," ");
     const q    = b.question && b.question.length > 48
-                 ? b.question.substring(0,48)+"…" : (b.question || "—");
+                 ? b.question.substring(0,48)+"â€¦" : (b.question || "â€”");
     const mrg  = b.forecast_minus_threshold !== null
                  ? `<span class="${b.forecast_minus_threshold<=0?"pos":"neg"}">${b.forecast_minus_threshold>=0?"+":""}${b.forecast_minus_threshold.toFixed(1)}</span>`
-                 : "—";
+                 : "â€”";
     const oc   = b.outcome === "win"  ? `<span class="pill pill-win">win</span>`
                : b.outcome === "loss" ? `<span class="pill pill-loss">loss</span>`
                :                       `<span class="pill pill-open">open</span>`;
     return `<tr>
       <td>${esc(time)}</td>
       <td><b>${esc(b.city)}</b></td>
-      <td>${esc(b.event_date||"—")}</td>
+      <td>${esc(b.event_date||"â€”")}</td>
       <td title="${esc(b.question||"")}">${esc(q)}</td>
       <td>${b.shares}</td>
-      <td>${b.no_price!==null ? b.no_price.toFixed(3) : "—"}</td>
+      <td>${b.no_price!==null ? b.no_price.toFixed(3) : "â€”"}</td>
       <td>$${(b.cost_usdc||0).toFixed(2)}</td>
-      <td>${b.forecast_high!==null ? b.forecast_high.toFixed(1) : "—"}</td>
+      <td>${b.forecast_high!==null ? b.forecast_high.toFixed(1) : "â€”"}</td>
       <td>${mrg}</td>
       <td>${oc}</td>
-      <td>${b.resolved_temp!==null ? b.resolved_temp : "—"}</td>
+      <td>${b.resolved_temp!==null ? b.resolved_temp : "â€”"}</td>
       <td>
         <div style="display:inline-flex;gap:4px;align-items:center">
           <input type="number" step="0.1" placeholder="temp" class="edit-input"
             id="rt-${b.id}" value="${b.resolved_temp!==null?b.resolved_temp:""}">
           <select class="edit-select" id="oc-${b.id}">
-            <option value=""   ${!b.outcome?"selected":""}>—</option>
+            <option value=""   ${!b.outcome?"selected":""}>â€”</option>
             <option value="win"  ${b.outcome==="win" ?"selected":""}>win</option>
             <option value="loss" ${b.outcome==="loss"?"selected":""}>loss</option>
           </select>
-          <button class="edit-btn" onclick="updateWeather(${b.id})">✓</button>
+          <button class="edit-btn" onclick="updateWeather(${b.id})">âœ“</button>
         </div>
       </td>
     </tr>`;
@@ -757,20 +909,182 @@ async function updateWeather(id) {
   loadWeather();
 }
 
-// ── bootstrap ────────────────────────────────────────────────────────────────
-function refreshAll() { loadCrypto(); loadEth(); loadLog(); loadWeather(); }
+// â”€â”€ BS Forward Test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+let ftCharts = {};
+let ftLoaded = false;
 
-loadCrypto();   setInterval(loadCrypto,  30_000);
+async function loadFT() {
+  ftLoaded = true;
+  const minEdge = parseFloat(document.getElementById("ft-min-edge").value) || 0;
+  const d = await fetch(`/api/bs-forward?min_edge=${minEdge}`).then(r => r.json());
+
+  const globalEl  = document.getElementById("ft-global-stats");
+  const contentEl = document.getElementById("ft-content");
+  const metaEl    = document.getElementById("ft-meta");
+
+  if (d.error) {
+    globalEl.innerHTML = `<div class="alert alert-warning">${esc(d.error)}</div>`;
+    contentEl.innerHTML = "";
+    return;
+  }
+
+  const pc = pnlClass(d.total_pnl);
+  metaEl.textContent = `${d.total} BTC signals | real ask price, BS edge filter`;
+  globalEl.innerHTML = [
+    statCard("Total Signals", d.total,                    ""),
+    statCard("Net P/L",       pnlFmt(d.total_pnl),        pc),
+  ].join("");
+
+  contentEl.innerHTML = "";
+  d.assets.forEach(asset => {
+    const ad = d.data[asset];
+    const s  = ad.stats;
+    const pc = pnlClass(s.total_pnl);
+
+    const statBoxes = `
+      <div class="col-auto"><div class="stat-box text-center">
+        <div class="text-muted small">Signals</div>
+        <div class="stat-val">${s.signals}</div>
+        <div class="text-muted small">${s.resolved} resolved / ${s.pending} pending</div>
+      </div></div>
+      <div class="col-auto"><div class="stat-box text-center">
+        <div class="text-muted small">Win Rate</div>
+        <div class="stat-val ${s.win_rate>=50?"pos":"neg"}">${s.resolved ? s.win_rate+"%" : "â€”"}</div>
+        <div class="text-muted small">${s.wins}W / ${s.losses}L</div>
+      </div></div>
+      <div class="col-auto"><div class="stat-box text-center">
+        <div class="text-muted small">Net P/L</div>
+        <div class="stat-val ${pc}">${s.total_pnl>=0?"+":""}$${s.total_pnl.toFixed(4)}</div>
+      </div></div>
+      <div class="col-auto"><div class="stat-box text-center">
+        <div class="text-muted small">ROI</div>
+        <div class="stat-val ${pc}">${s.roi>=0?"+":""}${s.roi.toFixed(1)}%</div>
+        <div class="text-muted small">cost $${s.total_cost.toFixed(3)}</div>
+      </div></div>
+      <div class="col-auto"><div class="stat-box text-center">
+        <div class="text-muted small">Avg BS Edge</div>
+        <div class="stat-val ${s.avg_edge>=0?"pos":"neg"}">${s.avg_edge>=0?"+":""}${(s.avg_edge*100).toFixed(2)}%</div>
+      </div></div>`;
+
+    const tbody = (ad.trades || []).slice(0, 200).map(r => {
+      const dt   = new Date(r.signal_ts * 1000).toISOString().substring(0,16).replace("T"," ");
+      const dir  = r.side === "Up"
+        ? `<span class="dir-up">â–² Up</span>`
+        : `<span class="dir-down">â–¼ Down</span>`;
+      const won  = r.won === 1  ? `<span class="pill pill-win">win</span>`
+                 : r.won === 0  ? `<span class="pill pill-loss">loss</span>`
+                 :                `<span class="pill pill-open">open</span>`;
+      const pnl  = r.pnl != null
+        ? `<span class="${pnlClass(r.pnl)}">${r.pnl>=0?"+":""}$${Math.abs(r.pnl).toFixed(4)}</span>`
+        : `<span class="text-muted">â€”</span>`;
+      const edge = r.edge != null
+        ? `<span class="${r.edge>=0?"pos":"neg"}">${(r.edge*100).toFixed(2)}%</span>`
+        : "â€”";
+      const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "â€”";
+      const market = r.slug || "â€”";
+      return `<tr>
+        <td class="text-muted" style="font-size:11px">${esc(dt)}</td>
+        <td class="text-muted" style="font-size:11px">${esc(market)}</td>
+        <td>${dir}</td>
+        <td>$${r.entry_price.toFixed(4)}</td>
+        <td>${fair}</td>
+        <td>${edge}</td>
+        <td>${r.secs_remaining != null ? r.secs_remaining+"s" : "â€”"}</td>
+        <td>${won}</td>
+        <td>${pnl}</td>
+      </tr>`;
+    }).join("");
+
+    contentEl.innerHTML += `
+      <div class="card mb-4">
+        <div class="card-header fw-bold fs-5">${esc(asset)}</div>
+        <div class="card-body">
+          <div class="row g-2 mb-3">${statBoxes}</div>
+          <canvas id="ft-chart-${asset}" style="max-height:260px"></canvas>
+          <div class="mt-3 table-scroll" style="max-height:400px">
+            <table class="table table-sm mb-0">
+              <thead style="position:sticky;top:0;z-index:1">
+                <tr>
+                  <th>Time (UTC)</th><th>Market</th><th>Side</th>
+                  <th>Ask (entry)</th><th>Fair price</th><th>BS Edge</th>
+                  <th>Secs left</th><th>Result</th><th>P/L</th>
+                </tr>
+              </thead>
+              <tbody>${tbody}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>`;
+  });
+
+  setTimeout(() => d.assets.forEach(a => buildFtChart(a, d.data[a])), 50);
+  loadFTLog();
+}
+
+function buildFtChart(asset, ad) {
+  const ctx = document.getElementById(`ft-chart-${asset}`);
+  if (!ctx) return;
+  if (ftCharts[asset]) ftCharts[asset].destroy();
+  ftCharts[asset] = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: ad.chart.labels,
+      datasets: [{
+        label: "Cumulative P/L",
+        data:  ad.chart.series,
+        borderColor: "#58a6ff", backgroundColor: "rgba(88,166,255,0.12)",
+        fill: true, tension: 0.3, pointRadius: 3, borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "top" },
+        tooltip: { callbacks: { label: c => `  P/L: ${c.parsed.y>=0?"+":""}$${c.parsed.y.toFixed(4)}` } },
+      },
+      scales: {
+        x: { ticks: { color:"#8b949e", maxTicksLimit:16, maxRotation:45 }, grid: { color:"#21262d" } },
+        y: { ticks: { color:"#8b949e", callback: v=>(v>=0?"+":"")+"$"+v.toFixed(3) }, grid: { color:"#21262d" },
+             title: { display:true, text:"Cumulative P/L (USDC)", color:"#8b949e" } },
+      },
+    },
+  });
+}
+
+async function loadFTLog() {
+  const box = document.getElementById("ft-log-box");
+  const ts = document.getElementById("ft-log-ts");
+  if (!box || !ts) return;
+  const d = await fetch("/api/bs-log").then(r => r.json());
+  const lines = d.lines || [];
+  box.innerHTML = lines.map(raw => {
+    const l = raw.trimEnd();
+    let cls = "log-info";
+    if (/BET-OPEN/i.test(l)) cls = "log-trade";
+    else if (/BET-RESOLVE|MARKET-RESOLVED/i.test(l)) cls = "log-win";
+    else if (/ERROR|CRITICAL/i.test(l)) cls = "log-error";
+    else if (/WARN/i.test(l)) cls = "log-warn";
+    return `<div class="${cls}">${esc(l)}</div>`;
+  }).join("");
+  ts.textContent = "updated " + new Date().toLocaleTimeString();
+  box.scrollTop = box.scrollHeight;
+}
+
+// â”€â”€ bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+function refreshAll() { loadEth(); loadLog(); loadWeather(); if(ftLoaded) { loadFT(); loadFTLog(); } }
+
 loadEth();      setInterval(loadEth,     30_000);
 loadLog();      setInterval(loadLog,     10_000);
 loadWeather();
+loadFTLog();    setInterval(loadFTLog,   10_000);
 </script>
 </body>
 </html>
 """
 
 
-# ── routes ────────────────────────────────────────────────────────────────────
+# â”€â”€ routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.route("/")
 def index():
@@ -791,10 +1105,23 @@ def api_eth():
 def api_log():
     return jsonify({"lines": _read_log_tail()})
 
+@app.route("/api/bs-log")
+def api_bs_log():
+    return jsonify({"lines": _read_bs_log_tail()})
+
 
 @app.route("/api/weather")
 def api_weather():
     return jsonify(_query_weather_stats())
+
+
+@app.route("/api/bs-forward")
+def api_bs_forward():
+    try:
+        min_edge = float(request.args.get("min_edge", 0))
+    except (TypeError, ValueError):
+        min_edge = 0.0
+    return jsonify(_query_bs_forward(min_edge))
 
 
 @app.route("/api/weather/update/<int:bet_id>", methods=["POST"])
@@ -810,7 +1137,7 @@ def api_weather_update(bet_id: int):
     return jsonify({"ok": True})
 
 
-# ── entrypoint ────────────────────────────────────────────────────────────────
+# â”€â”€ entrypoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Unified trading stats web UI")
@@ -831,12 +1158,18 @@ def main() -> None:
 
     print(f"  Stats UI:  http://localhost:{args.port}")
     print(f"  On LAN:    http://{local_ip}:{args.port}")
-    print(f"  Tabs:      Crypto 5m · ETH 1H Bot · Weather Bets")
+    print(f"  Tabs:      ETH 1H Bot | Weather Bets | BTC 5m BS Test")
 
     app.config["CRYPTO_DB_PATH"] = args.crypto_db
     app.config["BETS_DB_PATH"]   = args.bets_db
+    app.config["BS_LOG_PATH"]    = BS_LOG_PATH
     app.run(host=args.host, port=args.port, debug=False)
 
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
