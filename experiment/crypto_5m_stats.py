@@ -747,8 +747,8 @@ function renderTrades() {
     const time  = (t.placed_at || "â€”").substring(0,16).replace("T"," ");
     const slug  = (t.slug || "â€”").split("-").slice(-4).join("-");
     const dir   = t.direction === "Up"
-      ? `<span class="dir-up">â–² Up</span>`
-      : `<span class="dir-down">â–¼ Down</span>`;
+      ? `<span class="dir-up">Up</span>`
+      : `<span class="dir-down">Down</span>`;
     const mode  = t.dry_run
       ? `<span class="pill pill-dry">dry</span>`
       : `<span class="badge bg-success">live</span>`;
@@ -969,8 +969,8 @@ async function loadFT() {
     const tbody = (ad.trades || []).slice(0, 200).map(r => {
       const dt   = new Date(r.signal_ts * 1000).toISOString().substring(0,16).replace("T"," ");
       const dir  = r.side === "Up"
-        ? `<span class="dir-up">â–² Up</span>`
-        : `<span class="dir-down">â–¼ Down</span>`;
+        ? `<span class="dir-up">Up</span>`
+        : `<span class="dir-down">Down</span>`;
       const won  = r.won === 1  ? `<span class="pill pill-win">win</span>`
                  : r.won === 0  ? `<span class="pill pill-loss">loss</span>`
                  :                `<span class="pill pill-open">open</span>`;

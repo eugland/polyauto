@@ -66,10 +66,7 @@ _BINANCE_SYMBOLS: dict[str, str] = {
 UPDOWN_5M_RE = re.compile(r"^([a-z0-9]+)-updown-5m-(\d+)$", re.IGNORECASE)
 
 # Seed assets — expanded automatically as new slugs are discovered
-_SEED_ASSETS = [
-    "btc", "eth", "xrp", "bnb", "sol", "hyper",
-    "doge", "link", "avax", "matic", "dot", "ltc",
-]
+_SEED_ASSETS = ["btc"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -400,6 +397,8 @@ def _event_to_market(event: dict, now_ts: int) -> Market | None:
     if not m:
         return None
     asset = m.group(1).upper()
+    if asset != "BTC":
+        return None
     epoch = int(m.group(2))
 
     markets = event.get("markets") or []
