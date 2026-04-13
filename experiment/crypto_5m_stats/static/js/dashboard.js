@@ -154,6 +154,10 @@ function buildCryptoChart(asset, ad) {
 // -- ETH 1H -------------------------------------------------------------------
 let ethChart = null;
 let allTrades = [];
+let ethChartData = null;
+let ethCurrentPage = 0;
+const ETH_PAGE_SIZE = 20;
+let ethTimeFilter = "all";
 
 async function loadEth() {
   const d = await fetch("/api/eth").then(r => r.json());
@@ -175,19 +179,75 @@ async function loadEth() {
   ].join("");
 
   allTrades = d.trades;
+  ethChartData = d.chart;
+  ethCurrentPage = 0;
   renderTrades();
-  buildEthChart(d.chart);
+  buildEthChart(ethChartData);
+}
+
+function filterEthChart(period) {
+  ethTimeFilter = period;
+  ethCurrentPage = 0;
+
+  // Update button styles
+  document.querySelectorAll("#ethSubTabs button").forEach(btn => btn.style.display = "none");
+  ["1d", "1w", "1y", "all"].forEach(p => {
+    const btn = document.getElementById(`btn-${p}`);
+    if (btn) {
+      btn.classList.toggle("active", p === period);
+      btn.style.display = "inline-block";
+    }
+  });
+
+  buildEthChart(ethChartData);
+}
+
+function getEthFilteredData(period) {
+  if (!ethChartData) return ethChartData;
+
+  const now = Date.now();
+  let cutoffMs = 0;
+
+  if (period === "1d") cutoffMs = now - 24 * 60 * 60 * 1000;
+  else if (period === "1w") cutoffMs = now - 7 * 24 * 60 * 60 * 1000;
+  else if (period === "1y") cutoffMs = now - 365 * 24 * 60 * 60 * 1000;
+
+  if (period === "all") return ethChartData;
+
+  // Find start index based on cutoff
+  const labels = ethChartData.labels || [];
+  const series = ethChartData.series || [];
+
+  let startIdx = 0;
+  for (let i = 0; i < labels.length; i++) {
+    const dateStr = labels[i]; // "MM/DD HH:MM"
+    // Approximate: we'll keep recent data, rough filter
+    startIdx = Math.max(0, series.length - Math.ceil((now - cutoffMs) / (30 * 60 * 1000)));
+  }
+
+  return {
+    labels: labels.slice(startIdx),
+    series: series.slice(startIdx),
+  };
 }
 
 function renderTrades() {
   const showDry = document.getElementById("showDryRun").checked;
   const trades = allTrades.filter(t => showDry || !t.dry_run);
+
+  const totalPages = Math.ceil(trades.length / ETH_PAGE_SIZE);
+  const startIdx = ethCurrentPage * ETH_PAGE_SIZE;
+  const endIdx = startIdx + ETH_PAGE_SIZE;
+  const pageData = trades.slice(startIdx, endIdx);
+
   const tbody = document.getElementById("eth-trades-body");
-  if (!trades.length) {
+  if (!pageData.length) {
     tbody.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-3">No trades yet.</td></tr>`;
+    document.getElementById("eth-pagination-info").textContent = "";
     return;
   }
-  tbody.innerHTML = trades
+
+  tbody.innerHTML = pageData
     .map(t => {
       const time = (t.placed_at || "--").substring(0, 16).replace("T", " ");
       const slug = (t.slug || "--").split("-").slice(-4).join("-");
@@ -228,21 +288,50 @@ function renderTrades() {
       </tr>`;
     })
     .join("");
+
+  document.getElementById("eth-pagination-info").textContent = `Page ${ethCurrentPage + 1} of ${totalPages} (${trades.length} total)`;
+  document.getElementById("eth-prev-btn").disabled = ethCurrentPage === 0;
+  document.getElementById("eth-next-btn").disabled = ethCurrentPage >= totalPages - 1;
 }
-document.getElementById("showDryRun").addEventListener("change", renderTrades);
+
+function ethPrevPage() {
+  if (ethCurrentPage > 0) {
+    ethCurrentPage--;
+    renderTrades();
+  }
+}
+
+function ethNextPage() {
+  const showDry = document.getElementById("showDryRun").checked;
+  const trades = allTrades.filter(t => showDry || !t.dry_run);
+  const totalPages = Math.ceil(trades.length / ETH_PAGE_SIZE);
+  if (ethCurrentPage < totalPages - 1) {
+    ethCurrentPage++;
+    renderTrades();
+  }
+}
+
+document.getElementById("showDryRun").addEventListener("change", () => {
+  ethCurrentPage = 0;
+  renderTrades();
+});
 
 function buildEthChart(chart) {
   const ctx = document.getElementById("eth-chart");
   if (!ctx) return;
   if (ethChart) ethChart.destroy();
+
+  const filteredData = getEthFilteredData(ethTimeFilter);
+  if (!filteredData) return;
+
   ethChart = new Chart(ctx, {
     type: "line",
     data: {
-      labels: chart.labels,
+      labels: filteredData.labels,
       datasets: [
         {
           label: "Cumulative P/L",
-          data: chart.series,
+          data: filteredData.series,
           borderColor: "#58a6ff",
           backgroundColor: "rgba(88,166,255,0.12)",
           fill: true,
