@@ -241,16 +241,27 @@ function renderTrades() {
   const pageData = trades.slice(startIdx, endIdx);
 
   const tbody = document.getElementById("eth-trades-body");
+  const link = document.getElementById("eth-market-link");
+
   if (!pageData.length) {
     tbody.innerHTML = `<tr><td colspan="10" class="text-center text-muted py-3">No trades yet.</td></tr>`;
     document.getElementById("eth-pagination-info").textContent = "";
+    if (link) link.style.display = "none";
     return;
+  }
+
+  // Show link to most recent trade's Polymarket page
+  const mostRecent = trades[0];
+  if (link && mostRecent.slug) {
+    link.href = `https://polymarket.com/event/${mostRecent.slug}`;
+    link.style.display = "inline-block";
   }
 
   tbody.innerHTML = pageData
     .map(t => {
       const time = (t.placed_at || "--").substring(0, 16).replace("T", " ");
-      const slug = (t.slug || "--").split("-").slice(-4).join("-");
+      const fullSlug = t.slug || "--";
+      const slug = fullSlug.split("-").slice(-4).join("-");
       const dir =
         t.direction === "Up"
           ? `<span class="dir-up">Up</span>`
@@ -275,8 +286,8 @@ function renderTrades() {
           : `<span class="text-muted">--</span>`;
       const mins = t.mins_remaining !== null ? t.mins_remaining.toFixed(1) : "--";
       return `<tr>
+        <td><a href="https://polymarket.com/event/${esc(fullSlug)}" target="_blank" class="text-decoration-none" style="font-size:13px;color:#58a6ff;font-weight:600;padding:4px 6px;border-radius:4px" onmouseover="this.style.backgroundColor='#1e3a5f'" onmouseout="this.style.backgroundColor='transparent'">${esc(slug)}</a></td>
         <td>${esc(time)}</td>
-        <td class="text-muted" style="font-size:11px">${esc(slug)}</td>
         <td>${dir}</td>
         <td>${t.entry_price.toFixed(3)}</td>
         <td>${t.shares}</td>
@@ -483,6 +494,56 @@ async function updateWeather(id) {
 // -- BS Forward Test ----------------------------------------------------------
 let ftCharts = {};
 let ftLoaded = false;
+let ftChartData = {};
+let ftTimeFilter = "all";
+
+function filterFtChart(period) {
+  ftTimeFilter = period;
+
+  // Update button styles
+  ["12h", "1d", "1w", "1m", "all"].forEach(p => {
+    const btn = document.getElementById(`ft-btn-${p}`);
+    if (btn) {
+      btn.classList.toggle("active", p === period);
+    }
+  });
+
+  // Rebuild charts for all assets
+  Object.keys(ftChartData).forEach(asset => {
+    buildFtChart(asset, ftChartData[asset]);
+  });
+}
+
+function getFtFilteredData(asset, period) {
+  const ad = ftChartData[asset];
+  if (!ad || !ad.chart) return ad?.chart;
+
+  const now = Date.now();
+  let cutoffMs = 0;
+
+  if (period === "12h") cutoffMs = now - 12 * 60 * 60 * 1000;
+  else if (period === "1d") cutoffMs = now - 24 * 60 * 60 * 1000;
+  else if (period === "1w") cutoffMs = now - 7 * 24 * 60 * 60 * 1000;
+  else if (period === "1m") cutoffMs = now - 30 * 24 * 60 * 60 * 1000;
+
+  if (period === "all") return ad.chart;
+
+  // Filter based on timestamps in labels (approximate by count)
+  const labels = ad.chart.labels || [];
+  const series = ad.chart.series || [];
+
+  if (labels.length === 0) return ad.chart;
+
+  // Estimate: keep last N points based on time period
+  const timePerPoint = (now - cutoffMs) / (24 * 60 * 60 * 1000); // rough estimate in days
+  const estimatedPoints = Math.ceil(timePerPoint * (labels.length / 30)); // assume 30 days of data
+  const startIdx = Math.max(0, labels.length - estimatedPoints);
+
+  return {
+    labels: labels.slice(startIdx),
+    series: series.slice(startIdx),
+  };
+}
 
 async function loadFT() {
   ftLoaded = true;
@@ -534,45 +595,63 @@ async function loadFT() {
         <div class="stat-val ${s.avg_edge >= 0 ? "pos" : "neg"}">${s.avg_edge >= 0 ? "+" : ""}${(s.avg_edge * 100).toFixed(2)}%</div>
       </div></div>`;
 
-    const tbody = (ad.trades || [])
-      .slice(0, 200)
-      .map(r => {
-        const dt = new Date(r.signal_ts * 1000).toISOString().substring(0, 16).replace("T", " ");
-        const dir =
-          r.side === "Up"
-            ? `<span class="dir-up">Up</span>`
-            : `<span class="dir-down">Down</span>`;
-        const won =
-          r.won === 1
-            ? `<span class="pill pill-win">win</span>`
-            : r.won === 0
-              ? `<span class="pill pill-loss">loss</span>`
-              : `<span class="pill pill-open">open</span>`;
-        const pnl =
-          r.pnl != null
-            ? `<span class="${pnlClass(r.pnl)}">${r.pnl >= 0 ? "+" : ""}$${Math.abs(r.pnl).toFixed(4)}</span>`
-            : `<span class="text-muted">--</span>`;
-        const edge = r.edge != null ? `<span class="${r.edge >= 0 ? "pos" : "neg"}">${(r.edge * 100).toFixed(2)}%</span>` : "--";
-        const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "--";
-        const market = r.slug || "--";
-        const shares = r.shares != null ? r.shares : "--";
-        const cost =
-          r.shares != null && r.entry_price != null ? "$" + (r.shares * r.entry_price).toFixed(4) : "--";
-        return `<tr>
-          <td class="text-muted" style="font-size:11px">${esc(dt)}</td>
-          <td class="text-muted" style="font-size:11px">${esc(market)}</td>
-          <td>${dir}</td>
-          <td>$${r.entry_price.toFixed(4)}</td>
-          <td>${shares}</td>
-          <td>${cost}</td>
-          <td>${fair}</td>
-          <td>${edge}</td>
-          <td>${r.secs_remaining != null ? r.secs_remaining + "s" : "--"}</td>
-          <td>${won}</td>
-          <td>${pnl}</td>
-        </tr>`;
-      })
-      .join("");
+    // Store trades for pagination
+    const allTrades = ad.trades || [];
+    const ftPageSize = 20;
+    window[`ftData_${asset}`] = allTrades;
+    window[`ftPage_${asset}`] = 0;
+
+    const renderFtTrades = () => {
+      const trades = window[`ftData_${asset}`] || [];
+      const page = window[`ftPage_${asset}`] || 0;
+      const startIdx = page * ftPageSize;
+      const endIdx = startIdx + ftPageSize;
+      const pageData = trades.slice(startIdx, endIdx);
+      const maxPage = Math.ceil(trades.length / ftPageSize) || 1;
+
+      const tbody = pageData
+        .map(r => {
+          const dt = new Date(r.signal_ts * 1000).toISOString().substring(0, 16).replace("T", " ");
+          const dir =
+            r.side === "Up"
+              ? `<span class="dir-up">Up</span>`
+              : `<span class="dir-down">Down</span>`;
+          const won =
+            r.won === 1
+              ? `<span class="pill pill-win">win</span>`
+              : r.won === 0
+                ? `<span class="pill pill-loss">loss</span>`
+                : `<span class="pill pill-open">open</span>`;
+          const pnl =
+            r.pnl != null
+              ? `<span class="${pnlClass(r.pnl)}">${r.pnl >= 0 ? "+" : ""}$${Math.abs(r.pnl).toFixed(4)}</span>`
+              : `<span class="text-muted">--</span>`;
+          const edge = r.edge != null ? `<span class="${r.edge >= 0 ? "pos" : "neg"}">${(r.edge * 100).toFixed(2)}%</span>` : "--";
+          const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "--";
+          const market = r.slug || "--";
+          const shares = r.shares != null ? r.shares : "--";
+          const cost =
+            r.shares != null && r.entry_price != null ? "$" + (r.shares * r.entry_price).toFixed(4) : "--";
+          return `<tr>
+            <td><a href="https://polymarket.com/event/${esc(market)}" target="_blank" class="text-decoration-none" style="font-size:13px;color:#58a6ff;font-weight:600;padding:4px 6px;border-radius:4px" onmouseover="this.style.backgroundColor='#1e3a5f'" onmouseout="this.style.backgroundColor='transparent'">${esc(market)}</a></td>
+            <td>${dir}</td>
+            <td class="text-muted" style="font-size:11px">${esc(dt)}</td>
+            <td>$${r.entry_price.toFixed(4)}</td>
+            <td>${shares}</td>
+            <td>${cost}</td>
+            <td>${fair}</td>
+            <td>${edge}</td>
+            <td>${r.secs_remaining != null ? r.secs_remaining + "s" : "--"}</td>
+            <td>${won}</td>
+            <td>${pnl}</td>
+          </tr>`;
+        })
+        .join("");
+
+      document.getElementById(`ft-tbody-${asset}`).innerHTML = tbody || `<tr><td colspan="11" class="text-center text-muted py-3">No trades.</td></tr>`;
+      document.getElementById(`ft-page-num-${asset}`).textContent = (page + 1);
+      document.getElementById(`ft-page-max-${asset}`).textContent = maxPage;
+    };
 
     contentEl.innerHTML += `
       <div class="card mb-4">
@@ -580,21 +659,35 @@ async function loadFT() {
         <div class="card-body">
           <div class="row g-2 mb-3">${statBoxes}</div>
           <canvas id="ft-chart-${asset}" style="max-height:260px"></canvas>
-          <div class="mt-3 table-scroll" style="max-height:400px">
-            <table class="table table-sm mb-0">
-              <thead style="position:sticky;top:0;z-index:1">
-                <tr>
-                  <th>Time (UTC)</th><th>Market</th><th>Side</th>
-                  <th>Ask (entry)</th><th>Shares</th><th>Cost</th>
-                  <th>Fair price</th><th>BS Edge</th>
-                  <th>Secs left</th><th>Result</th><th>P/L</th>
-                </tr>
-              </thead>
-              <tbody>${tbody}</tbody>
-            </table>
+          <div class="mt-3">
+            <div style="max-height:600px;overflow-y:auto;border:1px solid #30363d;border-radius:6px">
+              <table class="table table-sm mb-0">
+                <thead style="position:sticky;top:0;z-index:1">
+                  <tr>
+                    <th>Market</th><th>Side</th><th>Time (UTC)</th>
+                    <th>Ask (entry)</th><th>Shares</th><th>Cost</th>
+                    <th>Fair price</th><th>BS Edge</th>
+                    <th>Secs left</th><th>Result</th><th>P/L</th>
+                  </tr>
+                </thead>
+                <tbody id="ft-tbody-${asset}"></tbody>
+              </table>
+            </div>
+            <div class="mt-2 d-flex justify-content-between align-items-center small text-muted">
+              <span>Page <span id="ft-page-num-${asset}">1</span> / <span id="ft-page-max-${asset}">1</span></span>
+              <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-secondary" onclick="ftPrevPage('${asset}')">← Prev</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="ftNextPage('${asset}')">Next →</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>`;
+
+    // Store chart data for filtering
+    ftChartData[asset] = ad;
+
+    setTimeout(renderFtTrades, 10);
   });
 
   setTimeout(() => d.assets.forEach(a => buildFtChart(a, d.data[a])), 50);
@@ -605,14 +698,18 @@ function buildFtChart(asset, ad) {
   const ctx = document.getElementById(`ft-chart-${asset}`);
   if (!ctx) return;
   if (ftCharts[asset]) ftCharts[asset].destroy();
+
+  const filteredData = getFtFilteredData(asset, ftTimeFilter);
+  if (!filteredData) return;
+
   ftCharts[asset] = new Chart(ctx, {
     type: "line",
     data: {
-      labels: ad.chart.labels,
+      labels: filteredData.labels,
       datasets: [
         {
           label: "Cumulative P/L",
-          data: ad.chart.series,
+          data: filteredData.series,
           borderColor: "#58a6ff",
           backgroundColor: "rgba(88,166,255,0.12)",
           fill: true,
@@ -649,6 +746,99 @@ function buildFtChart(asset, ad) {
       },
     },
   });
+}
+
+function ftNextPage(asset) {
+  const data = window[`ftData_${asset}`] || [];
+  const pageSize = 20;
+  const maxPage = Math.ceil(data.length / pageSize) || 1;
+  const currentPage = window[`ftPage_${asset}`] || 0;
+  const nextPage = Math.min(currentPage + 1, maxPage - 1);
+  window[`ftPage_${asset}`] = nextPage;
+
+  // Render the page
+  const trades = window[`ftData_${asset}`] || [];
+  const page = nextPage;
+  const startIdx = page * pageSize;
+  const endIdx = startIdx + pageSize;
+  const pageData = trades.slice(startIdx, endIdx);
+
+  const tbody = pageData
+    .map(r => {
+      const dt = new Date(r.signal_ts * 1000).toISOString().substring(0, 16).replace("T", " ");
+      const dir = r.side === "Up" ? `<span class="dir-up">Up</span>` : `<span class="dir-down">Down</span>`;
+      const won = r.won === 1 ? `<span class="pill pill-win">win</span>` : r.won === 0 ? `<span class="pill pill-loss">loss</span>` : `<span class="pill pill-open">open</span>`;
+      const pnl = r.pnl != null ? `<span class="${pnlClass(r.pnl)}">${r.pnl >= 0 ? "+" : ""}$${Math.abs(r.pnl).toFixed(4)}</span>` : `<span class="text-muted">--</span>`;
+      const edge = r.edge != null ? `<span class="${r.edge >= 0 ? "pos" : "neg"}">${(r.edge * 100).toFixed(2)}%</span>` : "--";
+      const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "--";
+      const market = r.slug || "--";
+      const shares = r.shares != null ? r.shares : "--";
+      const cost = r.shares != null && r.entry_price != null ? "$" + (r.shares * r.entry_price).toFixed(4) : "--";
+      return `<tr>
+        <td><a href="https://polymarket.com/event/${esc(market)}" target="_blank" class="text-primary text-decoration-none" style="font-size:11px">${esc(market)}</a></td>
+        <td>${dir}</td>
+        <td class="text-muted" style="font-size:11px">${esc(dt)}</td>
+        <td>$${r.entry_price.toFixed(4)}</td>
+        <td>${shares}</td>
+        <td>${cost}</td>
+        <td>${fair}</td>
+        <td>${edge}</td>
+        <td>${r.secs_remaining != null ? r.secs_remaining + "s" : "--"}</td>
+        <td>${won}</td>
+        <td>${pnl}</td>
+      </tr>`;
+    })
+    .join("");
+
+  document.getElementById(`ft-tbody-${asset}`).innerHTML = tbody || `<tr><td colspan="11" class="text-center text-muted py-3">No trades.</td></tr>`;
+  document.getElementById(`ft-page-num-${asset}`).textContent = (page + 1);
+  document.getElementById(`ft-page-max-${asset}`).textContent = maxPage;
+}
+
+function ftPrevPage(asset) {
+  const currentPage = window[`ftPage_${asset}`] || 0;
+  const prevPage = Math.max(currentPage - 1, 0);
+  window[`ftPage_${asset}`] = prevPage;
+
+  // Render the page
+  const trades = window[`ftData_${asset}`] || [];
+  const pageSize = 20;
+  const page = prevPage;
+  const startIdx = page * pageSize;
+  const endIdx = startIdx + pageSize;
+  const pageData = trades.slice(startIdx, endIdx);
+  const maxPage = Math.ceil(trades.length / pageSize) || 1;
+
+  const tbody = pageData
+    .map(r => {
+      const dt = new Date(r.signal_ts * 1000).toISOString().substring(0, 16).replace("T", " ");
+      const dir = r.side === "Up" ? `<span class="dir-up">Up</span>` : `<span class="dir-down">Down</span>`;
+      const won = r.won === 1 ? `<span class="pill pill-win">win</span>` : r.won === 0 ? `<span class="pill pill-loss">loss</span>` : `<span class="pill pill-open">open</span>`;
+      const pnl = r.pnl != null ? `<span class="${pnlClass(r.pnl)}">${r.pnl >= 0 ? "+" : ""}$${Math.abs(r.pnl).toFixed(4)}</span>` : `<span class="text-muted">--</span>`;
+      const edge = r.edge != null ? `<span class="${r.edge >= 0 ? "pos" : "neg"}">${(r.edge * 100).toFixed(2)}%</span>` : "--";
+      const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "--";
+      const market = r.slug || "--";
+      const shares = r.shares != null ? r.shares : "--";
+      const cost = r.shares != null && r.entry_price != null ? "$" + (r.shares * r.entry_price).toFixed(4) : "--";
+      return `<tr>
+        <td><a href="https://polymarket.com/event/${esc(market)}" target="_blank" class="text-primary text-decoration-none" style="font-size:11px">${esc(market)}</a></td>
+        <td>${dir}</td>
+        <td class="text-muted" style="font-size:11px">${esc(dt)}</td>
+        <td>$${r.entry_price.toFixed(4)}</td>
+        <td>${shares}</td>
+        <td>${cost}</td>
+        <td>${fair}</td>
+        <td>${edge}</td>
+        <td>${r.secs_remaining != null ? r.secs_remaining + "s" : "--"}</td>
+        <td>${won}</td>
+        <td>${pnl}</td>
+      </tr>`;
+    })
+    .join("");
+
+  document.getElementById(`ft-tbody-${asset}`).innerHTML = tbody || `<tr><td colspan="11" class="text-center text-muted py-3">No trades.</td></tr>`;
+  document.getElementById(`ft-page-num-${asset}`).textContent = (page + 1);
+  document.getElementById(`ft-page-max-${asset}`).textContent = maxPage;
 }
 
 async function loadFTLog() {
