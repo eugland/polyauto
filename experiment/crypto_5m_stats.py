@@ -1,11 +1,11 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Unified trading dashboard â€” Flask web app.
+Unified trading dashboard -- Flask web app.
 
 Tabs:
   1. Crypto 5m signals  (reads experiment/crypto_5m.db)
-  2. ETH 1H bot         (reads bets.db â†’ eth_1h_trades; streams eth_1h.log)
-  3. Weather bets        (reads bets.db â†’ placed_bets)
+  2. ETH 1H bot         (reads bets.db -> eth_1h_trades; streams eth_1h.log)
+  3. Weather bets        (reads bets.db -> placed_bets)
 
 Start:  python -m experiment.crypto_5m_stats
 Opens:  http://localhost:5051   (accessible to any device on your LAN)
@@ -31,7 +31,7 @@ LOG_TAIL       = 200
 app = Flask(__name__)
 
 
-# â”€â”€ config helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- config helpers ------------------------------------------------------------
 
 def _crypto_db() -> str:
     return app.config.get("CRYPTO_DB_PATH", CRYPTO_DB_PATH)
@@ -46,11 +46,11 @@ def _bs_log() -> str:
     return app.config.get("BS_LOG_PATH", BS_LOG_PATH)
 
 
-# â”€â”€ crypto 5m â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- crypto 5m -----------------------------------------------------------------
 
 def _query_crypto_stats() -> dict:
     if not os.path.exists(_crypto_db()):
-        return {"error": "DB not found â€” start crypto_5m_scanner first.", "assets": []}
+        return {"error": "DB not found -- start crypto_5m_scanner first.", "assets": []}
 
     conn = sqlite3.connect(_crypto_db())
     conn.row_factory = sqlite3.Row
@@ -130,7 +130,7 @@ def _query_crypto_stats() -> dict:
 
     last_update = (
         datetime.fromtimestamp(last_signal, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        if last_signal else "â€”"
+        if last_signal else "--"
     )
     return {
         "assets": all_assets, "data": assets_data,
@@ -139,14 +139,14 @@ def _query_crypto_stats() -> dict:
     }
 
 
-# â”€â”€ ETH 1H â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- ETH 1H -------------------------------------------------------------------
 
 _WIN_OUTCOMES  = {"win"}
 _LOSS_OUTCOMES = {"loss", "stop_loss", "expired"}
 
 def _query_eth_stats() -> dict:
     if not os.path.exists(_bets_db()):
-        return {"error": "bets.db not found â€” start automata.eth first."}
+        return {"error": "bets.db not found -- start automata.eth first."}
 
     conn = sqlite3.connect(_bets_db())
     conn.row_factory = sqlite3.Row
@@ -160,7 +160,7 @@ def _query_eth_stats() -> dict:
         """).fetchall()
     except sqlite3.OperationalError:
         conn.close()
-        return {"error": "eth_1h_trades table not found â€” start automata.eth first."}
+        return {"error": "eth_1h_trades table not found -- start automata.eth first."}
     conn.close()
 
     trades  = [dict(r) for r in rows]
@@ -208,7 +208,7 @@ def _query_eth_stats() -> dict:
     }
 
 
-# â”€â”€ log tail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- log tail ------------------------------------------------------------------
 
 def _read_log_tail() -> list[str]:
     try:
@@ -226,7 +226,7 @@ def _read_bs_log_tail() -> list[str]:
         return [f"Log file not found: {_bs_log()}"]
 
 
-# â”€â”€ weather â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- weather -------------------------------------------------------------------
 
 def _query_weather_stats() -> dict:
     if not os.path.exists(_bets_db()):
@@ -272,7 +272,7 @@ def _query_weather_stats() -> dict:
     return {"stats": stats, "bets": bets}
 
 
-# â”€â”€ BS forward test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- BS forward test -----------------------------------------------------------
 
 def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
     """
@@ -282,7 +282,7 @@ def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
     """
     db = _crypto_db()
     if not os.path.exists(db):
-        return {"error": "DB not found â€” start crypto_5m_scanner first.", "assets": []}
+        return {"error": "DB not found -- start crypto_5m_scanner first.", "assets": []}
 
     conn = sqlite3.connect(db)
     conn.row_factory = sqlite3.Row
@@ -312,10 +312,10 @@ def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
 
     if not rows:
         msg = (
-            "No BTC BS signals yet â€” run:  "
+            "No BTC BS signals yet -- run:  "
             "python -m experiment.crypto_5m_scanner --min-edge 0.05"
             if has_bs or all_rows_count == 0
-            else f"No signals with edge â‰¥ {min_edge_filter:.3f}"
+            else f"No signals with edge >= {min_edge_filter:.3f}"
         )
         return {"error": msg, "assets": [], "total": 0, "total_pnl": 0}
 
@@ -377,7 +377,7 @@ def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
     }
 
 
-# â”€â”€ template â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- template ------------------------------------------------------------------
 
 _TEMPLATE = r"""<!doctype html>
 <html lang="en" data-bs-theme="dark">
@@ -472,14 +472,14 @@ _TEMPLATE = r"""<!doctype html>
 
   <div class="tab-content">
 
-    <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• CRYPTO 5m â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+    <!-- ============================ CRYPTO 5m ============================ -->
 
-    <!-- ETH 1H â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+    <!-- ETH 1H ============================== -->
     <div class="tab-pane fade show active" id="tab-eth" role="tabpanel">
 
       <!-- stat row -->
       <div class="d-flex flex-wrap gap-3 mb-3" id="eth-stats">
-        <div class="stat-box text-muted text-center">loadingâ€¦</div>
+        <div class="stat-box text-muted text-center">loading</div>
       </div>
 
       <!-- P/L chart -->
@@ -539,10 +539,10 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </div>
 
-    <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• WEATHER â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+    <!-- ============================ WEATHER ============================= -->
     <div class="tab-pane fade" id="tab-weather" role="tabpanel">
       <div class="d-flex flex-wrap gap-3 mb-3" id="weather-stats">
-        <div class="stat-box text-muted text-center">loadingâ€¦</div>
+        <div class="stat-box text-muted text-center">loading</div>
       </div>
       <div class="card">
         <div class="card-header fw-bold">Weather Bets</div>
@@ -564,7 +564,7 @@ _TEMPLATE = r"""<!doctype html>
       </div>
     </div>
 
-    <!-- â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• BS FORWARD TEST â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• -->
+    <!-- ========================== BS FORWARD TEST ======================= -->
     <div class="tab-pane fade" id="tab-bs" role="tabpanel">
 
       <!-- filter row -->
@@ -599,7 +599,7 @@ _TEMPLATE = r"""<!doctype html>
 </div><!-- /container -->
 
 <script>
-// â”€â”€ shared â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- shared --------------------------------------------------------------------
 function esc(s) {
   return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
@@ -612,7 +612,7 @@ function statCard(label, value, cls) {
 function pnlClass(v) { return v > 0 ? "pos" : v < 0 ? "neg" : "neu"; }
 function pnlFmt(v)   { return (v >= 0 ? "+" : "") + "$" + Math.abs(v).toFixed(3); }
 
-// â”€â”€ CRYPTO 5m â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- CRYPTO 5m -----------------------------------------------------------------
 const C_COLORS = {
   "1c": { border:"#f87171", bg:"rgba(248,113,113,0.12)" },
   "2c": { border:"#fbbf24", bg:"rgba(251,191,36,0.12)"  },
@@ -628,7 +628,7 @@ async function loadCrypto() {
     return;
   }
   document.getElementById("crypto-meta").textContent =
-    `${d.total_candles} candles Â· ${d.total_resolved} resolved Â· last signal: ${d.last_update}`;
+    `${d.total_candles} candles  ${d.total_resolved} resolved  last signal: ${d.last_update}`;
 
   el.innerHTML = "";
   d.assets.forEach(asset => {
@@ -637,7 +637,7 @@ async function loadCrypto() {
     ["1c","2c","3c"].forEach(t => {
       const s  = ad.stats[t];
       const pc = pnlClass(s.total_pnl);
-      const lbl = t === "1c" ? "â‰¤ 1Â¢" : t === "2c" ? "â‰¤ 2Â¢" : "â‰¤ 3Â¢";
+      const lbl = t === "1c" ? " 1" : t === "2c" ? " 2" : " 3";
       boxes += `
         <div class="col">
           <div class="stat-box h-100">
@@ -685,9 +685,9 @@ function buildCryptoChart(asset, ad) {
     data: {
       labels: ad.chart.labels,
       datasets: [
-        { label:"â‰¤1Â¢", data:ad.chart.series_1c, borderColor:C_COLORS["1c"].border, backgroundColor:C_COLORS["1c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
-        { label:"â‰¤2Â¢", data:ad.chart.series_2c, borderColor:C_COLORS["2c"].border, backgroundColor:C_COLORS["2c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
-        { label:"â‰¤3Â¢", data:ad.chart.series_3c, borderColor:C_COLORS["3c"].border, backgroundColor:C_COLORS["3c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
+        { label:"1", data:ad.chart.series_1c, borderColor:C_COLORS["1c"].border, backgroundColor:C_COLORS["1c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
+        { label:"2", data:ad.chart.series_2c, borderColor:C_COLORS["2c"].border, backgroundColor:C_COLORS["2c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
+        { label:"3", data:ad.chart.series_3c, borderColor:C_COLORS["3c"].border, backgroundColor:C_COLORS["3c"].bg, fill:true, tension:0.3, pointRadius:2, borderWidth:2 },
       ],
     },
     options: {
@@ -706,7 +706,7 @@ function buildCryptoChart(asset, ad) {
   });
 }
 
-// â”€â”€ ETH 1H â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- ETH 1H --------------------------------------------------------------------
 let ethChart = null;
 let allTrades = [];
 
@@ -724,7 +724,7 @@ async function loadEth() {
     statCard("Wins",       s.wins,                           "pos"),
     statCard("Losses",     s.losses,                         "neg"),
     statCard("Pending",    s.pending,                        "neu"),
-    statCard("Win Rate",   s.resolved ? s.win_rate+"%" : "â€”", s.win_rate>=50?"pos":"neg"),
+    statCard("Win Rate",   s.resolved ? s.win_rate+"%" : "--", s.win_rate>=50?"pos":"neg"),
     statCard("Net P/L",    pnlFmt(s.total_pnl),              pc),
     statCard("ROI",        (s.roi>=0?"+":"")+s.roi.toFixed(1)+"%", pc),
     statCard("Total Cost", "$"+s.total_cost.toFixed(2),      ""),
@@ -744,8 +744,8 @@ function renderTrades() {
     return;
   }
   tbody.innerHTML = trades.map(t => {
-    const time  = (t.placed_at || "â€”").substring(0,16).replace("T"," ");
-    const slug  = (t.slug || "â€”").split("-").slice(-4).join("-");
+    const time  = (t.placed_at || "--").substring(0,16).replace("T"," ");
+    const slug  = (t.slug || "--").split("-").slice(-4).join("-");
     const dir   = t.direction === "Up"
       ? `<span class="dir-up">Up</span>`
       : `<span class="dir-down">Down</span>`;
@@ -760,8 +760,8 @@ function renderTrades() {
                 :                     `<span class="pill pill-open">open</span>`;
     const pnl   = t.pnl !== null
       ? `<span class="${pnlClass(t.pnl)}">${t.pnl>=0?"+":""}$${Math.abs(t.pnl).toFixed(3)}</span>`
-      : `<span class="text-muted">â€”</span>`;
-    const mins  = t.mins_remaining !== null ? t.mins_remaining.toFixed(1) : "â€”";
+      : `<span class="text-muted">--</span>`;
+    const mins  = t.mins_remaining !== null ? t.mins_remaining.toFixed(1) : "--";
     return `<tr>
       <td>${esc(time)}</td>
       <td class="text-muted" style="font-size:11px">${esc(slug)}</td>
@@ -809,7 +809,7 @@ function buildEthChart(chart) {
   });
 }
 
-// â”€â”€ log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- log ----------------------------------------------------------------------
 const NOISE_RE = /outside entry window|min remaining/;
 
 async function loadLog() {
@@ -835,7 +835,7 @@ async function loadLog() {
 }
 document.getElementById("hideNoise").addEventListener("change", loadLog);
 
-// â”€â”€ weather â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- weather -------------------------------------------------------------------
 async function loadWeather() {
   const d  = await fetch("/api/weather").then(r => r.json());
   const pc = pnlClass(d.stats?.total_pnl ?? 0);
@@ -850,7 +850,7 @@ async function loadWeather() {
     statCard("Wins",        s.wins,                           "pos"),
     statCard("Losses",      s.losses,                         "neg"),
     statCard("Pending",     s.pending,                        "neu"),
-    statCard("Win Rate",    s.resolved ? s.win_rate+"%" : "â€”", s.win_rate>=50?"pos":"neg"),
+    statCard("Win Rate",    s.resolved ? s.win_rate+"%" : "--", s.win_rate>=50?"pos":"neg"),
     statCard("Net P/L",     pnlFmt(s.total_pnl),              pc),
     statCard("Total Cost",  "$"+s.total_cost.toFixed(2),      ""),
   ].join("");
@@ -861,37 +861,37 @@ async function loadWeather() {
     return;
   }
   tbody.innerHTML = d.bets.map(b => {
-    const time = (b.placed_at_utc || "â€”").substring(0,16).replace("T"," ");
+    const time = (b.placed_at_utc || "--").substring(0,16).replace("T"," ");
     const q    = b.question && b.question.length > 48
-                 ? b.question.substring(0,48)+"â€¦" : (b.question || "â€”");
+                 ? b.question.substring(0,48)+"" : (b.question || "--");
     const mrg  = b.forecast_minus_threshold !== null
                  ? `<span class="${b.forecast_minus_threshold<=0?"pos":"neg"}">${b.forecast_minus_threshold>=0?"+":""}${b.forecast_minus_threshold.toFixed(1)}</span>`
-                 : "â€”";
+                 : "--";
     const oc   = b.outcome === "win"  ? `<span class="pill pill-win">win</span>`
                : b.outcome === "loss" ? `<span class="pill pill-loss">loss</span>`
                :                       `<span class="pill pill-open">open</span>`;
     return `<tr>
       <td>${esc(time)}</td>
       <td><b>${esc(b.city)}</b></td>
-      <td>${esc(b.event_date||"â€”")}</td>
+      <td>${esc(b.event_date||"--")}</td>
       <td title="${esc(b.question||"")}">${esc(q)}</td>
       <td>${b.shares}</td>
-      <td>${b.no_price!==null ? b.no_price.toFixed(3) : "â€”"}</td>
+      <td>${b.no_price!==null ? b.no_price.toFixed(3) : "--"}</td>
       <td>$${(b.cost_usdc||0).toFixed(2)}</td>
-      <td>${b.forecast_high!==null ? b.forecast_high.toFixed(1) : "â€”"}</td>
+      <td>${b.forecast_high!==null ? b.forecast_high.toFixed(1) : "--"}</td>
       <td>${mrg}</td>
       <td>${oc}</td>
-      <td>${b.resolved_temp!==null ? b.resolved_temp : "â€”"}</td>
+      <td>${b.resolved_temp!==null ? b.resolved_temp : "--"}</td>
       <td>
         <div style="display:inline-flex;gap:4px;align-items:center">
           <input type="number" step="0.1" placeholder="temp" class="edit-input"
             id="rt-${b.id}" value="${b.resolved_temp!==null?b.resolved_temp:""}">
           <select class="edit-select" id="oc-${b.id}">
-            <option value=""   ${!b.outcome?"selected":""}>â€”</option>
+            <option value=""   ${!b.outcome?"selected":""}>--</option>
             <option value="win"  ${b.outcome==="win" ?"selected":""}>win</option>
             <option value="loss" ${b.outcome==="loss"?"selected":""}>loss</option>
           </select>
-          <button class="edit-btn" onclick="updateWeather(${b.id})">âœ“</button>
+          <button class="edit-btn" onclick="updateWeather(${b.id})"></button>
         </div>
       </td>
     </tr>`;
@@ -909,7 +909,7 @@ async function updateWeather(id) {
   loadWeather();
 }
 
-// â”€â”€ BS Forward Test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- BS Forward Test -----------------------------------------------------------
 let ftCharts = {};
 let ftLoaded = false;
 
@@ -949,7 +949,7 @@ async function loadFT() {
       </div></div>
       <div class="col-auto"><div class="stat-box text-center">
         <div class="text-muted small">Win Rate</div>
-        <div class="stat-val ${s.win_rate>=50?"pos":"neg"}">${s.resolved ? s.win_rate+"%" : "â€”"}</div>
+        <div class="stat-val ${s.win_rate>=50?"pos":"neg"}">${s.resolved ? s.win_rate+"%" : "--"}</div>
         <div class="text-muted small">${s.wins}W / ${s.losses}L</div>
       </div></div>
       <div class="col-auto"><div class="stat-box text-center">
@@ -976,20 +976,26 @@ async function loadFT() {
                  :                `<span class="pill pill-open">open</span>`;
       const pnl  = r.pnl != null
         ? `<span class="${pnlClass(r.pnl)}">${r.pnl>=0?"+":""}$${Math.abs(r.pnl).toFixed(4)}</span>`
-        : `<span class="text-muted">â€”</span>`;
+        : `<span class="text-muted">--</span>`;
       const edge = r.edge != null
         ? `<span class="${r.edge>=0?"pos":"neg"}">${(r.edge*100).toFixed(2)}%</span>`
-        : "â€”";
-      const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "â€”";
-      const market = r.slug || "â€”";
+        : "--";
+      const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "--";
+      const market = r.slug || "--";
+      const shares   = r.shares != null ? r.shares : "--";
+      const cost     = r.shares != null && r.entry_price != null
+        ? "$" + (r.shares * r.entry_price).toFixed(4)
+        : "--";
       return `<tr>
         <td class="text-muted" style="font-size:11px">${esc(dt)}</td>
         <td class="text-muted" style="font-size:11px">${esc(market)}</td>
         <td>${dir}</td>
         <td>$${r.entry_price.toFixed(4)}</td>
+        <td>${shares}</td>
+        <td>${cost}</td>
         <td>${fair}</td>
         <td>${edge}</td>
-        <td>${r.secs_remaining != null ? r.secs_remaining+"s" : "â€”"}</td>
+        <td>${r.secs_remaining != null ? r.secs_remaining+"s" : "--"}</td>
         <td>${won}</td>
         <td>${pnl}</td>
       </tr>`;
@@ -1006,7 +1012,8 @@ async function loadFT() {
               <thead style="position:sticky;top:0;z-index:1">
                 <tr>
                   <th>Time (UTC)</th><th>Market</th><th>Side</th>
-                  <th>Ask (entry)</th><th>Fair price</th><th>BS Edge</th>
+                  <th>Ask (entry)</th><th>Shares</th><th>Cost</th>
+                  <th>Fair price</th><th>BS Edge</th>
                   <th>Secs left</th><th>Result</th><th>P/L</th>
                 </tr>
               </thead>
@@ -1071,7 +1078,7 @@ async function loadFTLog() {
   box.scrollTop = box.scrollHeight;
 }
 
-// â”€â”€ bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// -- bootstrap ----------------------------------------------------------------
 function refreshAll() { loadEth(); loadLog(); loadWeather(); if(ftLoaded) { loadFT(); loadFTLog(); } }
 
 loadEth();      setInterval(loadEth,     30_000);
@@ -1084,7 +1091,7 @@ loadFTLog();    setInterval(loadFTLog,   10_000);
 """
 
 
-# â”€â”€ routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- routes --------------------------------------------------------------------
 
 @app.route("/")
 def index():
@@ -1137,7 +1144,7 @@ def api_weather_update(bet_id: int):
     return jsonify({"ok": True})
 
 
-# â”€â”€ entrypoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# -- entrypoint ----------------------------------------------------------------
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Unified trading stats web UI")

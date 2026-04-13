@@ -37,15 +37,26 @@ DB_PATH          = os.path.join("experiment", "crypto_5m.db")
 LOG_PATH         = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
 DEFAULT_MAX      = 0.03   # kept for CLI compatibility/logging
 DEFAULT_MIN_EDGE = 0.03   # minimum BS edge to record a signal
-BET_SHARES       = 5      # shares per signal
+BASE_SHARES      = 5.0    # base shares per signal
+MIN_SHARES       = 5.0    # minimum shares required to place/update a signal
+MAX_SHARES_MULT  = 3.0    # cap dynamic sizing at BASE_SHARES * this multiplier
+BOOK_SIZE_FRACTION = 0.8  # never size above this fraction of top-of-book size
+EDGE_RAMP_WIDTH  = 0.10   # edge above min_edge needed to reach max share multiplier
+REPRICE_MIN_EDGE_IMPROV = 0.02  # edge improvement needed to replace prior signal
+REPRICE_MIN_PRICE_DROP  = 0.01  # ask improvement needed to replace prior signal
+SLUG_BUDGET_USDC = 10.0   # max total spend per 5m slug across both sides
 MIN_BOOK_SHARES  = 1      # minimum shares needed in order book to fire
 POLL_INTERVAL    = 5      # seconds between book polls
 REFRESH_INTERVAL = 60     # seconds between market-list refreshes
 RESOLVE_INTERVAL = 30     # seconds between resolution scans
-RESOLVE_TIMEOUT  = 600    # give up resolving after this many seconds post-close
+RESOLVE_TIMEOUT  = 7200   # give up resolving after this many seconds post-close (2 hrs)
 BS_VOL_WINDOW    = 50     # trailing 5m bars for vol estimation
 BS_VOL_REFRESH   = 300    # seconds between per-asset vol refreshes
 SECS_PER_YEAR    = 365 * 24 * 3600
+ENTRY_MIN_SECS   = 30    # skip signals with < 30 s left (fill risk near expiry)
+ENTRY_MAX_SECS   = 150   # skip signals with > 150 s left (outcome not determined)
+OPPOSITE_BID_MULT = 1.5  # opposite side bid must be >= ask × this to confirm cheapness
+EWMA_LAMBDA      = 0.94  # RiskMetrics vol smoothing factor
 
 # Polymarket asset  →  Binance symbol
 _BINANCE_SYMBOLS: dict[str, str] = {
@@ -112,10 +123,14 @@ def _bs_prob_up(S: float, K: float, T_secs: float, sigma_5m: float) -> float:
         return 0.5
 
 
-def _estimate_vol(closes: list[float]) -> float:
+def _estimate_vol(closes: list[float], lam: float = EWMA_LAMBDA) -> float:
     """
-    Per-bar (5m) log-return std dev — raw, NOT annualised.
-    E.g. a value of 0.0007 means ≈0.07% typical move per 5m candle.
+    Per-bar (5m) vol via EWMA (RiskMetrics).  More responsive to recent vol
+    clusters than a simple rolling std dev — if BTC just moved hard, the next
+    candle's uncertainty is higher and this reflects it.
+
+    lam=0.94 weights the last bar at 6%, the bar before at 5.6%, etc.
+    Returns raw per-bar std dev (NOT annualised).
     """
     if len(closes) < 2:
         return 0.001
@@ -126,9 +141,10 @@ def _estimate_vol(closes: list[float]) -> float:
     ]
     if not log_rets:
         return 0.001
-    mean = sum(log_rets) / len(log_rets)
-    var  = sum((r - mean) ** 2 for r in log_rets) / max(1, len(log_rets) - 1)
-    return math.sqrt(var)            # pure per-bar std dev
+    var = log_rets[0] ** 2
+    for r in log_rets[1:]:
+        var = lam * var + (1 - lam) * r ** 2
+    return math.sqrt(var)
 
 
 # ── BS data cache ─────────────────────────────────────────────────────────────
@@ -503,97 +519,183 @@ def _insert_signal(
     conn: sqlite3.Connection,
     slug: str, asset: str, side: str,
     entry_price: float, secs: int | None, candle_start: int,
-    fair_price: float, edge: float,
-) -> bool:
-    """Insert one signal for (slug, side) if not already recorded. Returns True if inserted."""
+    fair_price: float, edge: float, shares: float,
+) -> str | None:
+    """
+    Insert or upgrade one signal for (slug, side).
+    Returns "inserted", "updated", or None when unchanged.
+    """
     now = int(datetime.now(timezone.utc).timestamp())
-    if conn.execute(
-        "SELECT 1 FROM signals WHERE slug=? AND side=?", (slug, side)
-    ).fetchone():
-        return False
+    existing = conn.execute(
+        "SELECT id, entry_price, edge, won FROM signals WHERE slug=? AND side=?",
+        (slug, side),
+    ).fetchone()
+    if existing:
+        if existing["won"] is not None:
+            return None
+        old_price = float(existing["entry_price"] or 0.0)
+        old_edge = float(existing["edge"] or 0.0)
+        better_edge = edge >= old_edge + REPRICE_MIN_EDGE_IMPROV
+        better_price = entry_price <= old_price - REPRICE_MIN_PRICE_DROP
+        if not (better_edge or better_price):
+            return None
+        conn.execute("""
+            UPDATE signals
+            SET entry_price=?, shares=?, secs_remaining=?, signal_ts=?,
+                fair_price=?, edge=?, winner=NULL, won=NULL, pnl=NULL
+            WHERE id=?
+        """, (entry_price, shares, secs, now, fair_price, edge, existing["id"]))
+        conn.commit()
+        return "updated"
+
     conn.execute("""
         INSERT INTO signals
             (slug, asset, side, entry_price, shares, secs_remaining,
              candle_start, signal_ts, fair_price, edge)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (slug, asset, side, entry_price, BET_SHARES, secs,
+    """, (slug, asset, side, entry_price, shares, secs,
           candle_start, now, fair_price, edge))
     conn.commit()
-    return True
+    return "inserted"
+
+
+def _suggest_shares(edge: float, min_edge: float, book_size: float) -> float:
+    """
+    Dynamic sizing:
+      - BASE_SHARES at threshold edge,
+      - ramps up with stronger edge,
+      - capped by top-of-book liquidity.
+    """
+    if book_size <= 0:
+        return BASE_SHARES
+    edge_excess = max(0.0, edge - min_edge)
+    ramp = min(1.0, edge_excess / max(1e-6, EDGE_RAMP_WIDTH))
+    mult = 1.0 + (MAX_SHARES_MULT - 1.0) * ramp
+    by_edge = BASE_SHARES * mult
+    by_book = max(MIN_SHARES, book_size * BOOK_SIZE_FRACTION)
+    shares = min(by_edge, by_book, BASE_SHARES * MAX_SHARES_MULT)
+    return round(max(MIN_SHARES, shares), 2)
+
+
+def _cap_shares_to_slug_budget(
+    conn: sqlite3.Connection,
+    slug: str,
+    side: str,
+    entry_price: float,
+    desired_shares: float,
+) -> float:
+    """
+    Cap shares so total slug spend never exceeds SLUG_BUDGET_USDC.
+    If this side already has a row, treat it as a replacement (subtract old spend).
+    """
+    if entry_price <= 0:
+        return 0.0
+    existing_same_side = conn.execute(
+        "SELECT entry_price, shares FROM signals WHERE slug=? AND side=?",
+        (slug, side),
+    ).fetchone()
+    same_side_spend = 0.0
+    if existing_same_side:
+        same_side_spend = float(existing_same_side["entry_price"]) * float(existing_same_side["shares"])
+
+    total_slug_spend = conn.execute(
+        "SELECT COALESCE(SUM(entry_price * shares), 0.0) FROM signals WHERE slug=?",
+        (slug,),
+    ).fetchone()[0]
+    spend_other_sides = float(total_slug_spend or 0.0) - same_side_spend
+    remaining_budget = max(0.0, SLUG_BUDGET_USDC - spend_other_sides)
+    max_by_budget = remaining_budget / entry_price
+    capped = min(desired_shares, max_by_budget)
+    return round(max(0.0, capped), 2)
+
+
+def _apply_winner(conn: sqlite3.Connection, slug: str, winner: str, source: str) -> None:
+    """Write winner to candles + signals and log each resolved signal."""
+    now = int(datetime.now(timezone.utc).timestamp())
+    conn.execute(
+        "UPDATE candles SET winner=?, resolved_at=? WHERE slug=?", (winner, now, slug)
+    )
+    sigs = conn.execute(
+        "SELECT id, side, asset, entry_price, shares, fair_price, edge, signal_ts "
+        "FROM signals WHERE slug=?",
+        (slug,),
+    ).fetchall()
+    for sig in sigs:
+        won = 1 if sig["side"] == winner else 0
+        shares = sig["shares"] or BASE_SHARES
+        pnl = round(shares * ((1.0 - sig["entry_price"]) if won else -sig["entry_price"]), 6)
+        conn.execute(
+            "UPDATE signals SET winner=?, won=?, pnl=? WHERE id=?",
+            (winner, won, pnl, sig["id"]),
+        )
+        ts_utc = datetime.fromtimestamp(sig["signal_ts"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        log.info(
+            "BET-RESOLVE  slug=%s  asset=%s  side=%s  winner=%s  won=%d  "
+            "ask=%.4f  fair=%.4f  edge=%+.4f  shares=%s  pnl=%+.4f  src=%s  ts=%s",
+            slug, sig["asset"], sig["side"], winner, won,
+            float(sig["entry_price"]),
+            float(sig["fair_price"]) if sig["fair_price"] is not None else 0.0,
+            float(sig["edge"]) if sig["edge"] is not None else 0.0,
+            sig["shares"], pnl, source, ts_utc,
+        )
+    conn.commit()
+    log.info("MARKET-RESOLVED  slug=%s  winner=%s  signals=%d  src=%s",
+             slug, winner, len(sigs), source)
 
 
 def _resolve_slug(conn: sqlite3.Connection, slug: str) -> bool:
-    """Query Gamma for winner. Returns True if resolved and saved."""
+    """
+    Resolve a slug using Polymarket/Gamma only.
+    Returns True if resolved and saved.
+    """
+    # ── try Gamma / Polymarket ────────────────────────────────────────────────
     try:
         data = _get_json(f"{GAMMA_API}?slug={slug}")
-        if not isinstance(data, list) or not data:
-            return False
-        mkt = (data[0].get("markets") or [None])[0]
-        if not mkt or not mkt.get("closed"):
-            return False
-
-        outcomes = _load_field(mkt.get("outcomes")) or []
-        prices_raw = _load_field(mkt.get("outcomePrices")) or []
-        winner: str | None = None
-        for i, p in enumerate(prices_raw):
-            if i >= len(outcomes):
-                continue
-            try:
-                price = float(p)
-            except (TypeError, ValueError):
-                continue
-            # Gamma can return 1, "1", 1.0, "1.0", etc.
-            if price >= 0.999:
-                winner = str(outcomes[i])
-                break
-        if winner is None:
-            return False
-
-        now = int(datetime.now(timezone.utc).timestamp())
-        conn.execute(
-            "UPDATE candles SET winner=?, resolved_at=? WHERE slug=?", (winner, now, slug)
-        )
-        sigs = conn.execute(
-            "SELECT id, side, asset, entry_price, shares, fair_price, edge, signal_ts "
-            "FROM signals WHERE slug=?",
-            (slug,),
-        ).fetchall()
-        for sig in sigs:
-            won = 1 if sig["side"] == winner else 0
-            shares = sig["shares"] or BET_SHARES
-            pnl = round(shares * ((1.0 - sig["entry_price"]) if won else -sig["entry_price"]), 6)
-            conn.execute(
-                "UPDATE signals SET winner=?, won=?, pnl=? WHERE id=?",
-                (winner, won, pnl, sig["id"]),
-            )
-            ts_utc = datetime.fromtimestamp(sig["signal_ts"], tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-            log.info(
-                "BET-RESOLVE  slug=%s  asset=%s  side=%s  winner=%s  won=%d  "
-                "ask=%.4f  fair=%.4f  edge=%+.4f  shares=%s  pnl=%+.4f  signal_ts=%s",
-                slug,
-                sig["asset"],
-                sig["side"],
-                winner,
-                won,
-                float(sig["entry_price"]),
-                float(sig["fair_price"]) if sig["fair_price"] is not None else 0.0,
-                float(sig["edge"]) if sig["edge"] is not None else 0.0,
-                sig["shares"],
-                pnl,
-                ts_utc,
-            )
-        conn.commit()
-        log.info("MARKET-RESOLVED  slug=%s  winner=%s  signals=%d", slug, winner, len(sigs))
-        return True
+        if isinstance(data, list) and data:
+            event = data[0]
+            mkt = (event.get("markets") or [None])[0]
+            if mkt:
+                outcomes = (
+                    _load_field(mkt.get("outcomes"))
+                    or _load_field(event.get("outcomes"))
+                    or []
+                )
+                prices_raw = (
+                    _load_field(mkt.get("outcomePrices"))
+                    or _load_field(event.get("outcomePrices"))
+                    or []
+                )
+                winner: str | None = None
+                for i, p in enumerate(prices_raw):
+                    if i >= len(outcomes):
+                        continue
+                    try:
+                        price = float(p)
+                    except (TypeError, ValueError):
+                        continue
+                    # Some feeds lag the closed flag; a 1.0 outcome is enough.
+                    if price >= 0.999:
+                        winner = str(outcomes[i])
+                        break
+                if winner is not None:
+                    _apply_winner(conn, slug, winner, "gamma")
+                    return True
     except Exception as exc:
-        log.debug("resolve %s: %s", slug, exc)
-        return False
+        log.debug("Gamma resolve %s: %s", slug, exc)
+
+    return False
 
 
 def _pending_slugs(conn: sqlite3.Connection) -> list[tuple[str, int]]:
+    """
+    Return slugs that need resolution — both genuinely pending (winner IS NULL)
+    and previously abandoned (winner='?') so stale scanner restarts don't leave
+    gaps in the P/L record.
+    """
     now = int(datetime.now(timezone.utc).timestamp())
     rows = conn.execute(
-        "SELECT slug, candle_end FROM candles WHERE winner IS NULL AND candle_end < ?",
+        "SELECT slug, candle_end FROM candles "
+        "WHERE (winner IS NULL OR winner = '?') AND candle_end < ?",
         (now,),
     ).fetchall()
     return [(r["slug"], r["candle_end"]) for r in rows]
@@ -657,82 +759,134 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
         # ── poll order books ──────────────────────────────────────────────────
         if active:
             token_ids: list[str] = []
-            token_map: dict[str, tuple[str, str, str]] = {}
             for mkt in active.values():
                 token_ids += [mkt.up_token, mkt.down_token]
-                token_map[mkt.up_token]   = (mkt.slug, "Up",   mkt.asset)
-                token_map[mkt.down_token] = (mkt.slug, "Down", mkt.asset)
 
             try:
                 books = _fetch_books_bulk(token_ids)
-                for token_id, book in books.items():
-                    info = token_map.get(token_id)
-                    if not info:
-                        continue
-                    slug, side, asset = info
-                    mkt = active.get(slug)
-                    if not mkt:
-                        continue
-                    ask, size = _best_ask_with_size(book)
-                    bid       = _best_bid_price(book)
-                    if ask is None or size < MIN_BOOK_SHARES:
-                        continue
-                    secs = mkt.candle_end - now
 
-                    # ── Black-Scholes fair price ──────────────────────────────
-                    fair_price: float | None = None
-                    edge:       float | None = None
+                # Iterate per-market so both sides are visible simultaneously.
+                # This is required for the opposite-side bid check.
+                for mkt in active.values():
+                    slug  = mkt.slug
+                    asset = mkt.asset
+                    secs  = mkt.candle_end - now
+
+                    up_book   = books.get(mkt.up_token,   {})
+                    down_book = books.get(mkt.down_token, {})
+                    up_ask,   up_size   = _best_ask_with_size(up_book)
+                    down_ask, down_size = _best_ask_with_size(down_book)
+                    up_bid              = _best_bid_price(up_book)
+                    down_bid            = _best_bid_price(down_book)
+
+                    # ── BS inputs — computed once per slug ────────────────────
+                    fair_up: float | None = None
+                    K:       float | None = None
+                    k_src = "BN"
                     if bs_mode or verbose:
                         spot, K_binance, sigma = _get_bs_inputs(asset, mkt.candle_start)
-                        # Prefer Polymarket's own settlement benchmark;
-                        # fall back to Binance candle open if not published yet.
-                        K = mkt.price_to_beat or K_binance
+                        K     = mkt.price_to_beat or K_binance
+                        k_src = "PM" if mkt.price_to_beat else "BN"
                         if spot and K and sigma and secs > 0:
-                            p_up = _bs_prob_up(spot, K, max(1, secs), sigma)
-                            fair_price = p_up if side == "Up" else (1.0 - p_up)
+                            fair_up = _bs_prob_up(spot, K, max(1, secs), sigma)
+
+                    # ── time-window gate ──────────────────────────────────────
+                    in_window = ENTRY_MIN_SECS <= secs <= ENTRY_MAX_SECS
+
+                    # (side, this-side ask, this-side size, opposite-side bid)
+                    for side, ask, size, opp_bid in (
+                        ("Up",   up_ask,   up_size,   down_bid),
+                        ("Down", down_ask, down_size, up_bid),
+                    ):
+                        if ask is None or size < MIN_BOOK_SHARES:
+                            continue
+
+                        fair_price: float | None = None
+                        edge:       float | None = None
+                        if fair_up is not None:
+                            fair_price = fair_up if side == "Up" else (1.0 - fair_up)
                             edge       = round(fair_price - ask, 6)
 
-                    # ── real-time tick log ────────────────────────────────────
-                    #   verbose  → print every token every poll
-                    #   default  → print only when edge >= 0 (genuine opportunity)
-                    bid_str  = f"${bid:.4f}" if bid  is not None else "  n/a  "
-                    fair_str = f"{fair_price:.4f}" if fair_price is not None else "  n/a "
-                    edge_str = (f"{edge:+.4f}" if edge is not None else "   n/a")
-                    sig_mark = "►" if (edge is not None and edge >= min_edge) else " "
+                        opp_str  = f"${opp_bid:.4f}"   if opp_bid   is not None else "  n/a  "
+                        fair_str = f"{fair_price:.4f}"  if fair_price is not None else "  n/a "
+                        edge_str = f"{edge:+.4f}"        if edge       is not None else "   n/a"
+                        k_str    = f"{K:.4f}"            if K          is not None else "n/a"
+                        sig_mark = "►" if (
+                            edge is not None and edge >= min_edge and in_window
+                        ) else " "
 
-                    k_src = "PM" if mkt.price_to_beat else "BN"  # Polymarket vs Binance
-                    if verbose:
-                        log.info(
-                            "%s TICK  %-5s %-4s  bid=%s  ask=$%.4f  "
-                            "fair=%s  edge=%s  K=%s[%s]  secs=%d",
-                            sig_mark, asset, side,
-                            bid_str, ask, fair_str, edge_str,
-                            f"{K:.4f}" if (bs_mode or verbose) and K else "n/a",
-                            k_src, max(0, secs),
-                        )
-                    elif fair_price is not None and edge is not None and edge >= 0:
-                        log.info(
-                            "%s TICK  %-5s %-4s  bid=%s  ask=$%.4f  "
-                            "fair=%s  edge=%s  K=%s[%s]  secs=%d",
-                            sig_mark, asset, side,
-                            bid_str, ask, fair_str, edge_str,
-                            f"{K:.4f}" if K else "n/a",
-                            k_src, max(0, secs),
-                        )
+                        # ── real-time tick log ────────────────────────────────
+                        #   verbose → every token every poll
+                        #   default → only when edge >= 0
+                        if verbose:
+                            log.info(
+                                "%s TICK  %-5s %-4s  opp_bid=%s  ask=$%.4f  "
+                                "fair=%s  edge=%s  K=%s[%s]  secs=%d%s",
+                                sig_mark, asset, side, opp_str, ask,
+                                fair_str, edge_str, k_str, k_src, max(0, secs),
+                                "" if in_window else "  [OOW]",
+                            )
+                        elif fair_price is not None and edge is not None and edge >= 0:
+                            log.info(
+                                "%s TICK  %-5s %-4s  opp_bid=%s  ask=$%.4f  "
+                                "fair=%s  edge=%s  K=%s[%s]  secs=%d%s",
+                                sig_mark, asset, side, opp_str, ask,
+                                fair_str, edge_str, k_str, k_src, max(0, secs),
+                                "" if in_window else "  [OOW]",
+                            )
 
-                    # ── signal condition: pure BS edge ────────────────────────
-                    if fair_price is not None and edge is not None and edge >= min_edge:
-                        if _insert_signal(
+                        # ── signal conditions ─────────────────────────────────
+
+                        # 1. Must be inside the 30–150 s entry window
+                        if not in_window:
+                            continue
+
+                        # 2. Must have BS edge above threshold
+                        if fair_price is None or edge is None or edge < min_edge:
+                            continue
+
+                        # 3. Opposite-side bid must confirm this side is genuinely cheap.
+                        #    If UP asks 1¢ but DOWN only bids 0.5¢, the market isn't
+                        #    treating DOWN as near-certain — the cheapness isn't real.
+                        #    We require: opp_bid >= ask × OPPOSITE_BID_MULT (default 1.5×).
+                        if opp_bid is None or opp_bid < ask * OPPOSITE_BID_MULT:
+                            if verbose:
+                                log.info(
+                                    "  SKIP  %-5s %-4s  opp_bid_check FAIL"
+                                    "  opp_bid=%s  need>=$%.4f",
+                                    asset, side, opp_str, ask * OPPOSITE_BID_MULT,
+                                )
+                            continue
+
+                        shares = _suggest_shares(edge=edge, min_edge=min_edge, book_size=size)
+                        shares = _cap_shares_to_slug_budget(
+                            conn=conn,
+                            slug=slug,
+                            side=side,
+                            entry_price=ask,
+                            desired_shares=shares,
+                        )
+                        if shares < MIN_SHARES:
+                            if verbose:
+                                log.info(
+                                    "  SKIP  %-5s %-4s  slug_budget_cap hit  "
+                                    "budget=$%.2f  ask=$%.4f  shares=%.2f < min=%.2f",
+                                    asset, side, SLUG_BUDGET_USDC, ask, shares, MIN_SHARES,
+                                )
+                            continue
+                        sig_action = _insert_signal(
                             conn, slug, asset, side, ask, secs,
-                            mkt.candle_start, fair_price, edge,
-                        ):
+                            mkt.candle_start, fair_price, edge, shares,
+                        )
+                        if sig_action:
                             ts_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
                             log.info(
-                                "BET-OPEN  slug=%s  asset=%s  side=%s  bid=%s  ask=%.4f"
-                                "  fair=%s  edge=%s  shares=%d  secs_left=%d  ts=%s",
-                                slug, asset, side,
-                                bid_str, ask, fair_str, edge_str,
-                                BET_SHARES, max(0, secs), ts_utc,
+                                "BET-%s  slug=%s  asset=%s  side=%s  opp_bid=%s  ask=%.4f"
+                                "  fair=%s  edge=%s  shares=%.2f  secs_left=%d  ts=%s",
+                                sig_action.upper(),
+                                slug, asset, side, opp_str, ask,
+                                fair_str, edge_str,
+                                shares, max(0, secs), ts_utc,
                             )
             except Exception as exc:
                 log.warning("Book poll error: %s", exc)
@@ -740,15 +894,21 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
         # ── resolve closed candles ────────────────────────────────────────────
         if now - last_resolve >= RESOLVE_INTERVAL:
             for slug, candle_end in _pending_slugs(conn):
+                # Always keep trying to resolve stale '?' rows from Polymarket.
+                if _resolve_slug(conn, slug):
+                    continue
+
                 age = now - candle_end
                 if age > RESOLVE_TIMEOUT:
-                    log.warning("ABANDON resolving %s (closed %ds ago)", slug, age)
-                    conn.execute(
-                        "UPDATE candles SET winner='?' WHERE slug=?", (slug,)
-                    )
-                    conn.commit()
-                else:
-                    _resolve_slug(conn, slug)
+                    row = conn.execute(
+                        "SELECT winner FROM candles WHERE slug=?", (slug,)
+                    ).fetchone()
+                    if row and row["winner"] != "?":
+                        log.warning("ABANDON resolving %s (closed %ds ago)", slug, age)
+                        conn.execute(
+                            "UPDATE candles SET winner='?' WHERE slug=?", (slug,)
+                        )
+                        conn.commit()
             last_resolve = now
 
         time.sleep(poll)
