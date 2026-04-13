@@ -139,6 +139,76 @@ def get_positions(funder: str) -> list[dict]:
         return []
 
 
+def get_positions_with_prices(funder: str, host: str = "https://clob.polymarket.com") -> dict:
+    """
+    Get account positions with current market prices and calculated P&L.
+    Returns {
+        'positions': [{'token_id', 'size', 'price', 'pnl', 'market_slug', 'outcome_label'}, ...],
+        'total_pnl': float,
+        'error': str (if any)
+    }
+    """
+    import requests
+    import logging
+    log = logging.getLogger("automata")
+
+    try:
+        # Get positions
+        pos_resp = requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": funder, "sizeThreshold": "0.01"},
+            timeout=10,
+        )
+        pos_resp.raise_for_status()
+        positions = pos_resp.json()
+
+        if not positions:
+            return {"positions": [], "total_pnl": 0.0, "error": None}
+
+        # Build result
+        results = []
+        total_pnl = 0.0
+
+        for pos in positions:
+            if float(pos.get("size", 0)) <= 0:
+                continue
+
+            token_id = str(pos.get("asset", ""))
+            size = float(pos.get("size", 0))
+            entry_price = float(pos.get("cost_basis", 0)) / max(1, size) if size > 0 else 0
+
+            # Get current price
+            bid, ask = get_best_bid_ask(host, token_id)
+            mid_price = ((bid or 0) + (ask or 0)) / 2 if bid and ask else (bid or ask or 0)
+
+            # Calculate P&L
+            pnl = size * (mid_price - entry_price) if entry_price > 0 else 0
+            total_pnl += pnl
+
+            results.append({
+                "token_id": token_id,
+                "size": round(size, 2),
+                "entry_price": round(entry_price, 4),
+                "current_price": round(mid_price, 4),
+                "pnl": round(pnl, 4),
+                "market_slug": pos.get("market_slug", ""),
+            })
+
+        return {
+            "positions": results,
+            "total_pnl": round(total_pnl, 4),
+            "error": None,
+        }
+
+    except Exception as exc:
+        log.warning("get_positions_with_prices failed: %s", exc)
+        return {
+            "positions": [],
+            "total_pnl": 0.0,
+            "error": f"Failed to fetch positions: {str(exc)}",
+        }
+
+
 def get_open_orders(client: ClobClient, token_id: str) -> list[dict]:
     """Return all open orders for a given token_id."""
     try:

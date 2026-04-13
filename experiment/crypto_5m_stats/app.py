@@ -11,6 +11,7 @@ from .database import (
     query_bs_forward,
     query_crypto_stats,
     query_eth_stats,
+    query_eth_live_positions,
     query_weather_stats,
     read_bs_log_tail,
     read_eth_log_tail,
@@ -38,7 +39,11 @@ def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log
 
     @app.route("/api/eth")
     def api_eth():
-        return jsonify(query_eth_stats(app.config["BETS_DB_PATH"]))
+        # Try live positions first, fall back to bets.db
+        live = query_eth_live_positions()
+        if live.get("error"):
+            return jsonify(query_eth_stats(app.config["BETS_DB_PATH"]))
+        return jsonify(live)
 
     @app.route("/api/log")
     def api_log():

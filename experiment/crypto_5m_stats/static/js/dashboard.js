@@ -161,25 +161,66 @@ let ethTimeFilter = "all";
 
 async function loadEth() {
   const d = await fetch("/api/eth").then(r => r.json());
-  if (d.error) {
+  if (d.error && !d.positions) {
     document.getElementById("eth-stats").innerHTML = `<div class="alert alert-warning">${esc(d.error)}</div>`;
     return;
   }
-  const s = d.stats;
-  const pc = pnlClass(s.total_pnl);
-  document.getElementById("eth-stats").innerHTML = [
-    statCard("Total", s.total, ""),
-    statCard("Wins", s.wins, "pos"),
-    statCard("Losses", s.losses, "neg"),
-    statCard("Pending", s.pending, "neu"),
-    statCard("Win Rate", s.resolved ? s.win_rate + "%" : "--", s.win_rate >= 50 ? "pos" : "neg"),
-    statCard("Net P/L", pnlFmt(s.total_pnl), pc),
-    statCard("ROI", (s.roi >= 0 ? "+" : "") + s.roi.toFixed(1) + "%", pc),
-    statCard("Total Cost", "$" + s.total_cost.toFixed(2), ""),
-  ].join("");
 
-  allTrades = d.trades;
-  ethChartData = d.chart;
+  // Check if this is live positions data (has 'positions' field) or historical trades (has 'stats' field)
+  const isLiveData = d.positions !== undefined;
+
+  if (isLiveData) {
+    // Format live positions data for display
+    const positions = d.positions || [];
+    const totalPnl = d.total_pnl || 0;
+    const pc = pnlClass(totalPnl);
+
+    document.getElementById("eth-stats").innerHTML = [
+      statCard("Open Positions", positions.length, ""),
+      statCard("Total P/L", pnlFmt(totalPnl), pc),
+      statCard("Avg Entry", positions.length > 0 ? "$" + (positions.reduce((a, p) => a + p.entry_price, 0) / positions.length).toFixed(3) : "--", ""),
+      statCard("Avg Price", positions.length > 0 ? "$" + (positions.reduce((a, p) => a + p.current_price, 0) / positions.length).toFixed(3) : "--", ""),
+    ].join("");
+
+    // Convert positions to trades format for table display
+    allTrades = positions.map(pos => ({
+      id: pos.token_id,
+      slug: pos.market_slug || pos.token_id.substring(0, 20),
+      direction: pos.current_price > pos.entry_price ? "Up" : "Down",
+      shares: pos.size,
+      entry_price: pos.entry_price,
+      cost_usdc: pos.size * pos.entry_price,
+      placed_at: new Date().toISOString(),
+      mins_remaining: null,
+      outcome: null,
+      dry_run: false,
+      pnl: pos.pnl,
+    }));
+
+    // Build simple chart from positions
+    ethChartData = {
+      labels: [new Date().toLocaleTimeString()],
+      series: [totalPnl],
+    };
+  } else {
+    // Historical trades from bets.db
+    const s = d.stats;
+    const pc = pnlClass(s.total_pnl);
+    document.getElementById("eth-stats").innerHTML = [
+      statCard("Total", s.total, ""),
+      statCard("Wins", s.wins, "pos"),
+      statCard("Losses", s.losses, "neg"),
+      statCard("Pending", s.pending, "neu"),
+      statCard("Win Rate", s.resolved ? s.win_rate + "%" : "--", s.win_rate >= 50 ? "pos" : "neg"),
+      statCard("Net P/L", pnlFmt(s.total_pnl), pc),
+      statCard("ROI", (s.roi >= 0 ? "+" : "") + s.roi.toFixed(1) + "%", pc),
+      statCard("Total Cost", "$" + s.total_cost.toFixed(2), ""),
+    ].join("");
+
+    allTrades = d.trades;
+    ethChartData = d.chart;
+  }
+
   ethCurrentPage = 0;
   renderTrades();
   buildEthChart(ethChartData);
