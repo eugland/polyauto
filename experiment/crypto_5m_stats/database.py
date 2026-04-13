@@ -308,12 +308,14 @@ def query_bs_forward(crypto_db_path: str, min_edge_filter: float = 0.0) -> dict:
         # cumulative P&L series (time-ordered, resolved only)
         resolved_rows = [r for r in asset_rows if r["won"] is not None]
         labels: list[str] = []
+        timestamps: list[int] = []
         cum_series: list[float] = []
         running = 0.0
         for r in resolved_rows:
             running += r["pnl"] or 0
             dt = datetime.fromtimestamp(r["signal_ts"], tz=timezone.utc)
             labels.append(dt.strftime("%m/%d %H:%M"))
+            timestamps.append(r["signal_ts"])
             cum_series.append(round(running, 4))
 
         wins = [r for r in resolved_rows if r["won"] == 1]
@@ -341,7 +343,7 @@ def query_bs_forward(crypto_db_path: str, min_edge_filter: float = 0.0) -> dict:
         }
 
         assets_data[asset] = {
-            "chart": {"labels": labels, "series": cum_series},
+            "chart": {"labels": labels, "series": cum_series, "timestamps": timestamps},
             "stats": stats,
             "trades": list(reversed(asset_rows)),  # newest first
         }

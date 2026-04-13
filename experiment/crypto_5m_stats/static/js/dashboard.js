@@ -518,30 +518,36 @@ function getFtFilteredData(asset, period) {
   const ad = ftChartData[asset];
   if (!ad || !ad.chart) return ad?.chart;
 
-  const now = Date.now();
-  let cutoffMs = 0;
+  const now = Date.now() / 1000; // convert to seconds to match signal_ts
+  let cutoffSeconds = 0;
 
-  if (period === "12h") cutoffMs = now - 12 * 60 * 60 * 1000;
-  else if (period === "1d") cutoffMs = now - 24 * 60 * 60 * 1000;
-  else if (period === "1w") cutoffMs = now - 7 * 24 * 60 * 60 * 1000;
-  else if (period === "1m") cutoffMs = now - 30 * 24 * 60 * 60 * 1000;
+  if (period === "12h") cutoffSeconds = now - 12 * 60 * 60;
+  else if (period === "1d") cutoffSeconds = now - 24 * 60 * 60;
+  else if (period === "1w") cutoffSeconds = now - 7 * 24 * 60 * 60;
+  else if (period === "1m") cutoffSeconds = now - 30 * 24 * 60 * 60;
 
   if (period === "all") return ad.chart;
 
-  // Filter based on timestamps in labels (approximate by count)
+  // Filter using actual timestamps from the data
   const labels = ad.chart.labels || [];
   const series = ad.chart.series || [];
+  const timestamps = ad.chart.timestamps || [];
 
-  if (labels.length === 0) return ad.chart;
+  if (timestamps.length === 0) return ad.chart;
 
-  // Estimate: keep last N points based on time period
-  const timePerPoint = (now - cutoffMs) / (24 * 60 * 60 * 1000); // rough estimate in days
-  const estimatedPoints = Math.ceil(timePerPoint * (labels.length / 30)); // assume 30 days of data
-  const startIdx = Math.max(0, labels.length - estimatedPoints);
+  // Find first index where timestamp >= cutoff
+  let startIdx = 0;
+  for (let i = 0; i < timestamps.length; i++) {
+    if (timestamps[i] >= cutoffSeconds) {
+      startIdx = i;
+      break;
+    }
+  }
 
   return {
     labels: labels.slice(startIdx),
     series: series.slice(startIdx),
+    timestamps: timestamps.slice(startIdx),
   };
 }
 
