@@ -13,29 +13,6 @@ _WIN_OUTCOMES = {"win"}
 _LOSS_OUTCOMES = {"loss", "stop_loss", "expired"}
 
 
-def query_eth_live_positions() -> dict:
-    """Query live ETH 1H positions from Polymarket account."""
-    try:
-        from pathlib import Path
-        import sys
-
-        # Add automata to path
-        automata_path = str(Path(__file__).resolve().parent.parent.parent / "automata")
-        if automata_path not in sys.path:
-            sys.path.insert(0, automata_path)
-
-        from client import get_positions_with_prices
-        import os
-
-        funder = os.getenv("POLYMARKET_FUNDER")
-        if not funder:
-            return {"error": "POLYMARKET_FUNDER not set", "positions": [], "total_pnl": 0}
-
-        return get_positions_with_prices(funder)
-    except Exception as e:
-        return {"error": f"Failed to fetch live positions: {str(e)}", "positions": [], "total_pnl": 0}
-
-
 def query_crypto_stats(crypto_db_path: str) -> dict:
     """Query crypto 5m signal stats from crypto_5m.db."""
     if not os.path.exists(crypto_db_path):
