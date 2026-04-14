@@ -53,6 +53,22 @@
         </a>
       </div>
 
+      <!-- ETH P/L chart -->
+      <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span class="fw-bold">Cumulative P/L</span>
+          <div class="d-flex gap-2" id="ethSubTabs">
+            <button class="btn btn-sm btn-outline-secondary" onclick="filterEthChart('1d')" id="btn-1d">1D</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="filterEthChart('1w')" id="btn-1w">1W</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="filterEthChart('1y')" id="btn-1y">1Y</button>
+            <button class="btn btn-sm btn-outline-secondary active" onclick="filterEthChart('all')" id="btn-all">All</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <canvas id="eth-chart" style="max-height:320px"></canvas>
+        </div>
+      </div>
+
       <!-- Transactions table -->
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -76,6 +92,13 @@
               </thead>
               <tbody id="eth-trades-body"></tbody>
             </table>
+          </div>
+        </div>
+        <div class="card-footer d-flex justify-content-between align-items-center">
+          <small class="text-muted" id="eth-pagination-info"></small>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-secondary" id="eth-prev-btn" onclick="ethPrevPage()">← Prev</button>
+            <button class="btn btn-sm btn-outline-secondary" id="eth-next-btn" onclick="ethNextPage()">Next →</button>
           </div>
         </div>
       </div>
