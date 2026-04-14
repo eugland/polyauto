@@ -841,7 +841,7 @@ def _submit_limit_buy(client, signal: Signal, shares: float) -> dict:
         fee_rate_bps=max(0, int(signal.taker_fee_bps)),
     )
     signed = client.create_order(args)
-    return client.post_order(signed, OrderType.GTC, post_only=False)
+    return client.post_order(signed, OrderType.GTC)
 
 
 def _parse_winner(event: dict) -> str | None:
