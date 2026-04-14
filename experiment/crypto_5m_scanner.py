@@ -37,9 +37,9 @@ DB_PATH          = os.path.join("experiment", "crypto_5m.db")
 LOG_PATH         = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
 DEFAULT_MAX      = 0.03   # kept for CLI compatibility/logging
 DEFAULT_MIN_EDGE = 0.03   # minimum BS edge to record a signal
-BASE_SHARES      = 5.0    # base shares per signal
-MIN_SHARES       = 5.0    # minimum shares required to place/update a signal
-MAX_SHARES_MULT  = 3.0    # cap dynamic sizing at BASE_SHARES * this multiplier
+BASE_SHARES      = 6.0    # flat shares per signal
+MIN_SHARES       = 6.0    # minimum shares required to place/update a signal
+MAX_SHARES_MULT  = 1.0    # flat sizing — dynamic multiplier disabled
 BOOK_SIZE_FRACTION = 0.8  # never size above this fraction of top-of-book size
 EDGE_RAMP_WIDTH  = 0.10   # edge above min_edge needed to reach max share multiplier
 REPRICE_MIN_EDGE_IMPROV = 0.02  # edge improvement needed to replace prior signal
@@ -53,10 +53,14 @@ RESOLVE_TIMEOUT  = 7200   # give up resolving after this many seconds post-close
 BS_VOL_WINDOW    = 50     # trailing 5m bars for vol estimation
 BS_VOL_REFRESH   = 300    # seconds between per-asset vol refreshes
 SECS_PER_YEAR    = 365 * 24 * 3600
-ENTRY_MIN_SECS   = 30    # skip signals with < 30 s left (fill risk near expiry)
-ENTRY_MAX_SECS   = 150   # skip signals with > 150 s left (outcome not determined)
+ENTRY_MIN_SECS   = 90    # skip signals with < 90 s left (model unreliable near expiry)
+ENTRY_MAX_SECS   = 220   # skip signals with > 220 s left (outcome not determined)
+MIN_ENTRY_PRICE  = 0.08  # skip asks below this (cheap-premium trap, model over-confident)
+MAX_EDGE         = 0.12  # skip signals with edge above this (treat as model failure)
+MAX_DRIFT_SIGMAS = 1.0   # cap |μ| at this many σ/bar to prevent runaway drift estimates
 OPPOSITE_BID_MULT = 1.5  # opposite side bid must be >= ask × this to confirm cheapness
-EWMA_LAMBDA      = 0.94  # RiskMetrics vol smoothing factor
+EWMA_LAMBDA      = 0.85  # RiskMetrics vol smoothing; 0.85 gives ~7-bar memory (35 min),
+                         # more responsive to current 5m vol regime than the daily-data 0.94
 
 # Polymarket asset  →  Binance symbol
 _BINANCE_SYMBOLS: dict[str, str] = {
@@ -101,23 +105,25 @@ def _norm_cdf(x: float) -> float:
     return 0.5 * math.erfc(-x / math.sqrt(2))
 
 
-def _bs_prob_up(S: float, K: float, T_secs: float, sigma_5m: float) -> float:
+def _bs_prob_up(S: float, K: float, T_secs: float, sigma_5m: float, mu_5m: float = 0.0) -> float:
     """
-    Risk-neutral probability that price ends above K.
+    Probability that price ends above K under GBM with per-bar drift μ.
 
     S        — current spot price
     K        — strike (5m candle open price)
     T_secs   — seconds remaining until expiry
-    sigma_5m — per-bar std dev of log returns (native 5m units, NOT annualised)
+    sigma_5m — per-bar std dev of log returns (5m, NOT annualised)
+    mu_5m    — per-bar drift of log returns (5m, NOT annualised); 0 = martingale.
+               When nonzero, tilts the distribution in the direction of recent momentum.
 
     Time is expressed as T_bars = T_secs / 300 (number of 5m bars remaining),
-    so sigma and T are in the same units and no annualisation is needed.
+    so σ, μ and T are all in the same units — no annualisation needed.
     """
     T_bars = T_secs / 300.0          # e.g. 150 s remaining → 0.5 bars
     if T_bars <= 0 or sigma_5m <= 1e-9 or S <= 0 or K <= 0:
         return 1.0 if S > K else (0.5 if S == K else 0.0)
     try:
-        d2 = (math.log(S / K) - 0.5 * sigma_5m ** 2 * T_bars) / (sigma_5m * math.sqrt(T_bars))
+        d2 = (math.log(S / K) + (mu_5m - 0.5 * sigma_5m ** 2) * T_bars) / (sigma_5m * math.sqrt(T_bars))
         return _norm_cdf(d2)
     except (ValueError, ZeroDivisionError):
         return 0.5
@@ -145,6 +151,36 @@ def _estimate_vol(closes: list[float], lam: float = EWMA_LAMBDA) -> float:
     for r in log_rets[1:]:
         var = lam * var + (1 - lam) * r ** 2
     return math.sqrt(var)
+
+
+def _estimate_drift(closes: list[float], lam: float = EWMA_LAMBDA,
+                    sigma: float | None = None) -> float:
+    """
+    Per-bar (5m) drift μ — EWMA of log returns, same smoothing as _estimate_vol.
+
+    λ=0.85 puts ~15% weight on the newest bar, decaying geometrically. Bars
+    1–6 carry ~62% of the total weight, so recent pushes dominate but older
+    history still anchors the estimate.
+
+    Capped at ±MAX_DRIFT_SIGMAS × σ/bar so a single outlier can't dominate.
+    Returning 0 if we don't have enough data falls back to the martingale BS.
+    """
+    if len(closes) < 2:
+        return 0.0
+    log_rets = [
+        math.log(closes[i] / closes[i - 1])
+        for i in range(1, len(closes))
+        if closes[i - 1] > 0 and closes[i] > 0
+    ]
+    if not log_rets:
+        return 0.0
+    mu = log_rets[0]
+    for r in log_rets[1:]:
+        mu = lam * mu + (1 - lam) * r
+    if sigma is not None and sigma > 0:
+        cap = MAX_DRIFT_SIGMAS * sigma
+        mu = max(-cap, min(cap, mu))
+    return mu
 
 
 # ── BS data cache ─────────────────────────────────────────────────────────────
@@ -189,6 +225,7 @@ def _refresh_bs_data(asset: str) -> None:
         closed = klines[:-1] if len(klines) > 1 else klines
         closes = [float(k[4]) for k in closed]
         sigma  = _estimate_vol(closes)
+        mu     = _estimate_drift(closes, sigma=sigma)
 
         # Candle open = open field of the current (last, live) kline.
         live_kline          = klines[-1]
@@ -197,12 +234,13 @@ def _refresh_bs_data(asset: str) -> None:
 
         _bs_cache[asset] = {
             "sigma":       sigma,
+            "mu":          mu,
             "candle_open": {candle_start_epoch: candle_open},
         }
         _bs_updated_at[asset] = int(datetime.now(timezone.utc).timestamp())
         log.info(
-            "BS vol   %-5s  σ_5m=%.5f (%.4f%%/bar)  K=%.4f",
-            asset, sigma, sigma * 100, candle_open,
+            "BS vol   %-5s  σ_5m=%.5f (%.4f%%/bar)  μ_5m=%+.5f  K=%.4f",
+            asset, sigma, sigma * 100, mu, candle_open,
         )
     except Exception as exc:
         log.warning("BS vol refresh %s: %s", asset, exc)
@@ -232,16 +270,19 @@ def _refresh_spots(assets: set[str]) -> None:
             log.debug("Spot %s: %s", asset, exc)
 
 
-def _get_bs_inputs(asset: str, candle_start: int) -> tuple[float | None, float | None, float | None]:
-    """Return (live_spot, candle_open_K, sigma) from cache, or (None, None, None)."""
+def _get_bs_inputs(
+    asset: str, candle_start: int,
+) -> tuple[float | None, float | None, float | None, float]:
+    """Return (live_spot, candle_open_K, sigma, mu) from cache, or (None, None, None, 0.0)."""
     cached = _bs_cache.get(asset)
     if not cached:
-        return None, None, None
+        return None, None, None, 0.0
     spot  = _spot_cache.get(asset)          # live price, refreshed every poll
     sigma = cached.get("sigma")
+    mu    = float(cached.get("mu", 0.0) or 0.0)
     K     = cached.get("candle_open", {}).get(candle_start)
     # If the cached candle_open is for a different (older) candle_start, K is None.
-    return spot, K, sigma
+    return spot, K, sigma, mu
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────
@@ -271,6 +312,8 @@ CREATE TABLE IF NOT EXISTS signals (
     signal_ts      INTEGER NOT NULL,
     fair_price     REAL    NOT NULL,   -- BS probability at entry
     edge           REAL    NOT NULL,   -- fair_price - entry_price
+    sigma          REAL,               -- per-bar vol (5m) at signal time
+    opp_ask        REAL,               -- opposite side best ask at signal time
     winner         TEXT,
     won            INTEGER,            -- 1 / 0 / NULL
     pnl            REAL,               -- shares*(1-entry_price) if won, shares*(-entry_price) if lost
@@ -291,7 +334,14 @@ def _init_db(path: str) -> sqlite3.Connection:
     if cols and "tier" in cols:
         log.info("Migrating signals table: removing tier column (old data cleared)")
         conn.execute("DROP TABLE IF EXISTS signals")
+        cols = set()
     conn.executescript(_DDL)
+    # Additive migrations: add new columns without losing existing data.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
+    for col, typedef in [("sigma", "REAL"), ("opp_ask", "REAL")]:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {col} {typedef}")
+            log.info("DB migration: added signals.%s column", col)
     conn.commit()
     return conn
 
@@ -520,10 +570,14 @@ def _insert_signal(
     slug: str, asset: str, side: str,
     entry_price: float, secs: int | None, candle_start: int,
     fair_price: float, edge: float, shares: float,
+    sigma: float | None = None,
+    opp_ask: float | None = None,
 ) -> str | None:
     """
     Insert or upgrade one signal for (slug, side).
     Returns "inserted", "updated", or None when unchanged.
+    sigma   — per-bar vol used for the BS calculation (stored for calibration analysis)
+    opp_ask — opposite side's best ask at signal time (enables market-implied edge)
     """
     now = int(datetime.now(timezone.utc).timestamp())
     existing = conn.execute(
@@ -542,19 +596,20 @@ def _insert_signal(
         conn.execute("""
             UPDATE signals
             SET entry_price=?, shares=?, secs_remaining=?, signal_ts=?,
-                fair_price=?, edge=?, winner=NULL, won=NULL, pnl=NULL
+                fair_price=?, edge=?, sigma=?, opp_ask=?,
+                winner=NULL, won=NULL, pnl=NULL
             WHERE id=?
-        """, (entry_price, shares, secs, now, fair_price, edge, existing["id"]))
+        """, (entry_price, shares, secs, now, fair_price, edge, sigma, opp_ask, existing["id"]))
         conn.commit()
         return "updated"
 
     conn.execute("""
         INSERT INTO signals
             (slug, asset, side, entry_price, shares, secs_remaining,
-             candle_start, signal_ts, fair_price, edge)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             candle_start, signal_ts, fair_price, edge, sigma, opp_ask)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (slug, asset, side, entry_price, shares, secs,
-          candle_start, now, fair_price, edge))
+          candle_start, now, fair_price, edge, sigma, opp_ask))
     conn.commit()
     return "inserted"
 
@@ -782,21 +837,23 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
                     # ── BS inputs — computed once per slug ────────────────────
                     fair_up: float | None = None
                     K:       float | None = None
+                    sigma:   float | None = None
+                    mu:      float = 0.0
                     k_src = "BN"
                     if bs_mode or verbose:
-                        spot, K_binance, sigma = _get_bs_inputs(asset, mkt.candle_start)
+                        spot, K_binance, sigma, mu = _get_bs_inputs(asset, mkt.candle_start)
                         K     = mkt.price_to_beat or K_binance
                         k_src = "PM" if mkt.price_to_beat else "BN"
                         if spot and K and sigma and secs > 0:
-                            fair_up = _bs_prob_up(spot, K, max(1, secs), sigma)
+                            fair_up = _bs_prob_up(spot, K, max(1, secs), sigma, mu)
 
                     # ── time-window gate ──────────────────────────────────────
                     in_window = ENTRY_MIN_SECS <= secs <= ENTRY_MAX_SECS
 
-                    # (side, this-side ask, this-side size, opposite-side bid)
-                    for side, ask, size, opp_bid in (
-                        ("Up",   up_ask,   up_size,   down_bid),
-                        ("Down", down_ask, down_size, up_bid),
+                    # (side, this-side ask, this-side size, opposite-side bid, opposite-side ask)
+                    for side, ask, size, opp_bid, opp_ask_val in (
+                        ("Up",   up_ask,   up_size,   down_bid, down_ask),
+                        ("Down", down_ask, down_size, up_bid,   up_ask),
                     ):
                         if ask is None or size < MIN_BOOK_SHARES:
                             continue
@@ -837,15 +894,34 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
 
                         # ── signal conditions ─────────────────────────────────
 
-                        # 1. Must be inside the 30–150 s entry window
+                        # 1. Must be inside the entry window (ENTRY_MIN_SECS..ENTRY_MAX_SECS)
                         if not in_window:
                             continue
 
-                        # 2. Must have BS edge above threshold
-                        if fair_price is None or edge is None or edge < min_edge:
+                        # 2. Ask must be above price floor (low premiums trap — market
+                        #    thinks it's basically dead; the model is usually the one wrong)
+                        if ask < MIN_ENTRY_PRICE:
+                            if verbose:
+                                log.info(
+                                    "  SKIP  %-5s %-4s  price_floor  ask=$%.4f < $%.2f",
+                                    asset, side, ask, MIN_ENTRY_PRICE,
+                                )
                             continue
 
-                        # 3. Opposite-side bid must confirm this side is genuinely cheap.
+                        # 3. Must have BS edge within [min_edge, MAX_EDGE].
+                        #    Edges above MAX_EDGE are treated as model failure (usually
+                        #    caused by stale spot, regime change, or near-expiry noise).
+                        if fair_price is None or edge is None or edge < min_edge:
+                            continue
+                        if edge > MAX_EDGE:
+                            if verbose:
+                                log.info(
+                                    "  SKIP  %-5s %-4s  edge_cap  edge=%+.4f > %.2f (model failure)",
+                                    asset, side, edge, MAX_EDGE,
+                                )
+                            continue
+
+                        # 4. Opposite-side bid must confirm this side is genuinely cheap.
                         #    If UP asks 1¢ but DOWN only bids 0.5¢, the market isn't
                         #    treating DOWN as near-certain — the cheapness isn't real.
                         #    We require: opp_bid >= ask × OPPOSITE_BID_MULT (default 1.5×).
@@ -877,6 +953,8 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
                         sig_action = _insert_signal(
                             conn, slug, asset, side, ask, secs,
                             mkt.candle_start, fair_price, edge, shares,
+                            sigma=sigma if (bs_mode or verbose) else None,
+                            opp_ask=opp_ask_val,
                         )
                         if sig_action:
                             ts_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")

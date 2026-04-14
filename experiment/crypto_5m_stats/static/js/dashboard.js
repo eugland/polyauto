@@ -535,8 +535,9 @@ function getFtFilteredData(asset, period) {
 
   if (timestamps.length === 0) return ad.chart;
 
-  // Find first index where timestamp >= cutoff
-  let startIdx = 0;
+  // Find first index where timestamp >= cutoff. Default to after the last
+  // point (empty window) if no point is inside the window.
+  let startIdx = timestamps.length;
   for (let i = 0; i < timestamps.length; i++) {
     if (timestamps[i] >= cutoffSeconds) {
       startIdx = i;
@@ -544,9 +545,16 @@ function getFtFilteredData(asset, period) {
     }
   }
 
+  // Rebase so the window starts at $0: subtract the cumulative P/L that had
+  // accrued *before* the window opens. series[] is cumulative; if the window
+  // begins at startIdx, everything earned before that point is not part of
+  // this window's P/L, so we shift the whole slice down by series[startIdx-1].
+  const baseline = startIdx > 0 ? (series[startIdx - 1] || 0) : 0;
+  const rebased = series.slice(startIdx).map(v => +(v - baseline).toFixed(4));
+
   return {
     labels: labels.slice(startIdx),
-    series: series.slice(startIdx),
+    series: rebased,
     timestamps: timestamps.slice(startIdx),
   };
 }

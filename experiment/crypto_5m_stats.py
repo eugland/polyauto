@@ -274,6 +274,60 @@ def _query_weather_stats() -> dict:
 
 # -- BS forward test -----------------------------------------------------------
 
+def _calibration_buckets(resolved_rows: list[dict]) -> list[dict]:
+    """
+    Split resolved signals into 10-percentile fair_price buckets and compute
+    actual win rate per bucket.  If the model is well-calibrated the bar heights
+    should lie on the diagonal (predicted ≈ actual).
+    """
+    BUCKETS = [(i / 10, (i + 1) / 10) for i in range(10)]
+    out = []
+    for lo, hi in BUCKETS:
+        bucket = [r for r in resolved_rows if r["fair_price"] is not None and lo <= r["fair_price"] < hi]
+        if not bucket:
+            continue
+        wins = sum(1 for r in bucket if r["won"] == 1)
+        mid  = round((lo + hi) / 2 * 100)
+        out.append({
+            "label":     f"{int(lo*100)}-{int(hi*100)}%",
+            "predicted": round((lo + hi) / 2, 3),
+            "actual":    round(wins / len(bucket), 3),
+            "count":     len(bucket),
+        })
+    return out
+
+
+def _edge_buckets(resolved_rows: list[dict]) -> list[dict]:
+    """
+    Group resolved signals by edge-range and compute win rate + P/L per bucket.
+    Shows which edge thresholds actually generate profit.
+    """
+    RANGES = [
+        ("3-6%",  0.03, 0.06),
+        ("6-10%", 0.06, 0.10),
+        ("10-15%",0.10, 0.15),
+        ("15-20%",0.15, 0.20),
+        ("20%+",  0.20, 1.00),
+    ]
+    out = []
+    for label, lo, hi in RANGES:
+        bucket = [r for r in resolved_rows if r["edge"] is not None and lo <= r["edge"] < hi]
+        if not bucket:
+            continue
+        wins     = sum(1 for r in bucket if r["won"] == 1)
+        total_pnl  = sum(r["pnl"] or 0 for r in bucket)
+        total_cost = sum((r["entry_price"] or 0) * (r["shares"] or 0) for r in bucket)
+        out.append({
+            "label":    label,
+            "count":    len(bucket),
+            "wins":     wins,
+            "win_rate": round(wins / len(bucket) * 100, 1),
+            "pnl":      round(total_pnl, 4),
+            "roi":      round(total_pnl / total_cost * 100, 2) if total_cost > 0 else 0,
+        })
+    return out
+
+
 def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
     """
     Reads from the live scanner's `signals` table.
@@ -290,12 +344,15 @@ def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
     # Check columns exist (older DBs may not have fair_price/edge yet)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(signals)")}
     has_bs = "fair_price" in cols and "edge" in cols
+    has_opp_ask = "opp_ask" in cols
+
+    select_extra = ", opp_ask" if has_opp_ask else ""
 
     if has_bs:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT slug, asset, candle_start, signal_ts, secs_remaining,
                    side, entry_price, shares,
-                   fair_price, edge, winner, won, pnl
+                   fair_price, edge, winner, won, pnl{select_extra}
             FROM signals
             WHERE fair_price IS NOT NULL
               AND asset = 'BTC'
@@ -321,7 +378,14 @@ def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
 
     by_asset: dict[str, list] = {}
     for r in rows:
-        by_asset.setdefault(r["asset"], []).append(dict(r))
+        row_dict = dict(r)
+        if not has_opp_ask:
+            row_dict["opp_ask"] = None
+        # Compute market-implied edge = (1 - opp_ask) - entry_price.
+        # When the opposite side asks 0.02, the market implies our side is worth ~0.98.
+        opp = row_dict.get("opp_ask")
+        row_dict["market_edge"] = round((1.0 - opp) - row_dict["entry_price"], 4) if opp is not None else None
+        by_asset.setdefault(row_dict["asset"], []).append(row_dict)
 
     all_assets = sorted(by_asset.keys())
     assets_data: dict[str, dict] = {}
@@ -363,9 +427,11 @@ def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
         }
 
         assets_data[asset] = {
-            "chart":  {"labels": labels, "series": cum_series},
-            "stats":  stats,
-            "trades": list(reversed(asset_rows)),   # newest first
+            "chart":        {"labels": labels, "series": cum_series},
+            "stats":        stats,
+            "trades":       list(reversed(asset_rows)),   # newest first
+            "calibration":  _calibration_buckets(resolved_rows),
+            "edge_buckets": _edge_buckets(resolved_rows),
         }
 
     total_pnl = sum(r["pnl"] or 0 for r in rows if r["won"] is not None)
@@ -952,6 +1018,9 @@ const renderFtTrades = (asset, page) => {
     const edge = r.edge != null
       ? `<span class="${r.edge>=0?"pos":"neg"}">${(r.edge*100).toFixed(2)}%</span>`
       : "--";
+    const mktEdge = r.market_edge != null
+      ? `<span class="${r.market_edge>=0?"pos":"neg"}" title="(1-opp_ask) - ask">${(r.market_edge*100).toFixed(2)}%</span>`
+      : `<span class="text-muted">--</span>`;
     const fair = r.fair_price != null ? r.fair_price.toFixed(4) : "--";
     const market = r.slug || "--";
     const shares   = r.shares != null ? r.shares : "--";
@@ -967,6 +1036,7 @@ const renderFtTrades = (asset, page) => {
       <td>${cost}</td>
       <td>${fair}</td>
       <td>${edge}</td>
+      <td>${mktEdge}</td>
       <td>${r.secs_remaining != null ? r.secs_remaining+"s" : "--"}</td>
       <td>${won}</td>
       <td>${pnl}</td>
@@ -1040,7 +1110,16 @@ async function loadFT() {
         <div class="card-header fw-bold fs-5">${esc(asset)}</div>
         <div class="card-body">
           <div class="row g-2 mb-3">${statBoxes}</div>
-          <canvas id="ft-chart-${asset}" style="max-height:260px"></canvas>
+          <div class="row g-3 mb-3">
+            <div class="col-12 col-lg-8">
+              <canvas id="ft-chart-${asset}" style="max-height:260px"></canvas>
+            </div>
+            <div class="col-12 col-lg-4">
+              <div class="text-muted small mb-1">Model Calibration <span title="Actual win rate vs model-predicted probability. Bars on the diagonal = well-calibrated." style="cursor:help">ⓘ</span></div>
+              <canvas id="ft-calib-${asset}" style="max-height:260px"></canvas>
+            </div>
+          </div>
+          <div class="mb-3" id="ft-edge-buckets-${esc(asset)}"></div>
           <div class="mt-3">
             <div style="max-height:600px;overflow-y:auto;border:1px solid #30363d;border-radius:6px">
               <table class="table table-sm mb-0">
@@ -1048,7 +1127,7 @@ async function loadFT() {
                   <tr>
                     <th>Market</th><th>Side</th><th>Time (UTC)</th>
                     <th>Ask (entry)</th><th>Shares</th><th>Cost</th>
-                    <th>Fair price</th><th>BS Edge</th>
+                    <th>Fair price</th><th>BS Edge</th><th>Mkt Edge</th>
                     <th>Secs left</th><th>Result</th><th>P/L</th>
                   </tr>
                 </thead>
@@ -1067,7 +1146,11 @@ async function loadFT() {
       </div>`;
   });
 
-  setTimeout(() => d.assets.forEach(a => buildFtChart(a, d.data[a])), 50);
+  setTimeout(() => d.assets.forEach(a => {
+    buildFtChart(a, d.data[a]);
+    buildCalibChart(a, d.data[a]);
+    renderEdgeBuckets(a, d.data[a]);
+  }), 50);
   loadFTLog();
 }
 
@@ -1117,6 +1200,101 @@ function buildFtChart(asset, ad) {
       },
     },
   });
+}
+
+let calibCharts = {};
+function buildCalibChart(asset, ad) {
+  const ctx = document.getElementById(`ft-calib-${asset}`);
+  if (!ctx) return;
+  if (calibCharts[asset]) calibCharts[asset].destroy();
+  const buckets = ad.calibration || [];
+  if (!buckets.length) return;
+  const labels    = buckets.map(b => b.label);
+  const predicted = buckets.map(b => +(b.predicted * 100).toFixed(1));
+  const actual    = buckets.map(b => +(b.actual    * 100).toFixed(1));
+  const counts    = buckets.map(b => b.count);
+  calibCharts[asset] = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Actual win %",
+          data: actual,
+          backgroundColor: actual.map((a, i) =>
+            Math.abs(a - predicted[i]) < 8 ? "rgba(63,185,80,0.75)" : "rgba(248,81,73,0.75)"
+          ),
+          borderColor: "transparent",
+          borderRadius: 4,
+        },
+        {
+          label: "Model predicted %",
+          data: predicted,
+          type: "line",
+          borderColor: "#58a6ff",
+          backgroundColor: "transparent",
+          borderWidth: 2,
+          pointRadius: 4,
+          tension: 0.2,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { position: "top", labels: { color: "#8b949e", font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            afterBody: (items) => {
+              const i = items[0].dataIndex;
+              return `n=${counts[i]}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: { ticks: { color: "#8b949e", font: { size: 10 } }, grid: { color: "#21262d" } },
+        y: {
+          min: 0, max: 100,
+          ticks: { color: "#8b949e", callback: v => v + "%" },
+          grid: { color: "#21262d" },
+          title: { display: true, text: "Win rate", color: "#8b949e", font: { size: 10 } },
+        },
+      },
+    },
+  });
+}
+
+function renderEdgeBuckets(asset, ad) {
+  const el = document.getElementById(`ft-edge-buckets-${asset}`);
+  if (!el) return;
+  const buckets = ad.edge_buckets || [];
+  if (!buckets.length) { el.innerHTML = ""; return; }
+  const rows = buckets.map(b => {
+    const pc = b.pnl >= 0 ? "pos" : "neg";
+    const rc = b.roi  >= 0 ? "pos" : "neg";
+    const wr = b.win_rate >= 50 ? "pos" : "neg";
+    return `<tr>
+      <td class="fw-bold">${esc(b.label)}</td>
+      <td>${b.count}</td>
+      <td class="${wr}">${b.win_rate}%</td>
+      <td>${b.wins} / ${b.count - b.wins}</td>
+      <td class="${pc}">${b.pnl >= 0 ? "+" : ""}$${b.pnl.toFixed(3)}</td>
+      <td class="${rc}">${b.roi >= 0 ? "+" : ""}${b.roi.toFixed(1)}%</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `
+    <div class="text-muted small mb-1 fw-semibold">P/L by Edge Bucket
+      <span title="Which edge ranges are actually profitable? Helps set your min-edge filter." style="cursor:help">ⓘ</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="table table-sm mb-0" style="width:auto;min-width:420px">
+        <thead><tr>
+          <th>Edge range</th><th>Signals</th><th>Win %</th><th>W/L</th><th>P/L</th><th>ROI</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 async function loadFTLog() {
