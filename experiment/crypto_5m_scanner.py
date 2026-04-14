@@ -14,11 +14,13 @@ Start: python -m experiment.crypto_5m_scanner
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import re
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +29,7 @@ from typing import Any
 import math
 
 import requests
+import websockets
 
 # ── constants ─────────────────────────────────────────────────────────────────
 
@@ -46,7 +49,11 @@ REPRICE_MIN_EDGE_IMPROV = 0.02  # edge improvement needed to replace prior signa
 REPRICE_MIN_PRICE_DROP  = 0.01  # ask improvement needed to replace prior signal
 SLUG_BUDGET_USDC = 10.0   # max total spend per 5m slug across both sides
 MIN_BOOK_SHARES  = 1      # minimum shares needed in order book to fire
-POLL_INTERVAL    = 5      # seconds between book polls
+POLL_INTERVAL    = 1      # seconds between signal evaluations (reads local WS cache)
+WS_URL           = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+WS_RECONNECT_SEC = 3      # delay before reconnecting on WS failure
+WS_PING_INTERVAL = 10     # keepalive ping interval
+WS_INITIAL_WARMUP_SEC = 2 # after subscribing, wait this long for first book snapshots
 REFRESH_INTERVAL = 60     # seconds between market-list refreshes
 RESOLVE_INTERVAL = 30     # seconds between resolution scans
 RESOLVE_TIMEOUT  = 7200   # give up resolving after this many seconds post-close (2 hrs)
@@ -355,6 +362,7 @@ def _get_json(url: str, timeout: int = 12) -> Any:
 
 
 def _fetch_books_bulk(token_ids: list[str]) -> dict[str, dict]:
+    """Kept for cold-start warmup. Main loop now reads from the WS book cache."""
     if not token_ids:
         return {}
     r = requests.post(
@@ -369,6 +377,210 @@ def _fetch_books_bulk(token_ids: list[str]) -> dict[str, dict]:
         if tid:
             out[tid] = book
     return out
+
+
+# ── WebSocket book cache ─────────────────────────────────────────────────────
+#
+# Background thread maintains a live mirror of the CLOB order book per token_id.
+# Main loop reads from this cache instead of polling /books.
+#
+# Message format (from Polymarket CLOB WS):
+#   - "book"          : full snapshot; replace cached book
+#   - "price_change"  : incremental level updates; apply to cached book
+#   - "tick_size_change" / "last_trade_price" : ignored
+
+_book_cache:     dict[str, dict] = {}
+_book_lock:      threading.RLock = threading.RLock()
+_ws_desired:     set[str]        = set()   # tokens we want subscribed
+_ws_subscribed:  set[str]        = set()   # tokens confirmed subscribed on current conn
+_ws_tokens_lock: threading.Lock  = threading.Lock()
+_ws_state = {
+    "connected":   False,
+    "msg_count":   0,
+    "last_msg_ts": 0,
+    "last_error":  "",
+}
+
+
+def _ws_apply_price_change(book: dict, changes: list[dict]) -> None:
+    """Apply incremental level updates to a cached book in place."""
+    for ch in changes or []:
+        try:
+            p   = float(ch["price"])
+            s   = float(ch["size"])
+            sd  = str(ch["side"]).upper()
+        except (KeyError, TypeError, ValueError):
+            continue
+        target_key = "asks" if sd == "SELL" else "bids"
+        levels = book.setdefault(target_key, [])
+        levels[:] = [
+            lv for lv in levels
+            if abs(float(lv.get("price", 0) or 0) - p) > 1e-9
+        ]
+        if s > 0:
+            levels.append({"price": str(p), "size": str(s)})
+
+
+def _ws_handle_event(ev: dict) -> None:
+    et  = ev.get("event_type")
+    tid = str(ev.get("asset_id") or "")
+    if not tid:
+        return
+    with _book_lock:
+        if et == "book":
+            _book_cache[tid] = {
+                "bids": [dict(b) for b in (ev.get("bids") or [])],
+                "asks": [dict(a) for a in (ev.get("asks") or [])],
+            }
+        elif et == "price_change":
+            book = _book_cache.get(tid)
+            if book is None:
+                book = {"bids": [], "asks": []}
+                _book_cache[tid] = book
+            _ws_apply_price_change(book, ev.get("changes") or [])
+
+
+async def _ws_subscribe(ws, tokens: list[str]) -> None:
+    """
+    Subscribe to the CLOB market channel.
+
+    Polymarket expects `{"auth": {}, "type": "market", "assets_ids": [...]}`
+    (lowercase "market"; the auth field is required even for the public
+    market channel — omitting it makes the server silently drop the sub).
+    """
+    if not tokens:
+        return
+    await ws.send(json.dumps({
+        "auth": {},
+        "type": "market",
+        "assets_ids": tokens,
+    }))
+
+
+async def _ws_loop() -> None:
+    while True:
+        try:
+            async with websockets.connect(
+                WS_URL,
+                ping_interval=WS_PING_INTERVAL,
+                ping_timeout=WS_PING_INTERVAL,
+                max_size=2**22,
+            ) as ws:
+                with _ws_tokens_lock:
+                    desired = list(_ws_desired)
+                await _ws_subscribe(ws, desired)
+                _ws_subscribed.clear()
+                _ws_subscribed.update(desired)
+                _ws_state["connected"] = True
+                _ws_state["last_error"] = ""
+                log.info("WS connected  subscribed=%d tokens", len(desired))
+
+                last_resub_check = time.time()
+                first_msg_logged = False
+                while True:
+                    # Timed recv so resubscription check still runs when no
+                    # messages are arriving (e.g. we haven't subscribed to
+                    # anything yet, or the market is quiet).
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    except asyncio.TimeoutError:
+                        raw = None
+
+                    now_t = time.time()
+                    if now_t - last_resub_check >= 3.0:
+                        last_resub_check = now_t
+                        with _ws_tokens_lock:
+                            want = set(_ws_desired)
+                        new = want - _ws_subscribed
+                        if new:
+                            await _ws_subscribe(ws, list(new))
+                            _ws_subscribed.update(new)
+                            log.info("WS subscribed %d new tokens (total=%d)",
+                                     len(new), len(_ws_subscribed))
+
+                    if raw is None:
+                        continue
+
+                    if not first_msg_logged:
+                        first_msg_logged = True
+                        sample = raw if len(raw) <= 400 else (raw[:400] + "…")
+                        log.info("WS first message sample: %s", sample)
+
+                    _ws_state["msg_count"] += 1
+                    _ws_state["last_msg_ts"] = int(time.time())
+                    try:
+                        payload = json.loads(raw)
+                    except Exception:
+                        continue
+                    events = payload if isinstance(payload, list) else [payload]
+                    for ev in events:
+                        if isinstance(ev, dict):
+                            _ws_handle_event(ev)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _ws_state["connected"] = False
+            _ws_state["last_error"] = f"{type(exc).__name__}: {exc}"
+            log.warning("WS disconnected (%s); reconnecting in %ds",
+                        _ws_state["last_error"], WS_RECONNECT_SEC)
+            await asyncio.sleep(WS_RECONNECT_SEC)
+
+
+def _start_ws_worker() -> None:
+    """Start the background WS thread. Idempotent."""
+    if getattr(_start_ws_worker, "_started", False):
+        return
+    def runner() -> None:
+        try:
+            asyncio.run(_ws_loop())
+        except Exception as exc:
+            log.error("WS worker crashed: %s", exc)
+    t = threading.Thread(target=runner, daemon=True, name="ws-worker")
+    t.start()
+    _start_ws_worker._started = True  # type: ignore[attr-defined]
+
+
+def _set_ws_subscription(tokens: set[str]) -> None:
+    """Replace the desired subscription set. Additions are picked up by the WS loop."""
+    with _ws_tokens_lock:
+        _ws_desired.clear()
+        _ws_desired.update(tokens)
+
+
+def _get_cached_book(token_id: str) -> dict:
+    """Thread-safe shallow copy of the cached book for `token_id`."""
+    with _book_lock:
+        b = _book_cache.get(token_id)
+        if not b:
+            return {}
+        # Shallow copy of level lists so the main thread can iterate safely.
+        return {
+            "bids": list(b.get("bids", [])),
+            "asks": list(b.get("asks", [])),
+        }
+
+
+def _warmup_books_via_rest(token_ids: list[str]) -> None:
+    """
+    One-shot REST fetch to prime the WS cache for tokens not yet seen.
+    Called when a new market is discovered and we don't want to wait one
+    WS roundtrip before the signal evaluator can look at the book.
+    """
+    missing = [t for t in token_ids if not _get_cached_book(t)]
+    if not missing:
+        return
+    try:
+        books = _fetch_books_bulk(missing)
+    except Exception as exc:
+        log.debug("WS warmup REST fetch failed: %s", exc)
+        return
+    with _book_lock:
+        for tid, book in books.items():
+            if tid not in _book_cache:
+                _book_cache[tid] = {
+                    "bids": [dict(b) for b in (book.get("bids") or [])],
+                    "asks": [dict(a) for a in (book.get("asks") or [])],
+                }
 
 
 def _best_ask_with_size(book: dict) -> tuple[float | None, float]:
@@ -763,14 +975,18 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
     known_assets: set[str] = set(_SEED_ASSETS)
     active: dict[str, Market] = {}
     last_refresh = last_resolve = 0
+    last_ws_status = 0
+    ws_prev_msg_count = 0
     bs_mode = min_edge > 0
 
     log.info(
-        "Started  max_price=$%.2f  min_edge=%.3f  poll=%gs  db=%s%s%s",
+        "Started  max_price=$%.2f  min_edge=%.3f  poll=%gs  db=%s%s%s  [WS books]",
         max_price, min_edge, poll, db_path,
         "  [BS-edge mode]" if bs_mode else "",
         "  [verbose]"      if verbose  else "",
     )
+
+    _start_ws_worker()
 
     while True:
         now = int(datetime.now(timezone.utc).timestamp())
@@ -779,6 +995,7 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
         if now - last_refresh >= REFRESH_INTERVAL:
             try:
                 fresh = _fetch_active_markets(known_assets)
+                new_market_tokens: list[str] = []
                 for mkt in fresh:
                     known_assets.add(mkt.asset.lower())
                     if mkt.slug not in active:
@@ -787,8 +1004,22 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
                             "MARKET  %-45s  asset=%-5s  ends_in=%ds",
                             mkt.slug, mkt.asset, mkt.candle_end - now,
                         )
+                        new_market_tokens += [mkt.up_token, mkt.down_token]
                     active[mkt.slug] = mkt
                 active = {s: m for s, m in active.items() if m.candle_end > now}
+
+                # Refresh the WS subscription set to the current active token universe.
+                all_tokens: set[str] = set()
+                for mkt in active.values():
+                    all_tokens.add(mkt.up_token)
+                    all_tokens.add(mkt.down_token)
+                _set_ws_subscription(all_tokens)
+
+                # Prime the cache for brand-new tokens so the evaluator doesn't have
+                # to wait one WS roundtrip before acting.
+                if new_market_tokens:
+                    _warmup_books_via_rest(new_market_tokens)
+
                 last_refresh = now
                 if not fresh:
                     log.warning("No active 5m markets found — will retry")
@@ -811,15 +1042,10 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
             # Live spot price: fast refresh every poll cycle.
             _refresh_spots(assets_in_play)
 
-        # ── poll order books ──────────────────────────────────────────────────
+        # ── evaluate signals from WS book cache ───────────────────────────────
+        # No network call here — _book_cache is kept fresh by the WS worker.
         if active:
-            token_ids: list[str] = []
-            for mkt in active.values():
-                token_ids += [mkt.up_token, mkt.down_token]
-
             try:
-                books = _fetch_books_bulk(token_ids)
-
                 # Iterate per-market so both sides are visible simultaneously.
                 # This is required for the opposite-side bid check.
                 for mkt in active.values():
@@ -827,8 +1053,8 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
                     asset = mkt.asset
                     secs  = mkt.candle_end - now
 
-                    up_book   = books.get(mkt.up_token,   {})
-                    down_book = books.get(mkt.down_token, {})
+                    up_book   = _get_cached_book(mkt.up_token)
+                    down_book = _get_cached_book(mkt.down_token)
                     up_ask,   up_size   = _best_ask_with_size(up_book)
                     down_ask, down_size = _best_ask_with_size(down_book)
                     up_bid              = _best_bid_price(up_book)
@@ -967,7 +1193,23 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
                                 shares, max(0, secs), ts_utc,
                             )
             except Exception as exc:
-                log.warning("Book poll error: %s", exc)
+                log.warning("Signal eval error: %s", exc)
+
+        # ── WS health heartbeat ───────────────────────────────────────────────
+        if now - last_ws_status >= 30:
+            last_ws_status = now
+            msg_total = _ws_state["msg_count"]
+            delta     = msg_total - ws_prev_msg_count
+            ws_prev_msg_count = msg_total
+            with _book_lock:
+                cached_tokens = len(_book_cache)
+            age = now - _ws_state["last_msg_ts"] if _ws_state["last_msg_ts"] else -1
+            log.info(
+                "WS status  connected=%s  subs=%d  cached_books=%d  "
+                "msgs_total=%d  msgs_30s=%d  last_msg_age=%ds  err=%s",
+                _ws_state["connected"], len(_ws_subscribed), cached_tokens,
+                msg_total, delta, age, _ws_state["last_error"] or "-",
+            )
 
         # ── resolve closed candles ────────────────────────────────────────────
         if now - last_resolve >= RESOLVE_INTERVAL:
