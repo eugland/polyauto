@@ -87,8 +87,11 @@ _BINANCE_SYMBOLS: dict[str, str] = {
 
 UPDOWN_5M_RE = re.compile(r"^([a-z0-9]+)-updown-5m-(\d+)$", re.IGNORECASE)
 
+# Scanner scope for this strategy run.
+SCANNED_ASSETS = {"BTC", "ETH", "DOGE"}
+
 # Seed assets — expanded automatically as new slugs are discovered
-_SEED_ASSETS = ["btc"]
+_SEED_ASSETS = ["btc", "eth", "doge"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -675,7 +678,7 @@ def _event_to_market(event: dict, now_ts: int) -> Market | None:
     if not m:
         return None
     asset = m.group(1).upper()
-    if asset != "BTC":
+    if asset not in SCANNED_ASSETS:
         return None
     epoch = int(m.group(2))
 

@@ -575,7 +575,10 @@ async function loadFT() {
   }
 
   const pc = pnlClass(d.total_pnl);
-  metaEl.textContent = `${d.total} BTC signals | real ask price, BS edge filter`;
+  const assetLabel = (d.assets && d.assets.length)
+    ? d.assets.join(", ")
+    : "assets";
+  metaEl.textContent = `${d.total} signals (${assetLabel}) | real ask price, BS edge filter`;
   globalEl.innerHTML = [statCard("Total Signals", d.total, ""), statCard("Net P/L", pnlFmt(d.total_pnl), pc)].join("");
 
   contentEl.innerHTML = "";

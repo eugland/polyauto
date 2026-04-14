@@ -268,9 +268,8 @@ def query_bs_forward(crypto_db_path: str, min_edge_filter: float = 0.0) -> dict:
                    fair_price, edge, winner, won, pnl
             FROM signals
             WHERE fair_price IS NOT NULL
-              AND asset = 'BTC'
               AND edge >= ?
-            ORDER BY signal_ts ASC
+            ORDER BY asset ASC, signal_ts ASC
         """,
             (min_edge_filter,),
         ).fetchall()
@@ -279,7 +278,7 @@ def query_bs_forward(crypto_db_path: str, min_edge_filter: float = 0.0) -> dict:
 
     all_rows_count = (
         conn.execute(
-            "SELECT COUNT(*) FROM signals WHERE fair_price IS NOT NULL AND asset = 'BTC'"
+            "SELECT COUNT(*) FROM signals WHERE fair_price IS NOT NULL"
         ).fetchone()[0]
         if has_bs
         else 0
@@ -288,7 +287,7 @@ def query_bs_forward(crypto_db_path: str, min_edge_filter: float = 0.0) -> dict:
 
     if not rows:
         msg = (
-            "No BTC BS signals yet -- run:  "
+            "No BS signals yet -- run:  "
             "python -m experiment.crypto_5m_scanner --min-edge 0.05"
             if has_bs or all_rows_count == 0
             else f"No signals with edge >= {min_edge_filter:.3f}"
@@ -299,7 +298,8 @@ def query_bs_forward(crypto_db_path: str, min_edge_filter: float = 0.0) -> dict:
     for r in rows:
         by_asset.setdefault(r["asset"], []).append(dict(r))
 
-    all_assets = sorted(by_asset.keys())
+    priority = {"BTC": 0, "ETH": 1, "DOGE": 2}
+    all_assets = sorted(by_asset.keys(), key=lambda a: (priority.get(a, 99), a))
     assets_data: dict[str, dict] = {}
 
     for asset in all_assets:
