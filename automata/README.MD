@@ -115,6 +115,44 @@ Flags:
 Default URL:
 - `http://localhost:5050`
 
+## 6) `automata.eth_5min` (ETH 5m scanner/trader)
+
+Run:
+
+```bash
+python -m automata.eth_5min
+python -m automata.eth_5min --bet
+```
+
+What it does:
+- ETH-only 5m strategy (scanner-style BS edge logic from `crypto_5m_scanner`).
+- Finds the active `eth-updown-5m-*` market and evaluates both sides each poll.
+- Uses a **single limit buy order** per `(slug, side)`:
+  maker-leaning price selection but `post_only=false` so it can execute as maker or taker.
+- Applies a taker-fee-aware guard via `--min-net-edge-taker`.
+- Writes attempts/orders to `experiment/eth_5min.db`.
+
+Flags:
+
+| Flag | Description |
+|---|---|
+| `--bet` | Place real orders. Without this flag, it is dry-run only. |
+| `--once` | Run one evaluation cycle then exit. |
+| `--poll` | Seconds between evaluations (default `1`). |
+| `--shares` | Target shares per signal (default `5`). |
+| `--min-edge` | Minimum BS edge (default `0.03`). |
+| `--max-edge` | Edge cap to avoid model-failure outliers (default `0.12`). |
+| `--max-price` | Skip entries above this price. |
+| `--min-net-edge-taker` | Minimum edge after worst-case taker fee. |
+| `--maker-offset` | Bid improvement amount for maker-leaning submit price. |
+| `--tick-size` | Tick-size rounding for submit prices. |
+| `--max-balance` | Max USDC this process is allowed to spend. |
+
+Environment:
+- Required for live mode: `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_HOST`
+- Optional: `POLYMARKET_FUNDER`, `POLYMARKET_SIG_TYPE`
+- Derived automatically at startup in `--bet` mode: `CLOB_API_KEY`, `CLOB_SECRET`, `CLOB_PASS`
+
 ## 7) `experiment.crypto_5m_scanner` (multi-asset 5m penny scanner)
 
 Run in one terminal:
@@ -176,7 +214,7 @@ Flags:
 
 ---
 
-## 6) `automata` (combined runner)
+## 9) `automata` (combined runner)
 
 Run:
 

@@ -357,6 +357,77 @@ def query_bs_forward(crypto_db_path: str, min_edge_filter: float = 0.0) -> dict:
     }
 
 
+def query_eth5min_stats(eth5min_db_path: str) -> dict:
+    """Query ETH 5m order stats from eth_5min.db."""
+    if not os.path.exists(eth5min_db_path):
+        return {"error": "eth_5min.db not found — start automata.eth_5min first.", "orders": [], "stats": {}}
+
+    conn = sqlite3.connect(eth5min_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("""
+            SELECT id, placed_at, slug, side, ask_price, submit_price, fair_price,
+                   edge, taker_net_edge, shares, order_id, order_status, dry_run,
+                   error, won, pnl, winner, resolved_at
+            FROM eth_5min_orders
+            ORDER BY placed_at ASC
+        """).fetchall()
+    except sqlite3.OperationalError:
+        conn.close()
+        return {"error": "eth_5min_orders table not found.", "orders": [], "stats": {}}
+    conn.close()
+
+    orders   = [dict(r) for r in rows]
+    live     = [o for o in orders if not o["dry_run"]]
+    dry      = [o for o in orders if o["dry_run"]]
+    errors   = [o for o in orders if o["error"]]
+    resolved = [o for o in orders if o.get("won") is not None]
+    wins     = [o for o in resolved if o["won"] == 1]
+    pending  = [o for o in orders if o.get("won") is None and not o["error"]]
+    edges    = [o["edge"] for o in orders if o["edge"] is not None]
+    total_pnl  = sum(o["pnl"] or 0 for o in resolved)
+    total_cost = sum((o["submit_price"] or 0) * (o["shares"] or 0) for o in orders)
+
+    # Cumulative P/L chart (resolved only, placed_at order)
+    labels, cum_series = [], []
+    running = 0.0
+    for o in sorted(resolved, key=lambda x: x["placed_at"]):
+        running += o["pnl"] or 0
+        dt = datetime.fromtimestamp(o["placed_at"], tz=timezone.utc)
+        labels.append(dt.strftime("%m/%d %H:%M"))
+        cum_series.append(round(running, 4))
+
+    stats = {
+        "total":      len(orders),
+        "live":       len(live),
+        "dry_run":    len(dry),
+        "errors":     len(errors),
+        "resolved":   len(resolved),
+        "pending":    len(pending),
+        "wins":       len(wins),
+        "losses":     len(resolved) - len(wins),
+        "win_rate":   round(len(wins) / len(resolved) * 100, 2) if resolved else 0,
+        "total_pnl":  round(total_pnl, 4),
+        "total_cost": round(total_cost, 4),
+        "roi":        round(total_pnl / total_cost * 100, 2) if total_cost > 0 else 0,
+        "avg_edge":   round(sum(edges) / len(edges), 4) if edges else 0,
+    }
+    return {
+        "stats":  stats,
+        "orders": list(reversed(orders)),   # newest first for table
+        "chart":  {"labels": labels, "series": cum_series},
+    }
+
+
+def read_eth5min_log_tail(eth5min_log_path: str) -> list[str]:
+    """Read the last N lines from the ETH 5m log."""
+    try:
+        with open(eth5min_log_path, "r", encoding="utf-8", errors="replace") as f:
+            return list(deque(f, maxlen=LOG_TAIL))
+    except FileNotFoundError:
+        return [f"Log file not found: {eth5min_log_path}"]
+
+
 def update_weather_bet(
     bets_db_path: str, bet_id: int, resolved_temp: float | None, outcome: str | None
 ) -> None:

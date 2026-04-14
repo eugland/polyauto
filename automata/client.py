@@ -240,6 +240,7 @@ def place_market_sell(
     price: float,
     size_shares: float,
     fee_rate_bps: int | None = None,
+    post_only: bool = False,
     ttl_seconds: int | None = 60,
 ) -> dict:
     """
@@ -321,4 +322,4 @@ def place_no_order(
         fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
-    return client.post_order(signed_order, OrderType.GTC)
+    return client.post_order(signed_order, OrderType.GTC, post_only=post_only)

@@ -21,10 +21,12 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template_string, request
 
-CRYPTO_DB_PATH = os.path.join("experiment", "crypto_5m.db")
-BETS_DB_PATH   = str(Path(__file__).resolve().parent.parent / "bets.db")
-ETH_LOG_PATH   = os.path.join("experiment", "logs", "eth_1h.log")
-BS_LOG_PATH    = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
+CRYPTO_DB_PATH   = os.path.join("experiment", "crypto_5m.db")
+BETS_DB_PATH     = str(Path(__file__).resolve().parent.parent / "bets.db")
+ETH_LOG_PATH     = os.path.join("experiment", "logs", "eth_1h.log")
+BS_LOG_PATH      = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
+ETH5MIN_DB_PATH  = os.path.join("experiment", "eth_5min.db")
+ETH5MIN_LOG_PATH = os.path.join("experiment", "logs", "eth_5min.log")
 TIERS          = [("1c", 0.01), ("2c", 0.02), ("3c", 0.03)]
 LOG_TAIL       = 200
 
@@ -44,6 +46,12 @@ def _eth_log() -> str:
 
 def _bs_log() -> str:
     return app.config.get("BS_LOG_PATH", BS_LOG_PATH)
+
+def _eth5min_db() -> str:
+    return app.config.get("ETH5MIN_DB_PATH", ETH5MIN_DB_PATH)
+
+def _eth5min_log() -> str:
+    return app.config.get("ETH5MIN_LOG_PATH", ETH5MIN_LOG_PATH)
 
 
 # -- crypto 5m -----------------------------------------------------------------
@@ -443,6 +451,55 @@ def _query_bs_forward(min_edge_filter: float = 0.0) -> dict:
     }
 
 
+# -- ETH 5m -------------------------------------------------------------------
+
+def _query_eth5min_stats() -> dict:
+    db = _eth5min_db()
+    if not os.path.exists(db):
+        return {"error": "eth_5min.db not found — start automata.eth_5min first.", "orders": [], "stats": {}}
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("""
+            SELECT id, placed_at, slug, side, ask_price, submit_price, fair_price,
+                   edge, taker_net_edge, shares, order_id, order_status, dry_run, error
+            FROM eth_5min_orders
+            ORDER BY placed_at DESC
+        """).fetchall()
+    except sqlite3.OperationalError:
+        conn.close()
+        return {"error": "eth_5min_orders table not found.", "orders": [], "stats": {}}
+    conn.close()
+
+    orders = [dict(r) for r in rows]
+    live   = [o for o in orders if not o["dry_run"]]
+    dry    = [o for o in orders if o["dry_run"]]
+    errors = [o for o in orders if o["error"]]
+    edges  = [o["edge"] for o in orders if o["edge"] is not None]
+
+    # cumulative chart — live orders only, assume $1 payout per share on win
+    # (no outcome in DB yet; chart left for future P/L once outcomes are tracked)
+    labels, cum_series = [], []
+
+    stats = {
+        "total":    len(orders),
+        "live":     len(live),
+        "dry_run":  len(dry),
+        "errors":   len(errors),
+        "avg_edge": round(sum(edges) / len(edges), 4) if edges else 0,
+    }
+    return {"stats": stats, "orders": orders, "chart": {"labels": labels, "series": cum_series}}
+
+
+def _read_eth5min_log_tail() -> list[str]:
+    try:
+        with open(_eth5min_log(), "r", encoding="utf-8", errors="replace") as f:
+            return list(deque(f, maxlen=LOG_TAIL))
+    except FileNotFoundError:
+        return [f"Log file not found: {_eth5min_log()}"]
+
+
 # -- template ------------------------------------------------------------------
 
 _TEMPLATE = r"""<!doctype html>
@@ -532,6 +589,12 @@ _TEMPLATE = r"""<!doctype html>
       <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-bs" type="button"
               onclick="if(!ftLoaded)loadFT()">
         BTC 5m BS Test
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-eth5min" type="button"
+              onclick="loadEth5min()">
+        ETH 5m Bot
       </button>
     </li>
   </ul>
@@ -656,6 +719,57 @@ _TEMPLATE = r"""<!doctype html>
         </div>
         <div class="card-body p-2">
           <div class="log-box" id="ft-log-box"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========================== ETH 5m BOT =========================== -->
+    <div class="tab-pane fade" id="tab-eth5min" role="tabpanel">
+
+      <!-- stat row -->
+      <div class="d-flex flex-wrap gap-3 mb-3" id="eth5min-stats">
+        <div class="stat-box text-muted text-center">loading</div>
+      </div>
+
+      <!-- orders table -->
+      <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span class="fw-bold">Signal Orders</span>
+          <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="eth5min-showDry" checked>
+            <label class="form-check-label small" for="eth5min-showDry">Show dry-run</label>
+          </div>
+        </div>
+        <div class="card-body p-0">
+          <div style="max-height:500px;overflow-y:auto">
+            <table class="table table-sm mb-0">
+              <thead style="position:sticky;top:0;z-index:1">
+                <tr>
+                  <th>Time (UTC)</th><th>Slug</th><th>Side</th>
+                  <th>Ask</th><th>Submit</th><th>Fair</th><th>BS Edge</th>
+                  <th>Shares</th><th>Mode</th><th>Status</th><th>Order ID</th>
+                </tr>
+              </thead>
+              <tbody id="eth5min-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- live log -->
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span class="fw-bold">
+            Live Log
+            <small class="text-muted ms-2" id="eth5min-log-ts"></small>
+          </span>
+          <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="eth5min-autoScroll" checked>
+            <label class="form-check-label small" for="eth5min-autoScroll">Auto-scroll</label>
+          </div>
+        </div>
+        <div class="card-body p-2">
+          <div class="log-box" id="eth5min-log-box"></div>
         </div>
       </div>
     </div>
@@ -1316,13 +1430,112 @@ async function loadFTLog() {
   box.scrollTop = box.scrollHeight;
 }
 
-// -- bootstrap ----------------------------------------------------------------
-function refreshAll() { loadEth(); loadLog(); loadWeather(); if(ftLoaded) { loadFT(); loadFTLog(); } }
+// -- ETH 5m Bot ---------------------------------------------------------------
+let eth5minOrders = [];
+let eth5minLoaded = false;
 
-loadEth();      setInterval(loadEth,     30_000);
-loadLog();      setInterval(loadLog,     10_000);
+async function loadEth5min() {
+  const d = await fetch("/api/eth5min").then(r => r.json());
+  if (d.error) {
+    document.getElementById("eth5min-stats").innerHTML =
+      `<div class="alert alert-warning">${esc(d.error)}</div>`;
+    return;
+  }
+  const s = d.stats;
+  document.getElementById("eth5min-stats").innerHTML = [
+    statCard("Total Signals", s.total,                                   ""),
+    statCard("Live Orders",   s.live,                                    s.live > 0 ? "pos" : "neu"),
+    statCard("Dry-run",       s.dry_run,                                 "neu"),
+    statCard("Errors",        s.errors,                                  s.errors > 0 ? "neg" : "neu"),
+    statCard("Avg BS Edge",   s.total ? "+" + (s.avg_edge*100).toFixed(2)+"%" : "--", "pos"),
+  ].join("");
+
+  eth5minOrders = d.orders;
+  eth5minLoaded = true;
+  renderEth5minOrders();
+  loadEth5minLog();
+}
+
+function renderEth5minOrders() {
+  const showDry = document.getElementById("eth5min-showDry").checked;
+  const orders  = eth5minOrders.filter(o => showDry || !o.dry_run);
+  const tbody   = document.getElementById("eth5min-body");
+  if (!orders.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="text-center text-muted py-3">No orders yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = orders.map(o => {
+    const dt   = new Date(o.placed_at * 1000).toISOString().substring(0,16).replace("T"," ");
+    const slug = o.slug || "--";
+    const shortSlug = slug.replace(/^eth-updown-5m-/, "5m-");
+    const side = o.side === "Up"
+      ? `<span class="dir-up">Up</span>`
+      : `<span class="dir-down">Down</span>`;
+    const mode = o.dry_run
+      ? `<span class="pill pill-dry">dry</span>`
+      : `<span class="badge bg-success">live</span>`;
+    const edge = o.edge != null
+      ? `<span class="pos">${(o.edge*100).toFixed(2)}%</span>`
+      : "--";
+    const status = o.error
+      ? `<span class="neg" title="${esc(o.error)}">error</span>`
+      : o.order_status
+        ? `<span class="text-muted">${esc(o.order_status)}</span>`
+        : "--";
+    const orderId = o.order_id && o.order_id !== "DRY_RUN"
+      ? `<span style="font-size:10px;color:#8b949e">${esc(o.order_id.substring(0,12))}…</span>`
+      : `<span class="text-muted">--</span>`;
+    return `<tr>
+      <td style="font-size:11px">${esc(dt)}</td>
+      <td><a href="https://polymarket.com/event/${esc(slug)}" target="_blank"
+             class="text-primary text-decoration-none" style="font-size:11px">${esc(shortSlug)}</a></td>
+      <td>${side}</td>
+      <td>${o.ask_price != null ? o.ask_price.toFixed(3) : "--"}</td>
+      <td>${o.submit_price != null ? o.submit_price.toFixed(3) : "--"}</td>
+      <td>${o.fair_price != null ? o.fair_price.toFixed(4) : "--"}</td>
+      <td>${edge}</td>
+      <td>${o.shares != null ? o.shares : "--"}</td>
+      <td>${mode}</td>
+      <td>${status}</td>
+      <td>${orderId}</td>
+    </tr>`;
+  }).join("");
+}
+document.getElementById("eth5min-showDry").addEventListener("change", renderEth5minOrders);
+
+async function loadEth5minLog() {
+  const d   = await fetch("/api/eth5min-log").then(r => r.json());
+  const box = document.getElementById("eth5min-log-box");
+  const ts  = document.getElementById("eth5min-log-ts");
+  box.innerHTML = (d.lines || []).map(raw => {
+    const l = raw.trimEnd();
+    let cls = "log-info";
+    if (/ERROR|CRITICAL/i.test(l))                               cls = "log-error";
+    else if (/WARN/i.test(l))                                    cls = "log-warn";
+    else if (/ORDER\b.*id=/i.test(l))                            cls = "log-win";
+    else if (/ORDER FAILED/i.test(l))                            cls = "log-loss";
+    else if (/SIGNAL/i.test(l))                                  cls = "log-trade";
+    else if (/WS connected|WS subscrib|MARKET /i.test(l))        cls = "log-info";
+    else if (/TICK/i.test(l))                                    cls = "log-dim";
+    return `<div class="${cls}">${esc(l)}</div>`;
+  }).join("");
+  if (ts) ts.textContent = "updated " + new Date().toLocaleTimeString();
+  if (document.getElementById("eth5min-autoScroll").checked)
+    box.scrollTop = box.scrollHeight;
+}
+
+// -- bootstrap ----------------------------------------------------------------
+function refreshAll() {
+  loadEth(); loadLog(); loadWeather();
+  if (ftLoaded) { loadFT(); loadFTLog(); }
+  if (eth5minLoaded) { loadEth5min(); }
+}
+
+loadEth();      setInterval(loadEth,        30_000);
+loadLog();      setInterval(loadLog,        10_000);
 loadWeather();
-loadFTLog();    setInterval(loadFTLog,   10_000);
+loadFTLog();    setInterval(loadFTLog,      10_000);
+               setInterval(() => { if (eth5minLoaded) loadEth5min(); }, 15_000);
 </script>
 </body>
 </html>
@@ -1369,6 +1582,16 @@ def api_bs_forward():
     return jsonify(_query_bs_forward(min_edge))
 
 
+@app.route("/api/eth5min")
+def api_eth5min():
+    return jsonify(_query_eth5min_stats())
+
+
+@app.route("/api/eth5min-log")
+def api_eth5min_log():
+    return jsonify({"lines": _read_eth5min_log_tail()})
+
+
 @app.route("/api/weather/update/<int:bet_id>", methods=["POST"])
 def api_weather_update(bet_id: int):
     data         = request.get_json(force=True) or {}
@@ -1392,6 +1615,8 @@ def main() -> None:
                    help="Path to crypto_5m.db")
     p.add_argument("--bets-db", default=BETS_DB_PATH,
                    help="Path to bets.db (ETH 1H + Weather)")
+    p.add_argument("--eth5min-db", default=ETH5MIN_DB_PATH,
+                   help="Path to eth_5min.db")
     args = p.parse_args()
 
     import socket
@@ -1403,11 +1628,12 @@ def main() -> None:
 
     print(f"  Stats UI:  http://localhost:{args.port}")
     print(f"  On LAN:    http://{local_ip}:{args.port}")
-    print(f"  Tabs:      ETH 1H Bot | Weather Bets | BTC 5m BS Test")
+    print(f"  Tabs:      ETH 1H Bot | Weather Bets | BTC 5m BS Test | ETH 5m Bot")
 
-    app.config["CRYPTO_DB_PATH"] = args.crypto_db
-    app.config["BETS_DB_PATH"]   = args.bets_db
-    app.config["BS_LOG_PATH"]    = BS_LOG_PATH
+    app.config["CRYPTO_DB_PATH"]  = args.crypto_db
+    app.config["BETS_DB_PATH"]    = args.bets_db
+    app.config["BS_LOG_PATH"]     = BS_LOG_PATH
+    app.config["ETH5MIN_DB_PATH"] = args.eth5min_db
     app.run(host=args.host, port=args.port, debug=False)
 
 

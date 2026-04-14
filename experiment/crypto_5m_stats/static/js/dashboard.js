@@ -879,6 +879,173 @@ async function loadFTLog() {
   box.scrollTop = box.scrollHeight;
 }
 
+// -- ETH 5m Bot ---------------------------------------------------------------
+let eth5minOrders = [];
+let eth5minLoaded = false;
+let eth5minChart = null;
+
+async function loadEth5min() {
+  const d = await fetch("/api/eth5min").then(r => r.json());
+  if (d.error) {
+    document.getElementById("eth5min-stats").innerHTML =
+      `<div class="alert alert-warning">${esc(d.error)}</div>`;
+    return;
+  }
+  const s = d.stats;
+  const winRateTxt = s.resolved > 0
+    ? s.win_rate.toFixed(1) + "% (" + s.wins + "/" + s.resolved + ")"
+    : "--";
+  const pnlTxt = s.resolved > 0
+    ? (s.total_pnl >= 0 ? "+" : "") + "$" + s.total_pnl.toFixed(2)
+    : "--";
+  const roiTxt = s.resolved > 0
+    ? (s.roi >= 0 ? "+" : "") + s.roi.toFixed(1) + "%"
+    : "--";
+  document.getElementById("eth5min-stats").innerHTML = [
+    statCard("Total Signals", s.total,    ""),
+    statCard("Live Orders",   s.live,     s.live > 0 ? "pos" : "neu"),
+    statCard("Dry-run",       s.dry_run,  "neu"),
+    statCard("Errors",        s.errors,   s.errors > 0 ? "neg" : "neu"),
+    statCard("Avg BS Edge",   s.total ? "+" + (s.avg_edge * 100).toFixed(2) + "%" : "--", "pos"),
+    statCard("Win Rate",      winRateTxt, s.resolved > 0 && s.win_rate >= 50 ? "pos" : "neg"),
+    statCard("Net P/L",       pnlTxt,     s.total_pnl >= 0 ? "pos" : "neg"),
+    statCard("ROI",           roiTxt,     s.roi >= 0 ? "pos" : "neg"),
+  ].join("");
+  eth5minOrders = d.orders;
+  eth5minLoaded = true;
+  renderEth5minOrders();
+  buildEth5minChart(d.chart);
+  loadEth5minLog();
+}
+
+function buildEth5minChart(chart) {
+  const ctx = document.getElementById("eth5min-chart");
+  if (!ctx) return;
+  if (eth5minChart) eth5minChart.destroy();
+  const labels = (chart && chart.labels) || [];
+  const series = (chart && chart.series) || [];
+  if (!labels.length) return;
+  eth5minChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{
+        label: "Cumulative P/L",
+        data: series,
+        borderColor: "#58a6ff",
+        backgroundColor: "rgba(88,166,255,0.12)",
+        fill: true,
+        tension: 0.3,
+        pointRadius: 3,
+        borderWidth: 2,
+      }],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "top" },
+        tooltip: {
+          callbacks: {
+            label: c => `  P/L: ${c.parsed.y >= 0 ? "+" : ""}$${c.parsed.y.toFixed(3)}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: { color: "#8b949e", maxTicksLimit: 16, maxRotation: 45 },
+          grid: { color: "#21262d" },
+        },
+        y: {
+          ticks: {
+            color: "#8b949e",
+            callback: v => (v >= 0 ? "+" : "") + "$" + v.toFixed(2),
+          },
+          grid: { color: "#21262d" },
+          title: { display: true, text: "Cumulative P/L (USDC)", color: "#8b949e" },
+        },
+      },
+    },
+  });
+}
+
+function renderEth5minOrders() {
+  const showDry = document.getElementById("eth5min-showDry").checked;
+  const orders  = eth5minOrders.filter(o => showDry || !o.dry_run);
+  const tbody   = document.getElementById("eth5min-body");
+  if (!orders.length) {
+    tbody.innerHTML = `<tr><td colspan="11" class="text-center text-muted py-3">No orders yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = orders.map(o => {
+    const dt       = new Date(o.placed_at * 1000).toISOString().substring(0, 16).replace("T", " ");
+    const slug     = o.slug || "--";
+    const shortSlug = slug.replace(/^eth-updown-5m-/, "5m-");
+    const side     = o.side === "Up"
+      ? `<span class="dir-up">Up</span>`
+      : `<span class="dir-down">Down</span>`;
+    const mode     = o.dry_run
+      ? `<span class="pill pill-dry">dry</span>`
+      : `<span class="badge bg-success">live</span>`;
+    const edge     = o.edge != null
+      ? `<span class="pos">${(o.edge * 100).toFixed(2)}%</span>` : "--";
+    const status   = o.error
+      ? `<span class="neg" title="${esc(o.error)}">error</span>`
+      : o.order_status ? `<span class="text-muted">${esc(o.order_status)}</span>` : "--";
+    const orderId  = o.order_id && o.order_id !== "DRY_RUN"
+      ? `<span style="font-size:10px;color:#8b949e">${esc(o.order_id.substring(0, 12))}…</span>`
+      : `<span class="text-muted">--</span>`;
+    return `<tr>
+      <td style="font-size:11px">${esc(dt)}</td>
+      <td><a href="https://polymarket.com/event/${esc(slug)}" target="_blank"
+             class="text-primary text-decoration-none" style="font-size:11px">${esc(shortSlug)}</a></td>
+      <td>${side}</td>
+      <td>${o.ask_price != null ? o.ask_price.toFixed(3) : "--"}</td>
+      <td>${o.submit_price != null ? o.submit_price.toFixed(3) : "--"}</td>
+      <td>${o.fair_price != null ? o.fair_price.toFixed(4) : "--"}</td>
+      <td>${edge}</td>
+      <td>${o.shares != null ? o.shares : "--"}</td>
+      <td>${mode}</td>
+      <td>${status}</td>
+      <td>${orderId}</td>
+    </tr>`;
+  }).join("");
+}
+document.getElementById("eth5min-showDry").addEventListener("change", renderEth5minOrders);
+
+let _eth5minLogLines = [];
+
+async function loadEth5minLog() {
+  const d = await fetch("/api/eth5min-log").then(r => r.json());
+  _eth5minLogLines = d.lines || [];
+  renderEth5minLog();
+  const ts = document.getElementById("eth5min-log-ts");
+  if (ts) ts.textContent = "updated " + new Date().toLocaleTimeString();
+}
+
+function renderEth5minLog() {
+  const box      = document.getElementById("eth5min-log-box");
+  const hideTick = document.getElementById("eth5min-hideTick").checked;
+  box.innerHTML = _eth5minLogLines
+    .filter(raw => !(hideTick && /\bTICK\b/i.test(raw)))
+    .map(raw => {
+      const l = raw.trimEnd();
+      let cls = "log-info";
+      if (/ERROR|CRITICAL/i.test(l))    cls = "log-error";
+      else if (/WARN/i.test(l))         cls = "log-warn";
+      else if (/SETTLED/i.test(l))      cls = "log-win";
+      else if (/ORDER\b.*id=/i.test(l)) cls = "log-win";
+      else if (/ORDER FAILED/i.test(l)) cls = "log-loss";
+      else if (/SIGNAL/i.test(l))       cls = "log-trade";
+      else if (/TICK/i.test(l))         cls = "log-dim";
+      return `<div class="${cls}">${esc(l)}</div>`;
+    }).join("");
+  if (document.getElementById("eth5min-autoScroll").checked)
+    box.scrollTop = box.scrollHeight;
+}
+
+document.getElementById("eth5min-hideTick").addEventListener("change", renderEth5minLog);
+
 // -- bootstrap ----------------------------------------------------------------
 function refreshAll() {
   loadEth();
@@ -888,6 +1055,7 @@ function refreshAll() {
     loadFT();
     loadFTLog();
   }
+  if (eth5minLoaded) loadEth5min();
 }
 
 loadEth();
@@ -897,3 +1065,4 @@ setInterval(loadLog, 10_000);
 loadWeather();
 loadFTLog();
 setInterval(loadFTLog, 10_000);
+setInterval(() => { if (eth5minLoaded) loadEth5min(); }, 15_000);

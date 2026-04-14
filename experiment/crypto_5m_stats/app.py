@@ -11,22 +11,26 @@ from .database import (
     query_bs_forward,
     query_crypto_stats,
     query_eth_stats,
+    query_eth5min_stats,
     query_weather_stats,
     read_bs_log_tail,
     read_eth_log_tail,
+    read_eth5min_log_tail,
     update_weather_bet,
 )
 
 
-def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log_path: str) -> Flask:
+def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log_path: str, eth5min_db_path: str = "", eth5min_log_path: str = "") -> Flask:
     """Create and configure the Flask app."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
     # Store config
-    app.config["CRYPTO_DB_PATH"] = crypto_db_path
-    app.config["BETS_DB_PATH"] = bets_db_path
-    app.config["ETH_LOG_PATH"] = eth_log_path
-    app.config["BS_LOG_PATH"] = bs_log_path
+    app.config["CRYPTO_DB_PATH"]   = crypto_db_path
+    app.config["BETS_DB_PATH"]     = bets_db_path
+    app.config["ETH_LOG_PATH"]     = eth_log_path
+    app.config["BS_LOG_PATH"]      = bs_log_path
+    app.config["ETH5MIN_DB_PATH"]  = eth5min_db_path
+    app.config["ETH5MIN_LOG_PATH"] = eth5min_log_path
 
     @app.route("/")
     def index():
@@ -59,6 +63,14 @@ def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log
         except (TypeError, ValueError):
             min_edge = 0.0
         return jsonify(query_bs_forward(app.config["CRYPTO_DB_PATH"], min_edge))
+
+    @app.route("/api/eth5min")
+    def api_eth5min():
+        return jsonify(query_eth5min_stats(app.config["ETH5MIN_DB_PATH"]))
+
+    @app.route("/api/eth5min-log")
+    def api_eth5min_log():
+        return jsonify({"lines": read_eth5min_log_tail(app.config["ETH5MIN_LOG_PATH"])})
 
     @app.route("/api/weather/update/<int:bet_id>", methods=["POST"])
     def api_weather_update(bet_id: int):
