@@ -98,8 +98,9 @@ class Market:
     up_token: str
     down_token: str
     price_to_beat: float | None
-    maker_fee_bps: int
-    taker_fee_bps: int
+    maker_fee_bps: int       # used for edge calc (0 — Polymarket doesn't charge us)
+    taker_fee_bps: int       # used for edge calc (0)
+    order_fee_bps: int = 0   # actual fee declared in OrderArgs (must match market config)
 
 
 @dataclass
@@ -119,6 +120,7 @@ class Signal:
     taker_net_edge: float
     maker_fee_bps: int
     taker_fee_bps: int
+    order_fee_bps: int = 0   # passed through to OrderArgs
 
 
 _bs_cache: dict[str, Any] = {"sigma": None, "mu": 0.0, "candle_open": {}}
@@ -340,6 +342,9 @@ def _event_to_market(event: dict, now_ts: int) -> Market | None:
     if end_ts <= now_ts or end_ts - now_ts > 1200:
         return None
 
+    # Read actual fee for order submission; keep 0 for edge calc (fee is a cap, not charged)
+    raw_maker_fee = int(mk.get("makerBaseFee") or mk.get("maker_base_fee") or 0)
+
     return Market(
         slug=slug,
         candle_start=candle_start,
@@ -349,6 +354,7 @@ def _event_to_market(event: dict, now_ts: int) -> Market | None:
         price_to_beat=_parse_float(mk.get("priceToBeat") or mk.get("price_to_beat")),
         maker_fee_bps=0,
         taker_fee_bps=0,
+        order_fee_bps=raw_maker_fee,
     )
 
 
@@ -816,6 +822,7 @@ def _evaluate_signals(
                 taker_net_edge=taker_net,
                 maker_fee_bps=market.maker_fee_bps,
                 taker_fee_bps=market.taker_fee_bps,
+                order_fee_bps=market.order_fee_bps,
             )
         )
 
@@ -837,8 +844,9 @@ def _submit_limit_buy(client, signal: Signal, shares: float) -> dict:
         price=signal.submit_price,
         size=shares,
         side=BUY,
-        # Use taker bps as max fee budget; order may still get maker execution.
-        fee_rate_bps=max(0, int(signal.taker_fee_bps)),
+        # Must match the market's configured maker fee or the CLOB rejects the order.
+        # This is a Polymarket cap/config value, not a fee we actually pay.
+        fee_rate_bps=max(0, int(signal.order_fee_bps)),
     )
     signed = client.create_order(args)
     return client.post_order(signed, OrderType.GTC)
