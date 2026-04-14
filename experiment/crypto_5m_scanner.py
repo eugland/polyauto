@@ -40,14 +40,14 @@ DB_PATH          = os.path.join("experiment", "crypto_5m.db")
 LOG_PATH         = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
 DEFAULT_MAX      = 0.03   # kept for CLI compatibility/logging
 DEFAULT_MIN_EDGE = 0.03   # minimum BS edge to record a signal
-BASE_SHARES      = 6.0    # flat shares per signal
-MIN_SHARES       = 6.0    # minimum shares required to place/update a signal
+BASE_SHARES      = 5.0    # flat shares per signal
+MIN_SHARES       = 5.0    # minimum shares required to place/update a signal
 MAX_SHARES_MULT  = 1.0    # flat sizing — dynamic multiplier disabled
 BOOK_SIZE_FRACTION = 0.8  # never size above this fraction of top-of-book size
 EDGE_RAMP_WIDTH  = 0.10   # edge above min_edge needed to reach max share multiplier
 REPRICE_MIN_EDGE_IMPROV = 0.02  # edge improvement needed to replace prior signal
 REPRICE_MIN_PRICE_DROP  = 0.01  # ask improvement needed to replace prior signal
-SLUG_BUDGET_USDC = 10.0   # max total spend per 5m slug across both sides
+SLUG_SHARE_CAP   = 20.0   # max total shares per 5m slug across both sides
 MIN_BOOK_SHARES  = 1      # minimum shares needed in order book to fire
 POLL_INTERVAL    = 1      # seconds between signal evaluations (reads local WS cache)
 WS_URL           = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -60,8 +60,8 @@ RESOLVE_TIMEOUT  = 7200   # give up resolving after this many seconds post-close
 BS_VOL_WINDOW    = 50     # trailing 5m bars for vol estimation
 BS_VOL_REFRESH   = 300    # seconds between per-asset vol refreshes
 SECS_PER_YEAR    = 365 * 24 * 3600
-ENTRY_MIN_SECS   = 90    # skip signals with < 90 s left (model unreliable near expiry)
-ENTRY_MAX_SECS   = 220   # skip signals with > 220 s left (outcome not determined)
+ENTRY_MIN_SECS   = 40    # skip signals with < 40 s left (model unreliable near expiry)
+ENTRY_MAX_SECS   = 240   # skip signals with > 240 s left (outcome not determined)
 MIN_ENTRY_PRICE  = 0.08  # skip asks below this (cheap-premium trap, model over-confident)
 MAX_EDGE         = 0.12  # skip signals with edge above this (treat as model failure)
 MAX_DRIFT_SIGMAS = 1.0   # cap |μ| at this many σ/bar to prevent runaway drift estimates
@@ -848,31 +848,27 @@ def _cap_shares_to_slug_budget(
     conn: sqlite3.Connection,
     slug: str,
     side: str,
-    entry_price: float,
     desired_shares: float,
 ) -> float:
     """
-    Cap shares so total slug spend never exceeds SLUG_BUDGET_USDC.
-    If this side already has a row, treat it as a replacement (subtract old spend).
+    Cap shares so total slug size never exceeds SLUG_SHARE_CAP.
+    If this side already has a row, treat it as a replacement (subtract old shares).
     """
-    if entry_price <= 0:
-        return 0.0
     existing_same_side = conn.execute(
-        "SELECT entry_price, shares FROM signals WHERE slug=? AND side=?",
+        "SELECT shares FROM signals WHERE slug=? AND side=?",
         (slug, side),
     ).fetchone()
-    same_side_spend = 0.0
+    same_side_shares = 0.0
     if existing_same_side:
-        same_side_spend = float(existing_same_side["entry_price"]) * float(existing_same_side["shares"])
+        same_side_shares = float(existing_same_side["shares"] or 0.0)
 
-    total_slug_spend = conn.execute(
-        "SELECT COALESCE(SUM(entry_price * shares), 0.0) FROM signals WHERE slug=?",
+    total_slug_shares = conn.execute(
+        "SELECT COALESCE(SUM(shares), 0.0) FROM signals WHERE slug=?",
         (slug,),
     ).fetchone()[0]
-    spend_other_sides = float(total_slug_spend or 0.0) - same_side_spend
-    remaining_budget = max(0.0, SLUG_BUDGET_USDC - spend_other_sides)
-    max_by_budget = remaining_budget / entry_price
-    capped = min(desired_shares, max_by_budget)
+    shares_other_sides = float(total_slug_shares or 0.0) - same_side_shares
+    remaining_shares = max(0.0, SLUG_SHARE_CAP - shares_other_sides)
+    capped = min(desired_shares, remaining_shares)
     return round(max(0.0, capped), 2)
 
 
@@ -1165,15 +1161,14 @@ def run(max_price: float, poll: float, db_path: str, min_edge: float, verbose: b
                             conn=conn,
                             slug=slug,
                             side=side,
-                            entry_price=ask,
                             desired_shares=shares,
                         )
                         if shares < MIN_SHARES:
                             if verbose:
                                 log.info(
-                                    "  SKIP  %-5s %-4s  slug_budget_cap hit  "
-                                    "budget=$%.2f  ask=$%.4f  shares=%.2f < min=%.2f",
-                                    asset, side, SLUG_BUDGET_USDC, ask, shares, MIN_SHARES,
+                                    "  SKIP  %-5s %-4s  slug_share_cap hit  "
+                                    "share_cap=%.2f  ask=$%.4f  shares=%.2f < min=%.2f",
+                                    asset, side, SLUG_SHARE_CAP, ask, shares, MIN_SHARES,
                                 )
                             continue
                         sig_action = _insert_signal(
