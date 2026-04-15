@@ -96,8 +96,9 @@ WS_PING      = 20   # WebSocket keepalive interval
 # Price discipline — constraint is on the PAIR SUM, not per-side.
 # Cost per (Up + Down) pair = $1.00 from split. Min sum = $1.01 → 1¢ profit.
 # Skewed markets are fine (e.g. 0.48 + 0.53 = $1.01 ✓).
-MIN_PAIR_SUM = 1.01   # minimum (up_price + down_price) in PRE-CANDLE phase
+MIN_PAIR_SUM = 1.02   # minimum (up_price + down_price) in PRE-CANDLE phase
 TICK         = 0.01   # Polymarket price tick
+FLOOR_DROP_AFTER_START = 10.0  # keep pair-sum floor for first N seconds after start
 
 # Candle-relative phases (now − candle.start_ts):
 #   < 0           → PRE_CANDLE  : maker, joint pair-sum ≥ MIN_PAIR_SUM
@@ -334,8 +335,9 @@ def _target_pair_prices(
       Each candidate must have sum ≥ MIN_PAIR_SUM. Else hold (None, None).
 
     ADJUST (0 ≤ secs_since_start < ADJUST_GRACE):
-      Drop the pair-sum floor. Linearly interpolate price from
-      (best_ask − 1 tick) toward best_bid as urgency 0 → 1.
+      Linearly interpolate price from (best_ask − 1 tick) toward best_bid as
+      urgency 0 → 1. Keep pair-sum floor active for the first
+      FLOOR_DROP_AFTER_START seconds after candle start.
 
     HAIL_MARY (secs_since_start ≥ ADJUST_GRACE):
       Cross to bid on each side at any price (urgent exit).
@@ -352,10 +354,18 @@ def _target_pair_prices(
         return up_p, dn_p
 
     if phase == "ADJUST":
+        secs_since_start = max(0.0, now - candle.start_ts)
         urgency = (now - candle.start_ts) / max(1.0, ADJUST_GRACE)
         urgency = max(0.0, min(1.0, urgency))
         up_p = _adjust_price(up_bid, up_ask, urgency)
         dn_p = _adjust_price(dn_bid, dn_ask, urgency)
+        if (
+            secs_since_start < FLOOR_DROP_AFTER_START
+            and up_p is not None
+            and dn_p is not None
+            and (up_p + dn_p + 1e-9) < MIN_PAIR_SUM
+        ):
+            return None, None
         return up_p, dn_p
 
     # PRE_CANDLE — pair-sum maker
