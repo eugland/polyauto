@@ -98,7 +98,7 @@ WS_PING      = 20   # WebSocket keepalive interval
 # Skewed markets are fine (e.g. 0.48 + 0.53 = $1.01 ✓).
 MIN_PAIR_SUM = 1.02   # minimum (up_price + down_price) in PRE-CANDLE phase
 TICK         = 0.01   # Polymarket price tick
-FLOOR_DROP_AFTER_START = 10.0  # keep pair-sum floor for first N seconds after start
+FLOOR_DROP_AFTER_START = 20.0  # keep pair-sum floor for first N seconds after start
 
 # Candle-relative phases (now − candle.start_ts):
 #   < 0           → PRE_CANDLE  : maker, joint pair-sum ≥ MIN_PAIR_SUM
@@ -235,6 +235,8 @@ def _fetch_btc_candle() -> Candle | None:
     bucket = (now_ts // 300) * 300
     best: Candle | None = None
 
+    request_errors = 0
+
     for delta in (0, 1, 2, 3, -1):
         slug = f"btc-updown-5m-{bucket + delta * 300}"
         try:
@@ -245,22 +247,31 @@ def _fetch_btc_candle() -> Candle | None:
             ).json()
             if not isinstance(data, list) or not data:
                 continue
-            mkt = (data[0].get("markets") or [None])[0]
-            if not mkt or mkt.get("closed"):
+            markets = data[0].get("markets") or []
+            if not isinstance(markets, list):
                 continue
-            outcomes  = _load_json_field(mkt.get("outcomes"))
-            token_ids = _load_json_field(mkt.get("clobTokenIds"))
-            up_tok = down_tok = None
-            for i, name in enumerate(outcomes):
-                if i >= len(token_ids):
+
+            up_tok = down_tok = condition_id = None
+            for mkt in markets:
+                if not isinstance(mkt, dict) or mkt.get("closed"):
                     continue
-                label = str(name).strip().lower()
-                if   label == "up":   up_tok   = str(token_ids[i])
-                elif label == "down": down_tok = str(token_ids[i])
-            if not up_tok or not down_tok:
-                continue
-            condition_id = str(mkt.get("conditionId") or mkt.get("condition_id") or "")
-            if not condition_id:
+                outcomes  = _load_json_field(mkt.get("outcomes"))
+                token_ids = _load_json_field(mkt.get("clobTokenIds"))
+                cand_up = cand_down = None
+                for i, name in enumerate(outcomes):
+                    if i >= len(token_ids):
+                        continue
+                    label = str(name).strip().lower()
+                    if   label == "up":   cand_up   = str(token_ids[i])
+                    elif label == "down": cand_down = str(token_ids[i])
+                cand_condition_id = str(mkt.get("conditionId") or mkt.get("condition_id") or "")
+                if cand_up and cand_down and cand_condition_id:
+                    up_tok = cand_up
+                    down_tok = cand_down
+                    condition_id = cand_condition_id
+                    break
+
+            if not up_tok or not down_tok or not condition_id:
                 continue
             candle_ts = int(slug.rsplit("-", 1)[-1])
             start_ts  = float(candle_ts)
@@ -291,7 +302,11 @@ def _fetch_btc_candle() -> Candle | None:
             elif cand_unstarted == best_unstarted and candle.start_ts < best.start_ts:
                 best = candle
         except Exception as exc:
+            request_errors += 1
             log.debug("Candle fetch error %s: %s", slug, exc)
+
+    if best is None and request_errors:
+        log.warning("Gamma fetch failed for all BTC candle slugs (%d request errors)", request_errors)
 
     return best
 
@@ -1186,18 +1201,17 @@ async def run(
     # Pre-warm: discover first candle so WS has tokens immediately
     first_candle = await asyncio.to_thread(_fetch_btc_candle)
     if first_candle is None:
-        log.error("No active BTC 5m candle — cannot start")
-        sys.exit(1)
+        log.warning("No active BTC 5m candle at startup — will keep retrying")
+    else:
+        _state.candle       = first_candle
+        _state.candles_seen = 1
+        _ws_subscribed_tokens.update({first_candle.up_token, first_candle.down_token})
+        log.info("First candle: %s  ends=%s",
+                 first_candle.slug,
+                 datetime.fromtimestamp(first_candle.end_ts, tz=timezone.utc).strftime("%H:%M:%S UTC"))
 
-    _state.candle       = first_candle
-    _state.candles_seen = 1
-    _ws_subscribed_tokens.update({first_candle.up_token, first_candle.down_token})
-    log.info("First candle: %s  ends=%s",
-             first_candle.slug,
-             datetime.fromtimestamp(first_candle.end_ts, tz=timezone.utc).strftime("%H:%M:%S UTC"))
-
-    if bet:
-        _split_for_candle(first_candle, budget, split_mode, split_cmd=split_cmd)
+        if bet:
+            _split_for_candle(first_candle, budget, split_mode, split_cmd=split_cmd)
 
     await asyncio.gather(
         _poly_ws(),
@@ -1208,6 +1222,13 @@ async def run(
 
 def main() -> None:
     global MIN_PAIR_SUM, ADJUST_GRACE
+
+    # Avoid Windows cp1252 crashes from Unicode UI glyphs.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
     p = argparse.ArgumentParser(
         description="BTC 5m sell-side bot — pre-candle pair-sum maker → adjust → hail mary"
