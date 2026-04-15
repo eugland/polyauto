@@ -153,7 +153,39 @@ Environment:
 - Optional: `POLYMARKET_FUNDER`, `POLYMARKET_SIG_TYPE`
 - Derived automatically at startup in `--bet` mode: `CLOB_API_KEY`, `CLOB_SECRET`, `CLOB_PASS`
 
-## 7) `experiment.crypto_5m_scanner` (multi-asset 5m penny scanner)
+## 7) `automata.eth3cents` (ETH 5m dual 3c orders)
+
+Run:
+
+```bash
+python -m automata.eth3cents
+python -m automata.eth3cents --bet
+```
+
+What it does:
+- At the start of each ETH 5m market, submits two limit buys:
+  - `Up` at configured price (default `0.03`)
+  - `Down` at configured price (default `0.03`)
+- Near expiry, cancels remaining open orders (default `10s` before end).
+- Records all attempts/orders to `experiment/eth3cents.db`.
+
+Flags:
+
+| Flag | Description |
+|---|---|
+| `--bet` | Place real orders. Without this flag, it is dry-run only. |
+| `--poll` | Seconds between evaluations (default `0.5`). |
+| `--shares` | Target shares per signal (default `5`). |
+| `--price` | Limit buy price for both Up and Down (default `0.03`). |
+| `--cancel-before-sec` | Cancel open orders this many seconds before close (default `10`). |
+| `--max-balance` | Max USDC this process is allowed to spend. |
+
+Environment:
+- Required for live mode: `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_HOST`
+- Optional: `POLYMARKET_FUNDER`, `POLYMARKET_SIG_TYPE`
+- Derived automatically at startup in `--bet` mode: `CLOB_API_KEY`, `CLOB_SECRET`, `CLOB_PASS`
+
+## 8) `experiment.crypto_5m_scanner` (multi-asset 5m penny scanner)
 
 Run in one terminal:
 
@@ -183,7 +215,7 @@ DB schema:
 
 ---
 
-## 8) `experiment.crypto_5m_stats` (penny signal stats UI)
+## 9) `experiment.crypto_5m_stats` (penny signal stats UI)
 
 Run in a second terminal:
 
@@ -214,7 +246,7 @@ Flags:
 
 ---
 
-## 9) `automata` (combined runner)
+## 10) `automata` (combined runner)
 
 Run:
 

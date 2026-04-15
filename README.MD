@@ -2,7 +2,7 @@
 
 ## Folder quick map
 
-- `automata/`: betting engine modules (`weather`, `eth`, `btc_reach`, `eth_1h`, `view_bets`).
+- `automata/`: betting engine modules (`weather`, `eth`, `eth3cents`, `btc_reach`, `eth_1h`, `view_bets`).
 - `experiment/`: standalone scanners, backtests, and analysis scripts (no live orders).
 - `docs/`: static docs/demo files (`index.html`, `app.js`, `styles.css`, `running.md`).
 - `.venv/`: local virtual environment.
@@ -45,6 +45,12 @@ python -m automata.weather --bet --once --max-balance 30
 
 ```bash
 python -m automata.eth --bet --once --max-balance 30
+```
+
+- ETH 3-cents daemon only:
+
+```bash
+python -m automata.eth3cents --bet --poll 0.5 --max-balance 30
 ```
 
 - BTC range analyzer:
