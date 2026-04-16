@@ -17,6 +17,7 @@ from weather.forecast import attach_probabilities
 from weather.markets import RankedMarket, fetch_ranked_markets
 
 SIGNAL_LOG_PATH = Path("experiment") / "logs" / "weather_signals.log"
+ETH_LOG_PATH    = Path("experiment") / "logs" / "eth_1h.log"
 
 
 def _attach_prices(ranked: list[RankedMarket], host: str) -> None:
@@ -146,11 +147,19 @@ def _fetch_snapshot(top: int, city: str | None) -> dict:
     return {"markets": markets, "generated_at": datetime.now().isoformat(timespec="seconds")}
 
 
-def _tail_signal_logs(lines: int = 200) -> list[str]:
-    if not SIGNAL_LOG_PATH.exists():
-        return [f"Signal log not found: {SIGNAL_LOG_PATH}"]
-    with SIGNAL_LOG_PATH.open("r", encoding="utf-8", errors="replace") as f:
+def _tail_file(path: Path, lines: int) -> list[str]:
+    if not path.exists():
+        return [f"Log not found: {path}"]
+    with path.open("r", encoding="utf-8", errors="replace") as f:
         return list(deque((ln.rstrip("\n") for ln in f), maxlen=max(1, lines)))
+
+
+def _tail_signal_logs(lines: int = 200) -> list[str]:
+    return _tail_file(SIGNAL_LOG_PATH, lines)
+
+
+def _tail_eth_logs(lines: int = 200) -> list[str]:
+    return _tail_file(ETH_LOG_PATH, lines)
 
 
 HTML = """
@@ -176,12 +185,18 @@ HTML = """
     th, td { padding:5px 4px; border-bottom:1px solid #eee5d9; text-align:right; white-space:nowrap; }
     th:first-child, td:first-child { text-align:left; max-width:220px; overflow:hidden; text-overflow:ellipsis; }
     tr.pick { background:#e7f7e9; }
-    .logs { height:80vh; overflow:auto; background:#18181b; color:#d4d4d8; border-radius:8px; padding:10px; font-family:Consolas,monospace; font-size:12px; }
-    .log-line { margin-bottom:3px; }
+    .logs { height:38vh; overflow:auto; background:#18181b; color:#d4d4d8; border-radius:8px; padding:10px; font-family:Consolas,monospace; font-size:12px; }
+    .log-line { margin-bottom:3px; white-space:pre-wrap; word-break:break-all; }
     .cand { color:#93c5fd; }
     .bet { color:#86efac; font-weight:700; }
     .skip { color:#fca5a5; }
-    @media (max-width: 980px) { .grid { grid-template-columns:1fr; } .logs { height:280px; } }
+    .enter { color:#86efac; font-weight:700; }
+    .skip-risk { color:#fca5a5; }
+    .no-sig { color:#a1a1aa; }
+    .warn { color:#fbbf24; }
+    .err { color:#f87171; font-weight:700; }
+    .stack > .card + .card { margin-top:12px; }
+    @media (max-width: 980px) { .grid { grid-template-columns:1fr; } .logs { height:240px; } }
   </style>
 </head>
 <body>
@@ -193,9 +208,19 @@ HTML = """
         <div id="stamp" class="muted"></div>
         <div id="markets"></div>
       </div>
-      <div class="card">
-        <div style="font-weight:700; margin-bottom:8px;">Signal Log</div>
-        <div id="logs" class="logs"></div>
+      <div class="stack">
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:8px;">Weather Signal Log
+            <span class="muted" style="font-weight:normal; font-size:11px;">(experiment/logs/weather_signals.log)</span>
+          </div>
+          <div id="logs" class="logs"></div>
+        </div>
+        <div class="card">
+          <div style="font-weight:700; margin-bottom:8px;">ETH 1H Daemon Log
+            <span class="muted" style="font-weight:normal; font-size:11px;">(experiment/logs/eth_1h.log)</span>
+          </div>
+          <div id="eth_logs" class="logs"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -222,6 +247,10 @@ async function loadMarkets(){
     </div>`).join("");
 }
 
+function escapeHtml(s){
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
 async function loadLogs(){
   const d = await fetch("/api/logs").then(r=>r.json());
   const box = document.getElementById("logs");
@@ -230,13 +259,30 @@ async function loadLogs(){
     if (l.includes("BET_PLACED")) cls += " bet";
     else if (l.includes("CANDIDATE")) cls += " cand";
     else if (l.includes("SKIP")) cls += " skip";
-    return `<div class="${cls}">${l}</div>`;
+    return `<div class="${cls}">${escapeHtml(l)}</div>`;
+  }).join("");
+  box.scrollTop = box.scrollHeight;
+}
+
+async function loadEthLogs(){
+  const d = await fetch("/api/eth_logs").then(r=>r.json());
+  const box = document.getElementById("eth_logs");
+  box.innerHTML = d.lines.map(l => {
+    let cls = "log-line";
+    if (l.includes("ENTER-"))            cls += " enter";
+    else if (l.includes("Bought "))      cls += " bet";
+    else if (l.includes("SKIP-RISK"))    cls += " skip-risk";
+    else if (l.includes("NO-SIGNAL"))    cls += " no-sig";
+    else if (l.includes("STOP-LOSS"))    cls += " err";
+    else if (/\bERROR\b/.test(l))        cls += " err";
+    else if (/\bWARNING\b/.test(l))      cls += " warn";
+    return `<div class="${cls}">${escapeHtml(l)}</div>`;
   }).join("");
   box.scrollTop = box.scrollHeight;
 }
 
 async function tick(){
-  await Promise.all([loadMarkets(), loadLogs()]);
+  await Promise.all([loadMarkets(), loadLogs(), loadEthLogs()]);
 }
 tick();
 setInterval(tick, 20000);
@@ -263,6 +309,11 @@ def create_app() -> Flask:
     def api_logs():
         lines = int(request.args.get("lines", "200"))
         return jsonify({"lines": _tail_signal_logs(lines)})
+
+    @app.route("/api/eth_logs")
+    def api_eth_logs():
+        lines = int(request.args.get("lines", "200"))
+        return jsonify({"lines": _tail_eth_logs(lines)})
 
     return app
 
