@@ -127,6 +127,12 @@ def _round_down_to_tick(price: float, tick: float) -> float:
     return math.floor((price + 1e-12) / tick) * tick
 
 
+def _round_up_to_tick(price: float, tick: float) -> float:
+    if tick <= 0:
+        return round(price, 6)
+    return math.ceil((price - 1e-12) / tick) * tick
+
+
 def _compute_maker_buy_price(
     best_bid: float | None,
     best_ask: float | None,
@@ -137,12 +143,14 @@ def _compute_maker_buy_price(
 ) -> float | None:
     """
     Build a buy quote within price limits. Will pay up to the ask price but
-    never above max_no_price (0.998).
+    never above max_no_price (0.998). Rounds UP to the tick so the signed
+    price still crosses the spread when the raw ask falls between ticks.
     """
     if best_ask is None:
         return None  # no counterparty — passive fallback will handle this
     quote = min(best_ask, max_no_price)
-    quote = round(_round_down_to_tick(quote, tick_size), 6)
+    quote = round(_round_up_to_tick(quote, tick_size), 6)
+    quote = min(quote, max_no_price)  # ceil must not push us past the cap
     if quote < min_no_price:
         return None
     return quote
@@ -380,7 +388,7 @@ def run(
             token_to_city_date[tid] = cd
 
     import time as _time
-    stale_minutes = float(os.getenv("STALE_ORDER_MINUTES", "5"))
+    stale_minutes = float(os.getenv("STALE_ORDER_MINUTES", "1"))
     max_passes = int(os.getenv("BET_PASSES", "3"))
     orders_placed = 0
 
