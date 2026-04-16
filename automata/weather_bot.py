@@ -617,6 +617,14 @@ def run(
                     tick_size=mm_tick_size,
                     join_bid_ticks=mm_join_bid_ticks,
                 )
+                log.info(
+                    "[quote] %s %s  bid=%s  ask=%s  quote=%s  tick=%s",
+                    b["city"], b["question"],
+                    f"{best_bid:.4f}" if best_bid is not None else "None",
+                    f"{best_ask:.4f}" if best_ask is not None else "None",
+                    f"{quote_price:.4f}" if quote_price is not None else "None",
+                    f"{mm_tick_size:.4f}",
+                )
                 if quote_price is None:
                     log.info("No valid maker quote  %s %s — skipping", b["city"], b["question"])
                     continue
@@ -663,6 +671,7 @@ def run(
                     order_id = resp.get("orderID") or resp.get("id") or "?"
                     status   = resp.get("status") or "submitted"
                     result   = f"{status}  id={order_id}"
+                    log.info("[order-resp] %s %s  raw=%s", b["city"], b["question"], resp)
                     balance = round(balance - cost, 2)
                     orders_placed += 1
                     from automata.db import record_bet
