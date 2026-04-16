@@ -606,11 +606,13 @@ def _assess_reversal_risk(
     consecutive_dir: int,
     sigma_1m: float | None,
     vol_accel: float | None,
+    gap_usd: float | None = None,
 ) -> dict:
     """
     Assess whether adverse momentum can realistically overturn the current price gap.
 
     gap_pct         – |spot - candle_open| / candle_open (always positive fraction)
+    gap_usd         – |spot - candle_open| in USD; enables absolute-$ floor at T<=2m
     direction       – "Up" or "Down" (bet direction)
     taker_ratio     – 0=all sellers active, 1=all buyers active (last completed 1m)
     consecutive_dir – +N = N consecutive up candles, -N = N consecutive down candles
@@ -659,9 +661,12 @@ def _assess_reversal_risk(
     )
 
     # ── Filters ───────────────────────────────────────────────────────────────
-    SKIP_GAP_SAFETY        = 1.2   # loosened: allow entries unless reversal is within ~1.2 sigma reach
+    # Tighten gap-safety in the final 2 minutes — sigma estimates lag sudden
+    # single-minute regime shifts (e.g. a 97% taker-buy ripper in the close).
+    SKIP_GAP_SAFETY        = 2.0 if mins_remaining <= 2 else 1.2
     SKIP_ADVERSE_STREAK    = 5     # loosened: require a longer adverse streak before skipping
     SKIP_ADVERSE_TAKER_MAX = 0.75  # loosened: tolerate stronger adverse taker pressure
+    MIN_GAP_USD_NEAR_CLOSE = 5.0   # at T<=2m, require >=$5 absolute gap to strike
 
     skip_reasons = []
     if gap_safety < SKIP_GAP_SAFETY:
@@ -670,6 +675,8 @@ def _assess_reversal_risk(
         skip_reasons.append(f"adverse_streak={consecutive_adverse}>={SKIP_ADVERSE_STREAK}")
     if adverse_taker > SKIP_ADVERSE_TAKER_MAX:
         skip_reasons.append(f"adverse_taker={adverse_taker:.2f}>{SKIP_ADVERSE_TAKER_MAX}")
+    if mins_remaining <= 2 and gap_usd is not None and gap_usd < MIN_GAP_USD_NEAR_CLOSE:
+        skip_reasons.append(f"gap_usd=${gap_usd:.2f}<${MIN_GAP_USD_NEAR_CLOSE:.2f}")
 
     return {
         "adverse_taker":        adverse_taker,
@@ -1221,11 +1228,13 @@ def run_eth_1h(
     # ── 1m momentum + reversal risk ───────────────────────────────────────────
     momentum = _fetch_1m_momentum("ETHUSDT", lookback=7)
     gap_pct  = abs(spot - strike) / strike if spot is not None and strike is not None else None
+    gap_usd  = abs(spot - strike) if spot is not None and strike is not None else None
 
     risk = None
     if momentum is not None and gap_pct is not None:
         risk = _assess_reversal_risk(
             gap_pct         = gap_pct,
+            gap_usd         = gap_usd,
             mins_remaining  = mins,
             direction       = direction,
             taker_ratio     = momentum["taker_ratio"],
@@ -1250,11 +1259,12 @@ def run_eth_1h(
 
     if risk:
         log.info(
-            "[eth_1h] RISK  direction=%s  gap_pct=%.4f%%  gap_safety=%.2f"
+            "[eth_1h] RISK  direction=%s  gap_pct=%.4f%%  gap_usd=%s  gap_safety=%.2f"
             "  adverse_taker=%.3f  adverse_streak=%d  adverse_mult=%.2f"
             "  expected_move=%.4f%%  safe=%s  reasons=%s",
             direction,
             risk["gap_pct"] * 100,
+            f"${gap_usd:.2f}" if gap_usd is not None else "n/a",
             risk["gap_safety"],
             risk["adverse_taker"],
             risk["consecutive_adverse"],

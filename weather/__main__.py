@@ -31,6 +31,7 @@ from weather.bet import pick_best_executable, place_bet, should_skip_city, sugge
 from weather.forecast import attach_probabilities
 from weather.markets import Bracket, RankedMarket, fetch_ranked_markets
 from weather.snapshots import record_snapshots
+from weather.sweep import sweep_take_profits
 
 SIGNAL_LOG_PATH = Path("experiment") / "logs" / "weather_signals.log"
 
@@ -239,6 +240,15 @@ def _run_cycle(args: argparse.Namespace, log: logging.Logger) -> int:
         funder=os.getenv("POLYMARKET_FUNDER") or None,
         signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
     )
+
+    # Ensure a GTC take-profit sell is resting on every open weather NO position
+    # before we consider new entries. Missing TPs happen when the buy rested on
+    # the book (status=live) rather than matching immediately at place-time.
+    try:
+        sweep_take_profits(client, os.getenv("POLYMARKET_FUNDER") or "", dry_run=False)
+    except Exception as exc:
+        log.warning("Take-profit sweep failed: %s", exc)
+
     balance = get_usdc_balance(client)
     if args.max_balance is not None:
         balance = min(balance, args.max_balance)
