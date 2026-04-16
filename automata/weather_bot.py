@@ -142,15 +142,17 @@ def _compute_maker_buy_price(
     join_bid_ticks: int,
 ) -> float | None:
     """
-    Build a buy quote within price limits. Will pay up to the ask price but
-    never above max_no_price (0.998). Rounds UP to the tick so the signed
-    price still crosses the spread when the raw ask falls between ticks.
+    Build a buy quote within price limits. Quotes ONE TICK above the best ask
+    to aggressively cross the spread and win the race against other takers.
+    Ceils to tick first (handles between-tick asks), then adds one tick, then
+    clamps to max_no_price (0.998).
     """
     if best_ask is None:
         return None  # no counterparty — passive fallback will handle this
     quote = min(best_ask, max_no_price)
     quote = round(_round_up_to_tick(quote, tick_size), 6)
-    quote = min(quote, max_no_price)  # ceil must not push us past the cap
+    quote = round(quote + tick_size, 6)       # 1 tick over ask for aggressive take
+    quote = min(quote, max_no_price)          # respect the hard cap
     if quote < min_no_price:
         return None
     return quote
