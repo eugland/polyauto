@@ -110,6 +110,103 @@ def fetch_coords_for_stations(icao_list: list[str]) -> dict[str, tuple[float, fl
     return results
 
 
+def fetch_open_meteo_archive_high(lat: float, lon: float, date_str: str, unit: str = "C") -> float | None:
+    """Historical daily max from Open-Meteo archive (for past dates)."""
+    try:
+        resp = requests.get(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "temperature_2m_max",
+                "temperature_unit": "fahrenheit" if unit == "F" else "celsius",
+                "timezone": "auto",
+                "start_date": date_str,
+                "end_date": date_str,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        vals = (resp.json().get("daily") or {}).get("temperature_2m_max") or []
+        return float(vals[0]) if vals and vals[0] is not None else None
+    except Exception:
+        return None
+
+
+def fetch_noaa_high(lat: float, lon: float, date_str: str, unit: str = "C") -> float | None:
+    """
+    NOAA NWS daily high for (lat, lon) on date_str. US-only — returns None
+    for points outside US forecast coverage.
+    """
+    try:
+        pr = requests.get(
+            f"https://api.weather.gov/points/{lat},{lon}",
+            headers={"User-Agent": "weather-bot/1.0"},
+            timeout=10,
+        )
+        pr.raise_for_status()
+        forecast_url = ((pr.json() or {}).get("properties") or {}).get("forecast")
+        if not forecast_url:
+            return None
+        fr = requests.get(forecast_url, headers={"User-Agent": "weather-bot/1.0"}, timeout=10)
+        fr.raise_for_status()
+        periods = ((fr.json() or {}).get("properties") or {}).get("periods") or []
+    except Exception:
+        return None
+
+    highs: list[float] = []
+    for p in periods:
+        start = str(p.get("startTime") or "")
+        if not start.startswith(date_str):
+            continue
+        if not p.get("isDaytime"):
+            continue
+        temp = p.get("temperature")
+        t_unit = (p.get("temperatureUnit") or "F").upper()
+        if temp is None:
+            continue
+        try:
+            temp_f = float(temp)
+        except (TypeError, ValueError):
+            continue
+        # NOAA returns F; convert if market unit is C.
+        if t_unit == "F" and unit == "C":
+            temp_f = (temp_f - 32) * 5.0 / 9.0
+        elif t_unit == "C" and unit == "F":
+            temp_f = temp_f * 9.0 / 5.0 + 32
+        highs.append(temp_f)
+    return max(highs) if highs else None
+
+
+def fetch_city_coords(city: str) -> tuple[float, float] | None:
+    """
+    Resolve a city name to (lat, lon) via Open-Meteo's free geocoding API.
+    Reliable for international cities — unlike aviationweather.gov which
+    rate-limits and has spotty coverage outside the US.
+    """
+    try:
+        resp = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city, "count": 1, "language": "en", "format": "json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+    results = data.get("results") or []
+    if not results:
+        return None
+    first = results[0]
+    lat, lon = first.get("latitude"), first.get("longitude")
+    if lat is None or lon is None:
+        return None
+    try:
+        return float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None
+
+
 # ── Forecast high for a specific date ────────────────────────────────────────
 
 def fetch_open_meteo_high(lat: float, lon: float, date_str: str, unit: str = "C") -> float | None:
