@@ -57,8 +57,14 @@ python -m experiment.crypto_5m_scanner
 python -m experiment.crypto_5m_scanner --max-price 0.03 --poll 5
 
 # Crypto 5m stats UI — http://localhost:5051 (also LAN-accessible, IP shown on startup)
+# Tabs: ETH 1H Bot | Weather Bets | BTC 5m BS Test | ETH 5m Bot | Highest Temp
 python -m experiment.crypto_5m_stats
 python -m experiment.crypto_5m_stats --port 5051
+
+# Overnight highest-temp market collector — polls Gamma API every N min, writes experiment/temp_market.db
+python -m experiment.temp_market_collector            # poll every 2 min
+python -m experiment.temp_market_collector --poll 5   # poll every 5 min
+python -m experiment.temp_market_collector --once     # one pass then exit
 
 # Live order-book terminal viewer (WebSocket stream, multi-asset)
 python -m experiment.crypto_5m_orderbook_ws --assets BTC ETH SOL

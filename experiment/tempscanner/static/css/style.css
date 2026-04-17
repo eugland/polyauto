@@ -1,0 +1,20 @@
+body { font-size: 0.875rem; }
+
+.stat-box {
+  background: var(--bs-body-bg);
+  border: 1px solid var(--bs-border-color);
+  border-radius: .5rem;
+  padding: .6rem 1rem;
+  min-width: 110px;
+}
+.stat-val { font-size: 1.1rem; font-weight: 600; }
+.pos { color: #4ade80; }
+.neg { color: #f87171; }
+.neu { color: var(--bs-secondary-color); }
+
+.table > :not(caption) > * > * { padding: .3rem .6rem; }
+thead th { background: var(--bs-body-bg); font-size: 0.8rem; font-weight: 600; color: var(--bs-secondary-color); }
+
+.badge-in   { background: #16a34a; }
+.badge-high { background: #ca8a04; }
+.badge-low  { background: #475569; }

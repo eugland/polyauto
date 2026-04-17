@@ -40,6 +40,12 @@
         ETH 5m Bot
       </button>
     </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-temp" type="button"
+              onclick="loadTempMarket()">
+        Highest Temp
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content">
@@ -254,9 +260,74 @@
       </div>
     </div>
 
+    <!-- HIGHEST TEMP ========================= -->
+    <div class="tab-pane fade" id="tab-temp" role="tabpanel">
+
+      <!-- session selector -->
+      <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+        <select id="temp-session-select" class="form-select form-select-sm" style="max-width:320px"
+                onchange="loadTempSession()">
+          <option value="">— select city / date —</option>
+        </select>
+        <small class="text-muted" id="temp-meta"></small>
+      </div>
+
+      <!-- summary stat boxes -->
+      <div class="d-flex flex-wrap gap-3 mb-3" id="temp-stats"></div>
+
+      <!-- bucket table + weather panel side by side -->
+      <div class="row g-3 mb-3">
+        <div class="col-lg-8">
+          <div class="card h-100">
+            <div class="card-header fw-bold">Bucket Order Book (latest snapshot)</div>
+            <div class="card-body p-0">
+              <div style="max-height:400px;overflow-y:auto">
+                <table class="table table-sm mb-0" id="temp-bucket-table">
+                  <thead style="position:sticky;top:0;z-index:1">
+                    <tr>
+                      <th>Bucket</th><th>Dir</th>
+                      <th>Best Bid</th><th>Best Ask</th><th>Mid</th><th>Spread</th>
+                      <th>vs Obs</th><th>vs Forecast</th><th>Signal</th>
+                    </tr>
+                  </thead>
+                  <tbody id="temp-bucket-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card h-100">
+            <div class="card-header fw-bold">Weather</div>
+            <div class="card-body">
+              <div id="temp-weather-panel" class="text-muted small">No data yet.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- mid-price time series chart -->
+      <div class="card mb-3">
+        <div class="card-header fw-bold">Bucket Mid-Price Over Time (00:00 → 09:00 local)</div>
+        <div class="card-body">
+          <canvas id="temp-chart" style="max-height:360px"></canvas>
+        </div>
+      </div>
+
+      <!-- strategy P/L simulation -->
+      <div class="card mb-3">
+        <div class="card-header fw-bold">Strategy P/L Simulation (enter first snapshot → exit latest)</div>
+        <div class="card-body">
+          <canvas id="temp-pnl-chart" style="max-height:280px"></canvas>
+        </div>
+      </div>
+
+    </div><!-- /tab-temp -->
+
   </div><!-- /tab-content -->
 </div><!-- /container -->
 
 <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script src="{{ url_for('static', filename='js/temp_market.js') }}"></script>
 </body>
 </html>

@@ -12,6 +12,8 @@ from .database import (
     query_crypto_stats,
     query_eth_stats,
     query_eth5min_stats,
+    query_temp_market_cities,
+    query_temp_market_session,
     query_weather_stats,
     read_bs_log_tail,
     read_eth_log_tail,
@@ -20,7 +22,10 @@ from .database import (
 )
 
 
-def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log_path: str, eth5min_db_path: str = "", eth5min_log_path: str = "") -> Flask:
+TEMP_MARKET_DB_DEFAULT = str(Path(__file__).resolve().parent.parent / "temp_market.db")
+
+
+def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log_path: str, eth5min_db_path: str = "", eth5min_log_path: str = "", temp_market_db_path: str = "") -> Flask:
     """Create and configure the Flask app."""
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
@@ -29,8 +34,9 @@ def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log
     app.config["BETS_DB_PATH"]     = bets_db_path
     app.config["ETH_LOG_PATH"]     = eth_log_path
     app.config["BS_LOG_PATH"]      = bs_log_path
-    app.config["ETH5MIN_DB_PATH"]  = eth5min_db_path
-    app.config["ETH5MIN_LOG_PATH"] = eth5min_log_path
+    app.config["ETH5MIN_DB_PATH"]    = eth5min_db_path
+    app.config["ETH5MIN_LOG_PATH"]   = eth5min_log_path
+    app.config["TEMP_MARKET_DB_PATH"] = temp_market_db_path or TEMP_MARKET_DB_DEFAULT
 
     @app.route("/")
     def index():
@@ -79,5 +85,17 @@ def create_app(crypto_db_path: str, bets_db_path: str, eth_log_path: str, bs_log
         outcome = data.get("outcome") or None
         update_weather_bet(app.config["BETS_DB_PATH"], bet_id, resolved_temp, outcome)
         return jsonify({"ok": True})
+
+    @app.route("/api/temp-market/cities")
+    def api_temp_market_cities():
+        return jsonify(query_temp_market_cities(app.config["TEMP_MARKET_DB_PATH"]))
+
+    @app.route("/api/temp-market/session")
+    def api_temp_market_session():
+        city = request.args.get("city", "")
+        date = request.args.get("date", "")
+        if not city or not date:
+            return jsonify({"error": "city and date params required"}), 400
+        return jsonify(query_temp_market_session(app.config["TEMP_MARKET_DB_PATH"], city, date))
 
     return app

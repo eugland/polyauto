@@ -6,3 +6,5 @@ py-clob-client>=0.20.0
 timezonefinder>=6.0.0
 web3>=7.0.0
 websockets>=13.0
+duckdb>=1.0.0
+pytz>=2024.1

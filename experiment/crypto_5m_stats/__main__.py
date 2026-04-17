@@ -6,12 +6,13 @@ from pathlib import Path
 
 from .app import create_app
 
-CRYPTO_DB_PATH   = os.path.join("experiment", "crypto_5m.db")
-BETS_DB_PATH     = str(Path(__file__).resolve().parent.parent.parent / "bets.db")
-ETH_LOG_PATH     = os.path.join("experiment", "logs", "eth_1h.log")
-BS_LOG_PATH      = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
-ETH5MIN_DB_PATH  = os.path.join("experiment", "eth_5min.db")
-ETH5MIN_LOG_PATH = os.path.join("experiment", "logs", "eth_5min.log")
+CRYPTO_DB_PATH    = os.path.join("experiment", "crypto_5m.db")
+BETS_DB_PATH      = str(Path(__file__).resolve().parent.parent.parent / "bets.db")
+ETH_LOG_PATH      = os.path.join("experiment", "logs", "eth_1h.log")
+BS_LOG_PATH       = os.path.join("experiment", "logs", "crypto_5m_scanner.log")
+ETH5MIN_DB_PATH   = os.path.join("experiment", "eth_5min.db")
+ETH5MIN_LOG_PATH  = os.path.join("experiment", "logs", "eth_5min.log")
+TEMP_MARKET_DB_PATH = os.path.join("experiment", "temp_market.db")
 
 
 def main() -> None:
@@ -35,6 +36,11 @@ def main() -> None:
         default=ETH5MIN_DB_PATH,
         help="Path to eth_5min.db",
     )
+    parser.add_argument(
+        "--temp-market-db",
+        default=TEMP_MARKET_DB_PATH,
+        help="Path to temp_market.db",
+    )
     args = parser.parse_args()
 
     # Get local IP for LAN access
@@ -46,7 +52,7 @@ def main() -> None:
 
     print(f"  Stats UI:  http://localhost:{args.port}")
     print(f"  On LAN:    http://{local_ip}:{args.port}")
-    print(f"  Tabs:      ETH 1H Bot | Weather Bets | BTC 5m BS Test | ETH 5m Bot")
+    print(f"  Tabs:      ETH 1H Bot | Weather Bets | BTC 5m BS Test | ETH 5m Bot | Highest Temp")
 
     app = create_app(
         crypto_db_path=args.crypto_db,
@@ -55,6 +61,7 @@ def main() -> None:
         bs_log_path=BS_LOG_PATH,
         eth5min_db_path=args.eth5min_db,
         eth5min_log_path=ETH5MIN_LOG_PATH,
+        temp_market_db_path=args.temp_market_db,
     )
     app.run(host=args.host, port=args.port, debug=False)
 

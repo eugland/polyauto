@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Temp Market Scanner</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="container-fluid py-3">
+
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <h5 class="mb-0">🌡 Temp Market Scanner</h5>
+    <div class="d-flex gap-2 align-items-center">
+      <small class="text-muted" id="last-refresh"></small>
+      <button class="btn btn-sm btn-outline-secondary" onclick="refresh()">↺ Refresh</button>
+    </div>
+  </div>
+
+  <!-- session selector -->
+  <div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+    <select id="session-select" class="form-select form-select-sm" style="max-width:340px"
+            onchange="loadSession()">
+      <option value="">— select city / date —</option>
+    </select>
+    <small class="text-muted" id="session-meta"></small>
+  </div>
+
+  <!-- stat boxes -->
+  <div class="d-flex flex-wrap gap-3 mb-3" id="stat-boxes"></div>
+
+  <!-- bucket table + weather -->
+  <div class="row g-3 mb-3">
+    <div class="col-xl-8">
+      <div class="card h-100">
+        <div class="card-header fw-semibold">Bucket Order Book <small class="text-muted ms-2" id="book-ts"></small></div>
+        <div class="card-body p-0">
+          <div style="overflow-y:auto;max-height:420px">
+            <table class="table table-sm mb-0">
+              <thead style="position:sticky;top:0;z-index:1">
+                <tr>
+                  <th>Bucket</th>
+                  <th class="text-end">Best Bid</th>
+                  <th class="text-end">Best Ask</th>
+                  <th class="text-end">Mid</th>
+                  <th class="text-end">Spread</th>
+                  <th class="text-center">vs Obs</th>
+                  <th class="text-center">vs Forecast</th>
+                  <th class="text-center">Signal</th>
+                </tr>
+              </thead>
+              <tbody id="bucket-body">
+                <tr><td colspan="8" class="text-muted text-center py-3">Select a session above</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-xl-4">
+      <div class="card h-100">
+        <div class="card-header fw-semibold">Weather</div>
+        <div class="card-body" id="weather-panel">
+          <span class="text-muted small">No data yet.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- mid-price chart -->
+  <div class="card mb-3">
+    <div class="card-header fw-semibold">Bucket Mid-Price Over Time</div>
+    <div class="card-body">
+      <canvas id="mid-chart" style="max-height:360px"></canvas>
+    </div>
+  </div>
+
+  <!-- P/L sim chart -->
+  <div class="card mb-3">
+    <div class="card-header fw-semibold">Strategy P/L Simulation
+      <small class="text-muted ms-2">enter best-mid bucket at first snapshot ask → mark-to-market</small>
+    </div>
+    <div class="card-body">
+      <canvas id="pnl-chart" style="max-height:260px"></canvas>
+    </div>
+  </div>
+
+</div>
+<script src="/static/js/app.js"></script>
+</body>
+</html>
