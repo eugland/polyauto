@@ -4,6 +4,7 @@ from __future__ import annotations
 from flask import Flask, jsonify, render_template, request
 
 from .database import query_cities, query_session
+from .singapore import fetch_singapore_chart
 
 
 def create_app(db_path: str) -> Flask:
@@ -25,5 +26,13 @@ def create_app(db_path: str) -> Flask:
         if not city or not date:
             return jsonify({"error": "city and date params required"}), 400
         return jsonify(query_session(app.config["DB_PATH"], city, date))
+
+    @app.route("/singapore")
+    def singapore():
+        return render_template("singapore.html")
+
+    @app.route("/api/singapore-chart")
+    def api_singapore_chart():
+        return jsonify(fetch_singapore_chart())
 
     return app

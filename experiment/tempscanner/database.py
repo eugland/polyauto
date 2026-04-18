@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 
 
 def query_cities(db_path: str) -> dict:
@@ -9,7 +10,7 @@ def query_cities(db_path: str) -> dict:
         return {"error": "DB not found — start the scanner first.", "sessions": []}
     try:
         import duckdb
-        con = duckdb.connect(db_path, read_only=True)
+        con = duckdb.connect(db_path, read_only=False)
         rows = con.execute("""
             SELECT city, event_date, COUNT(*) AS buckets,
                    MAX(discovered_at) AS last_seen
@@ -33,7 +34,7 @@ def query_session(db_path: str, city: str, event_date: str) -> dict:
         return {"error": "DB not found — start the scanner first."}
     try:
         import duckdb
-        con = duckdb.connect(db_path, read_only=True)
+        con = duckdb.connect(db_path, read_only=False)
 
         buckets_raw = con.execute("""
             SELECT condition_id, question, bucket_lo, bucket_hi, unit, direction,
