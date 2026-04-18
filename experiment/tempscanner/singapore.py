@@ -113,7 +113,7 @@ def _fetch_event_markets(date_str: str) -> list[dict]:
     return results
 
 
-def _fetch_clob_history(token_id: str, start_ts: int, end_ts: int, fidelity: int = 5) -> list[dict]:
+def _fetch_clob_history(token_id: str, start_ts: int, end_ts: int, fidelity: int = 30) -> list[dict]:
     """Return [{x: sg_hour, y: probability_pct}, ...] from CLOB price history."""
     log.info("[CLOB] GET prices-history market=%s startTs=%d endTs=%d fidelity=%d",
              token_id, start_ts, end_ts, fidelity)
@@ -143,7 +143,11 @@ def _fetch_clob_history(token_id: str, start_ts: int, end_ts: int, fidelity: int
 
 
 def fetch_singapore_chart(days: int = 4) -> dict:
-    """Return probability chart data for Singapore's top-3 temp buckets, live from Polymarket."""
+    """Return probability chart data for Singapore's top-3 temp buckets, live from Polymarket.
+
+    Each day finds its OWN highest-probable bucket (slot 0), so slot −1/+1 are relative
+    to that day's peak — not pinned to today's temperature range.
+    """
     now_utc = datetime.now(timezone.utc)
     now_sg = now_utc + timedelta(hours=SG_OFFSET_H)
     today_sg = now_sg.strftime("%Y-%m-%d")
@@ -152,54 +156,65 @@ def fetch_singapore_chart(days: int = 4) -> dict:
         (datetime.strptime(today_sg, "%Y-%m-%d") - timedelta(days=i)).strftime("%Y-%m-%d")
         for i in range(days)
     ]
+    day_labels = ["Today", "Yesterday", "−2 days", "−3 days"][:days]
 
-    today_markets = _fetch_event_markets(today_sg)
+    # Fetch markets for every date
+    date_markets: dict[str, list[dict]] = {}
+    for date in dates:
+        date_markets[date] = _fetch_event_markets(date)
+
+    today_markets = date_markets.get(today_sg, [])
     if not today_markets:
         return {"error": f"No Singapore market found on Polymarket for {today_sg}."}
 
-    best_idx = max(range(len(today_markets)), key=lambda i: today_markets[i]["mid"] or 0)
-
-    slot_map: dict[int, dict] = {}
-    if best_idx > 0:
-        slot_map[-1] = today_markets[best_idx - 1]
-    slot_map[0] = today_markets[best_idx]
-    if best_idx < len(today_markets) - 1:
-        slot_map[1] = today_markets[best_idx + 1]
-
-    # Prefetch past days' market lists
-    date_markets: dict[str, list[dict]] = {today_sg: today_markets}
-    for date in dates[1:]:
-        date_markets[date] = _fetch_event_markets(date)
-
+    # Initialise slot containers
     result: dict = {
         "city": "Singapore",
         "today": today_sg,
         "dates": dates,
-        "day_labels": ["Today", "Yesterday", "−2 days", "−3 days"][:days],
-        "slots": {},
+        "day_labels": day_labels,
+        "slots": {"-1": {"days": {}}, "0": {"days": {}}, "1": {"days": {}}},
     }
 
-    for slot, ref in slot_map.items():
-        slot_lo = ref["lo"]
-        days_data: dict[str, list] = {}
+    # Set today's slot labels + current_prob from today's peak
+    today_best = max(range(len(today_markets)), key=lambda i: today_markets[i]["mid"] or 0)
+    for offset, slot_key in [(-1, "-1"), (0, "0"), (1, "1")]:
+        idx = today_best + offset
+        if 0 <= idx < len(today_markets):
+            m = today_markets[idx]
+            result["slots"][slot_key]["label"] = _bucket_label(m["lo"], m["hi"], m["unit"])
+            result["slots"][slot_key]["current_prob"] = round((m["mid"] or 0) * 100, 2)
+        else:
+            result["slots"][slot_key]["label"] = "N/A"
+            result["slots"][slot_key]["current_prob"] = 0
 
-        for date in dates:
-            mkt = next((m for m in date_markets.get(date, []) if m["lo"] == slot_lo), None)
-            if not mkt or not mkt["yes_token_id"]:
-                days_data[date] = []
-                continue
+    # For each day: find that day's own peak, fetch history for its ±1/0 buckets
+    for date, label in zip(dates, day_labels):
+        mkts = date_markets.get(date, [])
+        start_ts, end_ts = _sg_window_utc(date)
+        if date == today_sg:
+            end_ts = min(end_ts, int(now_utc.timestamp()))
 
-            start_ts, end_ts = _sg_window_utc(date)
-            if date == today_sg:
-                end_ts = min(end_ts, int(now_utc.timestamp()))
+        if not mkts:
+            for slot_key in ["-1", "0", "1"]:
+                result["slots"][slot_key]["days"][date] = {"points": [], "temp_label": "no data"}
+            continue
 
-            days_data[date] = _fetch_clob_history(mkt["yes_token_id"], start_ts, end_ts)
+        best = max(range(len(mkts)), key=lambda i: mkts[i]["mid"] or 0)
+        log.info("[Chart] %s (%s): peak bucket = %s (mid=%.3f)",
+                 label, date, _bucket_label(mkts[best]["lo"], mkts[best]["hi"], mkts[best]["unit"]),
+                 mkts[best]["mid"] or 0)
 
-        result["slots"][str(slot)] = {
-            "label": _bucket_label(ref["lo"], ref["hi"], ref["unit"]),
-            "bucket_lo": slot_lo,
-            "current_prob": round((ref["mid"] or 0) * 100, 2),
-            "days": days_data,
-        }
+        for offset, slot_key in [(-1, "-1"), (0, "0"), (1, "1")]:
+            idx = best + offset
+            if 0 <= idx < len(mkts):
+                mkt = mkts[idx]
+                temp_label = _bucket_label(mkt["lo"], mkt["hi"], mkt["unit"])
+                pts = _fetch_clob_history(mkt["yes_token_id"], start_ts, end_ts) \
+                    if mkt["yes_token_id"] else []
+            else:
+                temp_label = "N/A"
+                pts = []
+            result["slots"][slot_key]["days"][date] = {"points": pts, "temp_label": temp_label}
 
     return result

@@ -86,14 +86,16 @@ function buildChart(canvasId, slotData, dates, dayLabels) {
 
   const datasets = dates.map((date, i) => {
     const palette = DAY_PALETTE[i] || DAY_PALETTE[DAY_PALETTE.length - 1];
-    const pts = slotData.days[date] || [];
+    const dayData = slotData.days[date] || {};
+    const pts = dayData.points || [];
+    const tempLabel = dayData.temp_label || date;
     return {
-      label: `${dayLabels[i]}  (${date})`,
+      label: `${dayLabels[i]}  ${tempLabel}`,
       data: pts,
       borderColor: palette.border,
       backgroundColor: palette.bg,
       borderWidth: palette.width,
-      pointRadius: pts.length > 40 ? 2 : 4,
+      pointRadius: pts.length > 20 ? 3 : 5,
       pointHoverRadius: 6,
       showLine: true,
       tension: 0.25,
@@ -129,7 +131,6 @@ function buildChart(canvasId, slotData, dates, dayLabels) {
           grid: { color: 'rgba(255,255,255,0.07)' },
         },
         y: {
-          min: 0, max: 100,
           title: { display: true, text: 'YES probability (%)' },
           ticks: { callback: v => v + '%' },
           grid: { color: 'rgba(255,255,255,0.07)' },
