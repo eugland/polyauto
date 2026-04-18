@@ -13,6 +13,7 @@ else
 fi
 
 sudo cp "$REPO_DIR/conf/local-gateway.conf" /etc/nginx/sites-available/local-gateway.conf
+sudo sed -i '1s/^\xEF\xBB\xBF//' /etc/nginx/sites-available/local-gateway.conf
 sudo ln -sf /etc/nginx/sites-available/local-gateway.conf /etc/nginx/sites-enabled/local-gateway.conf
 sudo rm -f /etc/nginx/sites-enabled/default
 
