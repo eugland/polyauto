@@ -1,18 +1,11 @@
-﻿{
+{
   "apps": [
     {
-      "name": "Temp Scanner",
+      "name": "ChakShiva",
       "kind": "configured",
-      "description": "Temperature scanner frontend",
-      "route": "/tempscanner/",
-      "target": "http://127.0.0.1:8001"
-    },
-    {
-      "name": "Weather",
-      "kind": "configured",
-      "description": "Weather service",
-      "route": "/weather/",
-      "target": "http://127.0.0.1:5001"
+      "description": "Market dashboard service",
+      "route": "/stock/",
+      "target": "http://127.0.0.1:8081"
     }
   ]
 }
