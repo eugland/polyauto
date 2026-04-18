@@ -1,0 +1,18 @@
+﻿{
+  "apps": [
+    {
+      "name": "Temp Scanner",
+      "kind": "configured",
+      "description": "Temperature scanner frontend",
+      "route": "/tempscanner/",
+      "target": "http://127.0.0.1:8001"
+    },
+    {
+      "name": "Weather",
+      "kind": "configured",
+      "description": "Weather service",
+      "route": "/weather/",
+      "target": "http://127.0.0.1:5001"
+    }
+  ]
+}

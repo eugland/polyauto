@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Local Gateway</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="bg glow-a"></div>
+  <div class="bg glow-b"></div>
+  <main class="shell">
+    <header class="hero">
+      <p class="pill">Nginx Gateway • Port 5051</p>
+      <h1>Service Launchpad</h1>
+      <p class="lead">
+        Edit <code>html/apps.json</code> for homepage cards and
+        edit <code>conf/local-gateway.conf</code> to map proxy routes.
+      </p>
+    </header>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Hosted Apps</h2>
+        <a class="hint" href="/apps.json" target="_blank" rel="noreferrer">View apps.json</a>
+      </div>
+      <div id="apps-grid" class="grid"></div>
+    </section>
+  </main>
+
+  <template id="app-card-template">
+    <article class="card">
+      <div class="row">
+        <h3 class="name"></h3>
+        <span class="tag"></span>
+      </div>
+      <p class="desc"></p>
+      <a class="route" href=""></a>
+      <p class="target"></p>
+    </article>
+  </template>
+
+  <script src="/app.js"></script>
+</body>
+</html>
