@@ -79,7 +79,26 @@ def run_eth_daemon(
         fetch_and_parse,
         run_eth_1h,
     )
-    from automata.eth_15m import _maybe_run_replayer_redeem
+    import subprocess
+    from datetime import datetime, timezone
+
+    _last_redeem_attempt_at: datetime | None = None
+
+    def _maybe_run_replayer_redeem(cmd: str | None, min_interval_seconds: int = 60) -> None:
+        nonlocal _last_redeem_attempt_at
+        if not cmd:
+            return
+        now = datetime.now(timezone.utc)
+        if _last_redeem_attempt_at is not None:
+            if (now - _last_redeem_attempt_at).total_seconds() < min_interval_seconds:
+                return
+        _last_redeem_attempt_at = now
+        try:
+            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            if proc.returncode != 0:
+                log.warning("[eth] redeem-cmd exited %d: %s", proc.returncode, proc.stderr[:200])
+        except Exception as exc:
+            log.warning("[eth] redeem-cmd failed: %s", exc)
 
     last_redeem_cmd_at = 0.0
     next_redeem_due = 0.0
