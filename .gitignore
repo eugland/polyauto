@@ -74,5 +74,6 @@ Thumbs.db
 
 # Project data & logs
 *.db
+*.db.wal
 *.log
 experiment/cache/
