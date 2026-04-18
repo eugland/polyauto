@@ -61,10 +61,18 @@ function setChart(id, cfg) {
   charts[id] = new Chart(document.getElementById(id).getContext("2d"), cfg);
 }
 
+function withBasePath(url) {
+  if (!url || !url.startsWith("/")) return url;
+  // When served behind nginx at /stock/, keep API calls under that prefix.
+  const p = window.location.pathname || "/";
+  if (p === "/stock" || p.startsWith("/stock/")) return "/stock" + url;
+  return url;
+}
+
 // ── fetch helper ──────────────────────────────────────────────────────────
 async function fetchJSON(url) {
   try {
-    const r = await fetch(url);
+    const r = await fetch(withBasePath(url));
     if (!r.ok) throw new Error(r.status);
     return await r.json();
   } catch (e) {
