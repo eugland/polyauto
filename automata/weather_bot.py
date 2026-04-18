@@ -60,7 +60,9 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 load_dotenv()
 
-_LOG_FILE = Path(__file__).resolve().parent.parent / "automata.log"
+_LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+_LOGS_DIR.mkdir(exist_ok=True)
+_LOG_FILE = _LOGS_DIR / "automata.log"
 _file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
 _file_handler.setFormatter(logging.Formatter(
     "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",

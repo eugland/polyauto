@@ -60,8 +60,9 @@ MIN_MINUTES  = 0       # allow entry from expiry up to MAX_MINUTES remaining
 MAX_MINUTES  = 7       # only enter in the last 7 minutes before expiry
 REDEEM_ONLY_MODE = True  # hold to resolution/redeem; no TP sell placement
 
-DB_PATH  = Path(__file__).resolve().parent.parent / "bets.db"
-LOG_DIR  = Path(__file__).resolve().parent.parent / "experiment" / "logs"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+DB_PATH  = _REPO_ROOT / "db" / "bets.db"
+LOG_DIR  = _REPO_ROOT / "logs"
 LOG_FILE = LOG_DIR / "eth_1h.log"
 
 _file_log_initialized = False

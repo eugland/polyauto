@@ -76,4 +76,6 @@ Thumbs.db
 *.db
 *.db.wal
 *.log
+db/
+logs/
 experiment/cache/

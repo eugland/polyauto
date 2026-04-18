@@ -1,6 +1,6 @@
 """
 Market discovery, book snapshots, and weather collection.
-All data is written to a DuckDB file (default: experiment/tempscanner/data.db).
+All data is written to a DuckDB file (default: db/tempscanner.db).
 """
 from __future__ import annotations
 

@@ -16,7 +16,8 @@ import socket
 import threading
 from pathlib import Path
 
-DB_DEFAULT = str(Path(__file__).resolve().parent / "data.db")
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+DB_DEFAULT = str(_REPO_ROOT / "db" / "tempscanner.db")
 
 
 def main() -> None:

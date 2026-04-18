@@ -79,7 +79,13 @@ experiment/
     static/
     data.db                 # DuckDB (created on first run)
 
-bets.db           # SQLite DB (weather + ETH 1H placed bets + outcomes)
+db/               # All database files (gitignored, created on first run)
+  bets.db         # SQLite — weather + ETH 1H placed bets + outcomes
+  temp_market.db  # DuckDB — standalone temp_market_collector snapshots
+  tempscanner.db  # DuckDB — tempscanner package data
+logs/             # All log files (gitignored, created on first run)
+  eth_1h.log
+  automata.log
 ```
 
 **Data flow (ETH 1H):** `eth.py` → `eth_1h.run_eth_1h()` polls Gamma API for the current-hour slug → checks `minutes_remaining` → if in window (0–7 min) and price ≥ `min_bid` → places buy via `client.place_no_order()` → `_settle_resolved_trades()` handles redeem on subsequent cycles.
