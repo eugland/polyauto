@@ -8,7 +8,7 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.1/dist/chartjs-chart-matrix.min.js"></script>
-  <link rel="stylesheet" href="static/css/style.css?v=light2">
+  <link rel="stylesheet" href="static/css/style.css?v=light4">
 </head>
 <body>
 <div class="container-fluid py-3">
@@ -26,17 +26,60 @@
   <!-- Row 0: Econ banner -->
   <div id="econ-banner" class="alert alert-secondary py-2 mb-3 small" style="display:none"></div>
 
-  <!-- Row 1: Macro tiles | Breadth | VIX term -->
+  <!-- Row 0b: Fear & Greed | SPY Volume Signal -->
   <div class="row g-3 mb-3">
-    <div class="col-xl-6">
+    <div class="col-xl-5">
       <div class="card h-100">
-        <div class="card-header fw-semibold">Macro Pulse</div>
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span>Fear &amp; Greed Index</span>
+          <small class="text-muted" id="fg-label"></small>
+        </div>
         <div class="card-body">
-          <div id="macro-tiles" class="d-flex flex-wrap gap-2"></div>
+          <div class="d-flex align-items-center gap-3">
+            <div id="fg-gauge-wrap" style="width:160px; height:160px; position:relative;">
+              <canvas id="fg-gauge"></canvas>
+              <div id="fg-score" class="fg-score-overlay">—</div>
+            </div>
+            <div class="flex-grow-1">
+              <div id="fg-components" class="small"></div>
+            </div>
+          </div>
+          <div class="mt-3 pt-2 border-top">
+            <div class="fw-semibold small mb-2">Macro Pulse</div>
+            <div id="macro-tiles" class="d-flex flex-wrap gap-2"></div>
+          </div>
         </div>
       </div>
     </div>
-    <div class="col-xl-3">
+    <div class="col-xl-7">
+      <div class="card h-100">
+        <div class="card-header fw-semibold">
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <span>SPY Forward Volume Signal (OBV)</span>
+            <small id="spy-vol-signal"></small>
+          </div>
+          <div class="d-flex flex-wrap gap-2 mt-2 align-items-center">
+            <div class="btn-group btn-group-sm" role="group">
+              <button type="button" class="btn btn-outline-secondary active" data-obv-view="current">Current</button>
+              <button type="button" class="btn btn-outline-secondary" data-obv-view="weekly">Weekly</button>
+              <button type="button" class="btn btn-outline-secondary" data-obv-view="intraday">Intraday</button>
+            </div>
+            <input type="date" class="form-control form-control-sm" id="spy-obv-start" style="max-width: 150px;">
+            <input type="date" class="form-control form-control-sm" id="spy-obv-end" style="max-width: 150px;">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="apply-spy-obv-range">Apply</button>
+          </div>
+        </div>
+        <div class="card-body">
+          <canvas id="spy-obv-chart" style="height:280px; max-height:280px"></canvas>
+          <div id="spy-vol-meta" class="small text-muted mt-2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 1: Breadth | VIX term -->
+  <div class="row g-3 mb-3">
+    <div class="col-xl-6">
       <div class="card h-100">
         <div class="card-header fw-semibold">S&P 500 Breadth</div>
         <div class="card-body">
@@ -45,7 +88,7 @@
         </div>
       </div>
     </div>
-    <div class="col-xl-3">
+    <div class="col-xl-6">
       <div class="card h-100">
         <div class="card-header fw-semibold">VIX Term Structure
           <small class="text-muted ms-2" id="vix-contango"></small>
@@ -94,23 +137,28 @@
 
   <!-- Row 3: leveraged-ETF tracking error -->
   <div class="row g-3 mb-3">
-    <div class="col-xl-6">
+    <div class="col-12">
       <div class="card h-100">
-        <div class="card-header fw-semibold">TSLL vs synthetic 2xTSLA
-          <small class="text-muted ms-2" id="tsll-te"></small>
+        <div class="card-header fw-semibold">
+          <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <span>TSLL/TSLZ vs synthetic TSLA drift</span>
+            <small class="text-muted" id="tsl-drift-meta">
+              <span id="tsll-te"></span> · <span id="tslz-te"></span>
+            </small>
+          </div>
+          <div class="d-flex flex-wrap gap-2 mt-2 align-items-center">
+            <div class="btn-group btn-group-sm" role="group">
+              <button type="button" class="btn btn-outline-secondary active" data-drift-view="current">Current</button>
+              <button type="button" class="btn btn-outline-secondary" data-drift-view="weekly">Weekly</button>
+              <button type="button" class="btn btn-outline-secondary" data-drift-view="intraday">Intraday</button>
+            </div>
+            <input type="date" class="form-control form-control-sm" id="tsl-drift-start" style="max-width: 150px;">
+            <input type="date" class="form-control form-control-sm" id="tsl-drift-end" style="max-width: 150px;">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="apply-tsl-drift-range">Apply</button>
+          </div>
         </div>
         <div class="card-body">
-          <canvas id="tsll-te-chart" style="max-height:240px"></canvas>
-        </div>
-      </div>
-    </div>
-    <div class="col-xl-6">
-      <div class="card h-100">
-        <div class="card-header fw-semibold">TSLZ vs synthetic -1xTSLA
-          <small class="text-muted ms-2" id="tslz-te"></small>
-        </div>
-        <div class="card-body">
-          <canvas id="tslz-te-chart" style="max-height:240px"></canvas>
+          <canvas id="tsl-drift-chart" style="height:360px; max-height:360px"></canvas>
         </div>
       </div>
     </div>
@@ -190,8 +238,72 @@
     </div>
   </div>
 
-  <!-- Row 8: screener tabs -->
-  <div class="card mb-3">
+  <!-- Row 7b: dividends -->
+  <div class="row g-3 mb-3">
+    <div class="col-12">
+      <div class="card h-100">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span>Dividend &amp; Payout Snapshot</span>
+          <div class="d-flex gap-2 align-items-center">
+            <button class="btn btn-sm btn-outline-secondary"
+                    type="button"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#div-profile-panel"
+                    aria-expanded="false"
+                    aria-controls="div-profile-panel">Profiles</button>
+            <small class="text-muted" id="div-asof"></small>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="collapse mb-3" id="div-profile-panel">
+            <div class="border rounded p-2">
+              <div class="d-flex gap-2 align-items-center mb-2">
+                <select id="div-profile-select" class="form-select form-select-sm"></select>
+                <button class="btn btn-sm btn-outline-secondary" id="div-load-profile">Load</button>
+              </div>
+              <div class="d-flex gap-2 align-items-center mb-2">
+                <input id="div-profile-name" class="form-control form-control-sm" placeholder="profile name (e.g. default)">
+                <button class="btn btn-sm btn-primary" id="div-save-profile">Save</button>
+                <button class="btn btn-sm btn-outline-secondary" id="div-duplicate-profile">Duplicate</button>
+                <button class="btn btn-sm btn-outline-danger" id="div-delete-profile">Delete</button>
+              </div>
+              <textarea id="div-holdings-input" class="form-control form-control-sm"
+                        rows="8" placeholder="SYMBOL: quantity&#10;TSLL: 231"></textarea>
+              <div class="small text-muted mt-2" id="div-profile-meta"></div>
+            </div>
+          </div>
+          <div class="row g-3">
+            <div class="col-xl-7">
+              <canvas id="dividend-chart" style="height:220px; max-height:220px"></canvas>
+              <canvas id="dividend-calendar-chart" class="mt-3" style="height:220px; max-height:220px"></canvas>
+            </div>
+            <div class="col-xl-5">
+              <div class="table-responsive" style="max-height:460px; overflow-y:auto;">
+                <table class="table table-sm mb-0">
+                  <thead>
+                    <tr>
+                      <th>Sym</th>
+                      <th class="text-end">Qty</th>
+                      <th class="text-end">Dividend/Share</th>
+                      <th class="text-end">Est Payout</th>
+                    </tr>
+                  </thead>
+                  <tbody id="div-summary-body">
+                    <tr><td colspan="4" class="text-muted text-center py-3">Loading...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 8: screeners + earnings -->
+  <div class="row g-3 mb-3">
+    <div class="col-xl-6">
+      <div class="card h-100">
     <div class="card-header p-0">
       <ul class="nav nav-tabs" role="tablist">
         <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-volume">Unusual Volume</button></li>
@@ -202,7 +314,7 @@
         <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-prepost">Pre/Post</button></li>
       </ul>
     </div>
-    <div class="card-body p-0">
+    <div class="card-body p-0" style="height:50vh; overflow-y:auto;">
       <div class="tab-content">
         <div class="tab-pane fade show active" id="tab-volume"><div id="screener-volume" class="p-2"></div></div>
         <div class="tab-pane fade" id="tab-gapup"><div id="screener-gap-up" class="p-2"></div></div>
@@ -212,20 +324,34 @@
         <div class="tab-pane fade" id="tab-prepost"><div id="screener-prepost" class="p-2"></div></div>
       </div>
     </div>
-  </div>
-
-  <!-- Row 9: earnings -->
-  <div class="card mb-3">
-    <div class="card-header fw-semibold">Earnings This Week</div>
-    <div class="card-body p-0">
-      <table class="table table-sm mb-0">
-        <thead><tr><th>Date</th><th>Sym</th><th>Name</th><th>When</th><th class="text-end">EPS Est.</th></tr></thead>
-        <tbody id="earnings-body"><tr><td colspan="5" class="text-muted text-center py-3">No data yet.</td></tr></tbody>
+      </div>
+    </div>
+    <div class="col-xl-6">
+      <div class="card h-100">
+    <div class="card-header fw-semibold">Earnings This Week
+      <small class="text-muted ms-2">IV &amp; implied-move refresh once a day with the earnings calendar.</small>
+    </div>
+    <div class="card-body p-0 table-responsive" style="height:50vh; overflow-y:auto;">
+      <table class="table table-sm mb-0 earnings-table">
+        <thead><tr>
+          <th>Date</th><th>Sym</th><th>Name</th>
+          <th class="text-end">Price</th>
+          <th class="text-end">Today %</th>
+          <th class="text-end">EPS Est.</th>
+          <th class="text-end">Last Surp.</th>
+          <th class="text-end">IV 30d</th>
+          <th class="text-end">Implied Move</th>
+          <th class="text-end">Hist Avg</th>
+          <th class="text-end">Mkt Cap</th>
+        </tr></thead>
+        <tbody id="earnings-body"><tr><td colspan="11" class="text-muted text-center py-3">No data yet.</td></tr></tbody>
       </table>
+      </div>
+    </div>
     </div>
   </div>
 
 </div>
-<script src="static/js/app.js?v=light2"></script>
+<script src="static/js/app.js?v=light4"></script>
 </body>
 </html>

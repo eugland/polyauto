@@ -34,3 +34,50 @@ thead th { background: #f5f9ff; font-size: 0.78rem; font-weight: 600; color: var
 
 .nav-tabs .nav-link { font-size: 0.85rem; }
 .nav-tabs .nav-link.active { font-weight: 600; }
+
+.fg-score-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.9rem;
+  font-weight: 700;
+  pointer-events: none;
+  padding-top: 18px;
+}
+.fg-component-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .25rem;
+}
+.fg-component-row .bar {
+  flex: 1;
+  height: 6px;
+  background: #e6edf7;
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+.fg-component-row .bar > div {
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  border-radius: 3px;
+}
+.fg-component-row .lbl { width: 150px; font-size: .72rem; color: #555; }
+.fg-component-row .val { width: 36px; text-align: right; font-weight: 600; font-size: .78rem; }
+
+.signal-pill {
+  padding: .15rem .5rem;
+  border-radius: .35rem;
+  font-weight: 600;
+  font-size: .75rem;
+}
+.signal-pill.pos { background: rgba(26, 159, 83, .12); }
+.signal-pill.neg { background: rgba(214, 69, 69, .12); }
+.signal-pill.neu { background: rgba(120, 120, 120, .12); }
+
+.earnings-table td, .earnings-table th { white-space: nowrap; }
+.earnings-table .im-hot  { color: #d64545; font-weight: 600; }
+.earnings-table .im-cool { color: #1a9f53; font-weight: 600; }

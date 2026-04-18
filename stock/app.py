@@ -64,6 +64,9 @@ def create_app(db_path: str) -> Flask:
     def api_tracking_error():
         pair = request.args.get("pair", "TSLL")
         base = request.args.get("base", "TSLA")
+        view = request.args.get("view", "current")
+        start = request.args.get("start")
+        end = request.args.get("end")
         try:
             leverage = float(request.args.get("leverage", "2"))
         except ValueError:
@@ -72,7 +75,11 @@ def create_app(db_path: str) -> Flask:
             days = int(request.args.get("days", "10"))
         except ValueError:
             days = 10
-        return jsonify(db.query_tracking_error(_db(), pair, base, leverage, days))
+        return jsonify(
+            db.query_tracking_error(
+                _db(), pair, base, leverage, days=days, view=view, start=start, end=end
+            )
+        )
 
     @app.route("/api/screener")
     def api_screener():
@@ -103,6 +110,17 @@ def create_app(db_path: str) -> Flask:
             days = 7
         return jsonify(db.query_earnings(_db(), days))
 
+    @app.route("/api/fear-greed")
+    def api_fear_greed():
+        return jsonify(db.query_fear_greed(_db()))
+
+    @app.route("/api/spy-volume-signal")
+    def api_spy_volume_signal():
+        view = request.args.get("view", "current")
+        start = request.args.get("start")
+        end = request.args.get("end")
+        return jsonify(db.query_spy_volume_signal(_db(), view=view, start=start, end=end))
+
     @app.route("/api/econ-events")
     def api_econ_events():
         try:
@@ -110,5 +128,28 @@ def create_app(db_path: str) -> Flask:
         except ValueError:
             days = 1
         return jsonify(db.query_econ_events(_db(), days))
+
+    @app.route("/api/dividend-profiles")
+    def api_dividend_profiles():
+        return jsonify(db.query_dividend_profiles(_db()))
+
+    @app.route("/api/dividend-profile", methods=["GET", "POST"])
+    def api_dividend_profile():
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            action = payload.get("action")
+            if action == "delete":
+                name = payload.get("name", "")
+                return jsonify(db.delete_dividend_profile(_db(), name))
+            name = payload.get("name", "default")
+            holdings = payload.get("holdings", [])
+            return jsonify(db.upsert_dividend_profile(_db(), name, holdings))
+        name = request.args.get("name", "default")
+        return jsonify(db.query_dividend_profile(_db(), name))
+
+    @app.route("/api/dividends")
+    def api_dividends():
+        profile = request.args.get("profile", "default")
+        return jsonify(db.query_dividend_report(_db(), profile))
 
     return app

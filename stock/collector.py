@@ -95,6 +95,18 @@ def init_db(path: str | Path) -> duckdb.DuckDBPyConnection:
             PRIMARY KEY(symbol, report_date)
         )
     """)
+    # Additive schema migration — safe to re-run
+    for col, typ in [
+        ("implied_move_pct",  "DOUBLE"),
+        ("iv_30d",            "DOUBLE"),
+        ("last_close",        "DOUBLE"),
+        ("last_surprise_pct", "DOUBLE"),
+        ("hist_avg_move_pct", "DOUBLE"),
+        ("market_cap",        "BIGINT"),
+    ]:
+        con.execute(
+            f"ALTER TABLE earnings_calendar ADD COLUMN IF NOT EXISTS {col} {typ}"
+        )
     con.execute("""
         CREATE TABLE IF NOT EXISTS econ_events (
             event_date DATE,
@@ -566,9 +578,177 @@ def _extract_earnings_for_symbol(ticker, lookahead_days: int) -> list[tuple[date
     return out
 
 
+def _fetch_implied_move_iv(ticker, report_date: date, last_close: float | None) -> dict:
+    """Compute implied post-earnings move % + 30d ATM IV from options chain.
+
+    Picks the earliest option expiry on or after `report_date`. ATM = strike
+    closest to last_close. Implied move = (ATM call mid + ATM put mid) / spot.
+    """
+    out: dict = {}
+    if not last_close or last_close <= 0:
+        return out
+    try:
+        expiries = list(ticker.options or [])
+    except Exception:
+        return out
+    if not expiries:
+        return out
+    exp = None
+    for e in expiries:
+        try:
+            ed = datetime.strptime(e, "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if ed >= report_date:
+            exp = e
+            break
+    if exp is None:
+        exp = expiries[0]
+    try:
+        chain = ticker.option_chain(exp)
+        calls = chain.calls
+        puts = chain.puts
+    except Exception:
+        return out
+    if calls is None or puts is None or calls.empty or puts.empty:
+        return out
+    try:
+        calls = calls.assign(_d=(calls["strike"] - last_close).abs())
+        puts = puts.assign(_d=(puts["strike"] - last_close).abs())
+        atm_c = calls.loc[calls["_d"].idxmin()]
+        atm_p = puts.loc[puts["_d"].idxmin()]
+
+        def _mid(row) -> float:
+            b = float(row.get("bid") or 0)
+            a = float(row.get("ask") or 0)
+            if b > 0 and a > 0 and a >= b:
+                return (b + a) / 2.0
+            lp = row.get("lastPrice")
+            try:
+                return float(lp) if lp else 0.0
+            except Exception:
+                return 0.0
+
+        straddle = _mid(atm_c) + _mid(atm_p)
+        if straddle > 0:
+            out["implied_move_pct"] = straddle / last_close
+        ivs = []
+        for row in (atm_c, atm_p):
+            iv = row.get("impliedVolatility")
+            if iv is not None:
+                try:
+                    iv_f = float(iv)
+                    if iv_f > 0:
+                        ivs.append(iv_f)
+                except Exception:
+                    pass
+        if ivs:
+            out["iv_30d"] = sum(ivs) / len(ivs)
+    except Exception:
+        return out
+    return out
+
+
+def _historical_earnings_move_pct(con: duckdb.DuckDBPyConnection, symbol: str,
+                                  edf, lookback: int = 4) -> float | None:
+    """Avg |close-to-close %| move on the past `lookback` earnings dates."""
+    if edf is None or getattr(edf, "empty", True):
+        return None
+    today = date.today()
+    past: list[date] = []
+    for idx in edf.index:
+        d = _coerce_date(idx)
+        if d and d < today:
+            past.append(d)
+    if not past:
+        return None
+    past = sorted(past, reverse=True)[:lookback]
+    moves: list[float] = []
+    for d in past:
+        # find latest bar on-or-before d (AMC prints land next session),
+        # plus the bar immediately before that one.
+        rows = con.execute("""
+            SELECT close FROM daily_bars
+            WHERE symbol = ? AND date <= ?
+            ORDER BY date DESC LIMIT 3
+        """, [symbol, d]).fetchall()
+        if len(rows) >= 2 and rows[0][0] and rows[1][0] and rows[1][0] > 0:
+            moves.append(abs((rows[0][0] - rows[1][0]) / rows[1][0]))
+    if not moves:
+        return None
+    return sum(moves) / len(moves)
+
+
+def _last_surprise_pct(edf) -> float | None:
+    if edf is None or getattr(edf, "empty", True):
+        return None
+    if "Surprise(%)" not in edf.columns:
+        return None
+    today = date.today()
+    try:
+        for idx, row in edf.iterrows():
+            d = _coerce_date(idx)
+            if d is None or d >= today:
+                continue
+            v = row.get("Surprise(%)")
+            if v is not None:
+                try:
+                    return float(v) / 100.0
+                except Exception:
+                    continue
+    except Exception:
+        return None
+    return None
+
+
+def _fetch_ticker_extras(con: duckdb.DuckDBPyConnection, ticker, symbol: str,
+                        first_report_date: date) -> dict:
+    """All the per-symbol context needed for the enriched earnings row."""
+    extras: dict = {}
+    last_close: float | None = None
+    try:
+        fi = ticker.fast_info
+        try:
+            last_close = float(fi.last_price)
+        except Exception:
+            pass
+        try:
+            mc = fi.market_cap
+            if mc:
+                extras["market_cap"] = int(mc)
+        except Exception:
+            pass
+    except Exception:
+        pass
+    if last_close is None:
+        row = con.execute(
+            "SELECT last FROM quotes WHERE symbol = ?", [symbol]
+        ).fetchone()
+        if row and row[0]:
+            last_close = float(row[0])
+    if last_close is not None:
+        extras["last_close"] = last_close
+    extras.update(_fetch_implied_move_iv(ticker, first_report_date, last_close))
+    try:
+        edf = ticker.get_earnings_dates(limit=8)
+    except Exception:
+        edf = None
+    sp = _last_surprise_pct(edf)
+    if sp is not None:
+        extras["last_surprise_pct"] = sp
+    hm = _historical_earnings_move_pct(con, symbol, edf)
+    if hm is not None:
+        extras["hist_avg_move_pct"] = hm
+    return extras
+
+
 def refresh_earnings_calendar(con: duckdb.DuckDBPyConnection, sp500: list[tuple[str, str, str]],
                               lookahead_days: int = 14, limit: int = 200) -> int:
-    """Pull upcoming earnings from yfinance for a subset of S&P names."""
+    """Pull upcoming earnings from yfinance for a subset of S&P names.
+
+    Also enriches each row with IV, implied move, historical earnings move,
+    last-quarter surprise, last close, and market cap.
+    """
     import yfinance as yf
     count = 0
     con.execute("DELETE FROM earnings_calendar WHERE report_date < CURRENT_DATE - INTERVAL 3 DAY")
@@ -577,17 +757,40 @@ def refresh_earnings_calendar(con: duckdb.DuckDBPyConnection, sp500: list[tuple[
             ticker = yf.Ticker(sym)
         except Exception:
             continue
-        inserted_for_sym = 0
-        for rd, eps_est in _extract_earnings_for_symbol(ticker, lookahead_days):
+        upcoming = _extract_earnings_for_symbol(ticker, lookahead_days)
+        if not upcoming:
+            time.sleep(0.05)
+            continue
+        try:
+            extras = _fetch_ticker_extras(con, ticker, sym, upcoming[0][0])
+        except Exception:
+            log.exception("earnings extras(%s) failed", sym)
+            extras = {}
+        for rd, eps_est in upcoming:
             con.execute("""
-                INSERT INTO earnings_calendar VALUES (?,?,?,?,?)
+                INSERT INTO earnings_calendar
+                    (symbol, report_date, when_reported, eps_estimate, eps_actual,
+                     implied_move_pct, iv_30d, last_close, last_surprise_pct,
+                     hist_avg_move_pct, market_cap)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT (symbol, report_date) DO UPDATE SET
-                    when_reported=excluded.when_reported,
-                    eps_estimate=excluded.eps_estimate
-            """, [sym, rd, None, eps_est, None])
-            inserted_for_sym += 1
+                    when_reported=COALESCE(excluded.when_reported, earnings_calendar.when_reported),
+                    eps_estimate=COALESCE(excluded.eps_estimate, earnings_calendar.eps_estimate),
+                    implied_move_pct=COALESCE(excluded.implied_move_pct, earnings_calendar.implied_move_pct),
+                    iv_30d=COALESCE(excluded.iv_30d, earnings_calendar.iv_30d),
+                    last_close=COALESCE(excluded.last_close, earnings_calendar.last_close),
+                    last_surprise_pct=COALESCE(excluded.last_surprise_pct, earnings_calendar.last_surprise_pct),
+                    hist_avg_move_pct=COALESCE(excluded.hist_avg_move_pct, earnings_calendar.hist_avg_move_pct),
+                    market_cap=COALESCE(excluded.market_cap, earnings_calendar.market_cap)
+            """, [sym, rd, None, eps_est, None,
+                  extras.get("implied_move_pct"),
+                  extras.get("iv_30d"),
+                  extras.get("last_close"),
+                  extras.get("last_surprise_pct"),
+                  extras.get("hist_avg_move_pct"),
+                  extras.get("market_cap")])
             count += 1
-        time.sleep(0.15 if inserted_for_sym > 0 else 0.05)
+        time.sleep(0.15)
     con.commit()
     return count
 
@@ -666,7 +869,8 @@ def collect_once(con: duckdb.DuckDBPyConnection, state: dict,
         *(t.symbol for t in universe.PAIR_TICKERS),
     })
     fast_set = set(fast_syms)
-    pair_syms = [t.symbol for t in universe.PAIR_TICKERS]
+    # Keep SPY intraday around for OBV intraday mode in the dashboard.
+    pair_syms = sorted({*(t.symbol for t in universe.PAIR_TICKERS), "SPY"})
 
     last_daily = state.get("last_daily")
     if last_daily is None or (now - last_daily).total_seconds() >= 600:
