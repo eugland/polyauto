@@ -68,12 +68,18 @@ _file_handler.setFormatter(logging.Formatter(
     "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 ))
+_file_handler.setLevel(logging.INFO)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(message)s",
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(), _file_handler],
 )
+# basicConfig is a no-op if root logger already has handlers — force-attach file handler
+_root = logging.getLogger()
+if _file_handler not in _root.handlers:
+    _root.addHandler(_file_handler)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("automata")
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "webapp.json"
@@ -147,7 +153,7 @@ def _compute_maker_buy_price(
     Build a buy quote within price limits. Quotes ONE TICK above the best ask
     to aggressively cross the spread and win the race against other takers.
     Ceils to tick first (handles between-tick asks), then adds one tick, then
-    clamps to max_no_price (0.998).
+    clamps to max_no_price (0.997).
     """
     if best_ask is None:
         return None  # no counterparty — passive fallback will handle this
@@ -174,11 +180,11 @@ def run(
         fetch_forecasts_for_events,
     )
 
-    min_no_price  = float(os.getenv("MIN_NO_PRICE", "0.97"))
-    max_no_price  = float(os.getenv("MAX_NO_PRICE", "0.998"))
+    min_no_price  = float(os.getenv("MIN_NO_PRICE", "0.96"))
+    max_no_price  = float(os.getenv("MAX_NO_PRICE", "0.997"))
     bet_threshold = float(os.getenv("BET_THRESHOLD", "0.95"))   # auto-bet above this
-    bet_shares    = 20.0   # first-fill target per city
-    max_shares    = 40.0   # top-up ceiling per city
+    bet_shares    = 40.0   # first-fill target per city
+    max_shares    = 80.0   # top-up ceiling per city
     mm_tick_size = float(os.getenv("MM_TICK_SIZE", "0.001"))
     mm_join_bid_ticks = int(os.getenv("MM_JOIN_BID_TICKS", "1"))
     mm_reprice_cents = float(os.getenv("MM_REPRICE_CENTS", "0.10"))
@@ -216,6 +222,12 @@ def run(
                 "markets": [],
             }
         events[event_slug]["markets"].append(raw)
+
+    # ── Drop past-date events, keep only the 15 earliest-resolving ──────────
+    today = datetime.now(timezone.utc).date().isoformat()
+    events = {k: v for k, v in events.items() if (v["date"] or "") >= today}
+    events = dict(sorted(events.items(), key=lambda kv: kv[1]["date"] or "")[:15])
+    log.info("  %d events after date pre-filter (earliest 15, today=%s)", len(events), today)
 
     # ── Fetch station coords then forecast highs (Open-Meteo) ────────────────
     all_icaos = [ev["icao"] for ev in events.values() if ev["icao"]]
@@ -304,29 +316,51 @@ def run(
         fc = forecasts.get((c["icao"], c["end_date"])) if c.get("icao") else None
         c["forecast_high"] = fc["open_meteo"] if fc else None
 
-    # ── Ranked candidates per city (safest first = lowest Yes price) ────────────
+    # ── Ranked candidates per city, capped to 3 closest-resolving markets ───
     bettable = [c for c in all_candidates if not c["skip_reason"] and c["city"] not in city_blacklist]
-
-    def _yes_key(c: dict) -> float:
-        return c["yes_price"] if c["yes_price"] is not None else (1.0 - c["price"])
 
     ranked_per_city: dict[str, list[dict]] = {}
     for c in bettable:
         ranked_per_city.setdefault(c["city"], []).append(c)
     for city in ranked_per_city:
-        ranked_per_city[city].sort(key=_yes_key)
+        ranked_per_city[city].sort(key=lambda c: c["end_datetime"] or "")
+
+    # Pick the best candidate per city, then take the 3 soonest globally
+    top3 = sorted(
+        [ranked[0] for ranked in ranked_per_city.values()],
+        key=lambda c: c["end_datetime"] or "",
+    )[:3]
+    ranked_per_city = {c["city"]: [c] for c in top3}
+    log.info("  %d qualifying market(s) selected (top 3 by resolution)", len(ranked_per_city))
 
     # ── Dry run: show only autobet (★) items per city ───────────────────────────
     if dry_run:
         now_utc = datetime.now(timezone.utc)
         autobet_items = sorted(
             [ranked[0] for ranked in ranked_per_city.values()],
-            key=lambda c: now_utc.astimezone(ZoneInfo(CITY_TZ.get(c["city"], "UTC"))).utcoffset(),
-            reverse=True,
+            key=lambda c: c["end_datetime"] or "",
         )
-        print(f"  [DRY RUN] {len(autobet_items)} autobet item(s) (latest local time first):")
-        print(f"    {'':1}  {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'local time':<16}  {'city':<15}  {'date':<10}  {'forecast':>8}  question")
-        print(f"    {'-'*1}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*8}  {'-'*22}")
+
+        # Fetch METAR observations in parallel for the sanity guard preview.
+        from concurrent.futures import ThreadPoolExecutor
+        from automata.weather import fetch_metar_temp
+        guard_margin_c = float(os.getenv("METAR_GUARD_MARGIN_C", "2.0"))
+        guard_margin_f = float(os.getenv("METAR_GUARD_MARGIN_F", "4.0"))
+        metar_obs: dict[str, float | None] = {}
+        with ThreadPoolExecutor(max_workers=min(8, max(1, len(autobet_items)))) as ex:
+            futures = {
+                ex.submit(fetch_metar_temp, c["icao"], c.get("unit") or "C"): c["icao"]
+                for c in autobet_items if c.get("icao")
+            }
+            for fut, icao in futures.items():
+                try:
+                    metar_obs[icao] = fut.result()
+                except Exception:
+                    metar_obs[icao] = None
+
+        print(f"  [DRY RUN] {len(autobet_items)} autobet item(s) (closest resolution first):")
+        print(f"    {'':1}  {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'local time':<16}  {'city':<15}  {'date':<10}  {'forecast':>8}  {'guard':<22}  question")
+        print(f"    {'-'*1}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*8}  {'-'*22}  {'-'*22}")
         for c in autobet_items:
             cost = round(bet_shares * c["price"], 2)
             tz_name = CITY_TZ.get(c["city"], "UTC")
@@ -335,7 +369,19 @@ def run(
             yes_str = f"{c['yes_price']*100:6.2f}¢" if c["yes_price"] is not None else "   n/a "
             fcast_val = c.get("forecast_high")
             fcast_str = f"{fcast_val:.1f}°{c['unit']}" if fcast_val is not None else "n/a"
-            print(f"    \u2605  {no_str}  {yes_str}  {bet_shares:>6.0f}sh  ${cost:>5.2f}  {now_local:<16}  {c['city']:<15}  {c['title_date']:<10}  {fcast_str:>8}  {c['question']}")
+
+            obs = metar_obs.get(c.get("icao")) if c.get("icao") else None
+            thr = c.get("threshold")
+            unit_g = c.get("unit") or "C"
+            margin_g = guard_margin_f if unit_g.upper() == "F" else guard_margin_c
+            if obs is None or thr is None:
+                guard_str = "n/a"
+            else:
+                delta = abs(obs - float(thr))
+                verdict = "SKIP" if delta < margin_g else "OK"
+                guard_str = f"{verdict} {obs:.1f}°{unit_g} Δ{delta:.1f}"
+
+            print(f"    \u2605  {no_str}  {yes_str}  {bet_shares:>6.0f}sh  ${cost:>5.2f}  {now_local:<16}  {c['city']:<15}  {c['title_date']:<10}  {fcast_str:>8}  {guard_str:<22}  {c['question']}")
         print()
         log.info("  %d autobet item(s): %s", len(autobet_items),
                  ", ".join(f"{c['city']} {c['title_date']} {c['question']}" for c in autobet_items))
@@ -377,6 +423,10 @@ def run(
         capped_balance = min(balance, max_spend_usdc)
         log.info("Balance cap enabled: available $%.2f, capped spend $%.2f", balance, capped_balance)
         balance = capped_balance
+
+    if 0.9 * balance < bet_shares:
+        bet_shares = round(0.9 * balance, 2)
+        log.info("Balance-adjusted bet_shares: %.2f (90%% of $%.2f)", bet_shares, balance)
 
     # Build token_id → (city, date) lookup from all candidates
     token_to_city_date: dict[str, tuple[str, str]] = {
@@ -635,6 +685,26 @@ def run(
                 if shares_to_buy <= 0:
                     continue
 
+                # Sanity guard: skip if observed METAR temp is within margin of the bet threshold.
+                # Margin is unit-aware: ~2°C / ~4°F by default.
+                unit_g = b.get("unit") or "C"
+                guard_margin = float(os.getenv(
+                    "METAR_GUARD_MARGIN_F" if unit_g.upper() == "F" else "METAR_GUARD_MARGIN_C",
+                    "4.0" if unit_g.upper() == "F" else "2.0",
+                ))
+                icao_g = b.get("icao")
+                threshold_g = b.get("threshold")
+                if icao_g and threshold_g is not None:
+                    from automata.weather import fetch_metar_temp
+                    obs = fetch_metar_temp(icao_g, unit_g)
+                    if obs is not None and abs(obs - float(threshold_g)) < guard_margin:
+                        log.warning(
+                            "[guard] %s %s — METAR %.1f°%s within %.1f°%s of threshold %.1f°%s — skipping",
+                            b["city"], b["question"], obs, unit_g,
+                            guard_margin, unit_g, float(threshold_g), unit_g,
+                        )
+                        continue
+
                 existing_orders = b.get("_existing_orders", [])
                 needs_reprice = any(
                     (_order_price(o) is not None) and (abs(_order_price(o) - quote_price) >= mm_reprice_delta)
@@ -770,7 +840,7 @@ def _scan_positions(dry_run: bool = True) -> None:
             for o in orders
         )
         if has_tp:
-            log.info("  token %s  %.2f shares — take-profit order already exists", token_id[:12], size)
+            log.debug("  token %s  %.2f shares — take-profit order already exists", token_id[:12], size)
             continue
         if dry_run:
             log.info("  token %s  %.2f shares — [DRY RUN] would place sell @ %.1f¢", token_id[:12], size, take_profit * 100)

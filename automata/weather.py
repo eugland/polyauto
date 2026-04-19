@@ -99,6 +99,35 @@ def fetch_station_coords(icao: str) -> tuple[float, float] | None:
     return None
 
 
+def fetch_metar_temp(icao: str, unit: str = "C") -> float | None:
+    """
+    Most recent METAR observation temperature for `icao`, returned in `unit` (C or F).
+    Returns None if unavailable.
+    """
+    try:
+        resp = requests.get(
+            "https://aviationweather.gov/api/data/metar",
+            params={"ids": icao, "hours": 3, "format": "json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+    if not data or not isinstance(data, list):
+        return None
+    temp_c = data[0].get("temp")
+    if temp_c is None:
+        return None
+    try:
+        temp_c = float(temp_c)
+    except (TypeError, ValueError):
+        return None
+    if unit.upper() == "F":
+        return temp_c * 9.0 / 5.0 + 32
+    return temp_c
+
+
 def fetch_coords_for_stations(icao_list: list[str]) -> dict[str, tuple[float, float] | None]:
     """Fetch (lat, lon) for multiple stations in parallel."""
     results: dict[str, tuple[float, float] | None] = {}
@@ -356,13 +385,15 @@ def run_weather_daemon(
                     signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
                 )
                 balance = get_usdc_balance(client)
-                max_no_price = float(os.getenv("MAX_NO_PRICE", "0.998"))
-                min_required = bet_shares * max_no_price
+                max_no_price = float(os.getenv("MAX_NO_PRICE", "0.997"))
+                # Minimum viable: enough for at least 1 share (run() scales bet_shares to 90% of balance)
+                min_required = max_no_price
+                effective_balance = min(balance, max_balance_usdc) if max_balance_usdc is not None else balance
                 log.info(
-                    "[weather] USDC balance: $%.2f  (need at least $%.2f for %g shares)",
+                    "[weather] USDC balance: $%.2f  effective: $%.2f  will bet up to $%.2f (90%%)",
                     balance,
-                    min_required,
-                    bet_shares,
+                    effective_balance,
+                    round(0.9 * effective_balance, 2),
                 )
             except Exception as exc:
                 log.warning("[weather] Balance check failed: %s — skipping cycle", exc)
@@ -373,21 +404,10 @@ def run_weather_daemon(
                 continue
 
             capped_balance = min(balance, max_balance_usdc) if max_balance_usdc is not None else balance
-            if balance < min_required:
-                log.warning("[weather] Balance $%.2f < $%.2f needed — skipping cycle", balance, min_required)
+            if capped_balance < 10.0:
+                log.warning("[weather] Balance $%.2f < $10.00 minimum — skipping cycle", capped_balance)
                 if once:
                     log.info("[weather] --once set, exiting after insufficient balance")
-                    break
-                time.sleep(interval_seconds)
-                continue
-            if capped_balance < min_required:
-                log.warning(
-                    "[weather] Capped balance $%.2f < $%.2f needed — skipping cycle",
-                    capped_balance,
-                    min_required,
-                )
-                if once:
-                    log.info("[weather] --once set, exiting after capped-balance check")
                     break
                 time.sleep(interval_seconds)
                 continue
