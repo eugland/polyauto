@@ -25,8 +25,8 @@
 <body>
 <div class="container-fluid py-2">
   <div class="toolbar">
-    <a class="btn btn-sm btn-outline-secondary" href="/">← Dashboard</a>
-    <a class="btn btn-sm btn-outline-success" href="/weather-pro">Weather Pro</a>
+    <a class="btn btn-sm btn-outline-secondary" href="./">← Dashboard</a>
+    <a class="btn btn-sm btn-outline-success" href="weather-pro">Weather Pro</a>
     <label class="text-muted small ms-3 me-1">Lines</label>
     <select id="line-count" class="form-select form-select-sm" style="width:90px">
       <option value="100">100</option>
@@ -54,6 +54,13 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function withBasePath(url) {
+  if (!url || !url.startsWith('/')) return url;
+  const p = window.location.pathname || '/';
+  if (p === '/stock' || p.startsWith('/stock/')) return '/stock' + url;
+  return url;
+}
+
 function colorize(line) {
   if (/ERROR/.test(line))   return `<span class="line-ERROR">${esc(line)}</span>`;
   if (/WARNING/.test(line)) return `<span class="line-WARNING">${esc(line)}</span>`;
@@ -63,7 +70,7 @@ function colorize(line) {
 async function fetchLog() {
   const lines = lineCountEl.value;
   try {
-    const r = await fetch(`/api/weather-log?lines=${lines}`);
+    const r = await fetch(withBasePath(`/api/weather-log?lines=${lines}`));
     if (!r.ok) {
       pane.textContent = `HTTP ${r.status}: ${r.statusText}`;
       statusEl.textContent = 'error';

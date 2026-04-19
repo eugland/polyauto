@@ -28,8 +28,8 @@
 </head>
 <body>
 <div class="topbar">
-  <a class="btn btn-sm btn-outline-secondary" href="/">← Dashboard</a>
-  <a class="btn btn-sm btn-outline-primary" href="/weather-log">Weather Log</a>
+  <a class="btn btn-sm btn-outline-secondary" href="./">← Dashboard</a>
+  <a class="btn btn-sm btn-outline-primary" href="weather-log">Weather Log</a>
   <span class="ms-2 fw-semibold">Weather Pro</span>
   <span id="status" class="ms-auto text-muted" style="font-size:0.78rem"></span>
   <button class="btn btn-sm btn-outline-secondary" onclick="refresh()">↻ Refresh</button>
@@ -85,6 +85,13 @@ const USERS = {
 
 function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function withBasePath(url) {
+  if (!url || !url.startsWith('/')) return url;
+  const p = window.location.pathname || '/';
+  if (p === '/stock' || p.startsWith('/stock/')) return '/stock' + url;
+  return url;
 }
 function fmt(v, d=2) { const n=parseFloat(v); return isNaN(n)?'—':n.toFixed(d); }
 function pct(v) { const n=parseFloat(v); return isNaN(n)?'—':(n>=0?'+':'')+n.toFixed(1)+'%'; }
@@ -280,8 +287,8 @@ async function refresh() {
   document.getElementById('status').textContent = 'Refreshing…';
   try {
     const [posResp, actResp] = await Promise.all([
-      fetch('/api/weather-pro/positions'),
-      fetch('/api/weather-pro/activity'),
+      fetch(withBasePath('/api/weather-pro/positions')),
+      fetch(withBasePath('/api/weather-pro/activity')),
     ]);
     allData.positions = await posResp.json();
     allData.activity  = await actResp.json();
