@@ -23,6 +23,7 @@
     .pnl-pos { color: #6fcf6f; }
     .pnl-neg { color: #cf6f6f; }
     .topbar { border-bottom: 1px solid var(--bs-border-color); padding: 8px 16px; display:flex; align-items:center; gap:10px; }
+    td a:hover { text-decoration: underline !important; color: #4a9eff !important; }
   </style>
 </head>
 <body>
@@ -125,6 +126,24 @@ function shortTitle(t) {
   return esc(String(t||'—').replace(/Will the highest temperature in /i,'').replace(/\?$/,'').slice(0,55));
 }
 
+function polyUrl(item) {
+  const slug = item.slug || item.eventSlug;
+  if (!slug) return null;
+  // Market-level slugs go to /market/<slug>; event slugs to /event/<slug>.
+  return item.slug
+    ? `https://polymarket.com/market/${encodeURIComponent(item.slug)}`
+    : `https://polymarket.com/event/${encodeURIComponent(item.eventSlug)}`;
+}
+
+function titleCell(item, label) {
+  const tooltip = esc(item.title || item.question || '');
+  const url = polyUrl(item);
+  const inner = url
+    ? `<a href="${url}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${label}</a>`
+    : label;
+  return `<td title="${tooltip}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${inner}</td>`;
+}
+
 function isTemperatureItem(item) {
   const fields = [item.title, item.market, item.question, item.eventTitle, item.slug];
   return fields.some(f => typeof f === 'string' && f.includes('°'));
@@ -153,7 +172,7 @@ function renderPanel(user) {
       if (p.currentValue) totalValue += parseFloat(p.currentValue)||0;
       if (pnl != null) totalPnl += parseFloat(pnl)||0;
       posRows += `<tr>
-        <td title="${esc(p.title||p.question||'')}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title}</td>
+        ${titleCell(p, title)}
         <td>${sidePill(side)}</td>
         <td>${size}</td>
         <td>${entry}</td>
@@ -169,22 +188,37 @@ function renderPanel(user) {
   let actRows = '';
   if (Array.isArray(activity) && activity.length) {
     for (const a of activity.slice(0, 500)) {
-      const title = shortTitle(a.title || a.market || a.question);
-      const side  = a.side || a.outcome || '';
-      const type  = a.type || '';
-      const price = a.price != null ? (parseFloat(a.price)*100).toFixed(2)+'¢' : '—';
-      const size  = fmt(a.size || a.usdcSize);
-      const ts    = fmtTime(a.timestamp || a.created_at || a.createdAt || a.time);
+      const title  = shortTitle(a.title || a.market || a.question);
+      const action = a.side || '';                  // BUY / SELL
+      const outcome = a.outcome || '';              // YES / NO
+      const type   = a.type || '';
+      const price  = a.price != null ? (parseFloat(a.price)*100).toFixed(2)+'¢' : '—';
+      const size   = fmt(a.size || a.usdcSize);
+      const ts     = fmtTime(a.timestamp || a.created_at || a.createdAt || a.time);
+      const obsC   = a.obs_temp_c;
+      const titleF = String(a.title||a.market||a.question||'');
+      const isF = /°\s*F/i.test(titleF);
+      const obsStr = (obsC != null)
+        ? (isF ? (obsC*9/5+32).toFixed(1)+'°F' : obsC.toFixed(1)+'°C')
+        : '—';
+      // Action cell: shows BUY/SELL pill, or non-trade type badge (REDEEM, etc).
+      const actionCell  = sidePill(action, type);
+      // Side cell: shows YES/NO pill (only meaningful for trades).
+      const sideCell = (type && type.toUpperCase() !== 'TRADE' && type !== '')
+        ? '<span style="color:#666">—</span>'
+        : sidePill(outcome);
       actRows += `<tr>
-        <td title="${esc(a.title||a.question||'')}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title}</td>
-        <td>${sidePill(side, type)}</td>
+        ${titleCell(a, title)}
+        <td>${actionCell}</td>
+        <td>${sideCell}</td>
         <td>${price}</td>
         <td>${size}</td>
+        <td class="text-dim">${esc(obsStr)}</td>
         <td class="text-dim">${esc(ts)}</td>
       </tr>`;
     }
   } else {
-    actRows = '<tr><td colspan="5" class="text-dim p-3">No recent activity</td></tr>';
+    actRows = '<tr><td colspan="7" class="text-dim p-3">No recent activity</td></tr>';
   }
 
   const summaryHtml = Array.isArray(positions) && positions.length
@@ -216,7 +250,7 @@ function renderPanel(user) {
         <div class="scroll-table">
           <table class="table table-sm mb-0">
             <thead><tr>
-              <th>Market</th><th>Side</th><th>Price</th><th>Size</th><th>Time</th>
+              <th>Market</th><th>Action</th><th>Side</th><th>Price</th><th>Size</th><th>Obs Temp</th><th>Time</th>
             </tr></thead>
             <tbody>${actRows}</tbody>
           </table>

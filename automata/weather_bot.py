@@ -685,8 +685,8 @@ def run(
                 if shares_to_buy <= 0:
                     continue
 
-                # Sanity guard: skip if observed METAR temp is within margin of the bet threshold.
-                # Margin is unit-aware: ~2°C / ~4°F by default.
+                # Sanity guard (advisory only — does NOT block the bet).
+                # Logs a warning when observed METAR temp is within margin of threshold.
                 unit_g = b.get("unit") or "C"
                 guard_margin = float(os.getenv(
                     "METAR_GUARD_MARGIN_F" if unit_g.upper() == "F" else "METAR_GUARD_MARGIN_C",
@@ -699,11 +699,10 @@ def run(
                     obs = fetch_metar_temp(icao_g, unit_g)
                     if obs is not None and abs(obs - float(threshold_g)) < guard_margin:
                         log.warning(
-                            "[guard] %s %s — METAR %.1f°%s within %.1f°%s of threshold %.1f°%s — skipping",
+                            "[guard] %s %s — METAR %.1f°%s within %.1f°%s of threshold %.1f°%s (advisory, not blocking)",
                             b["city"], b["question"], obs, unit_g,
                             guard_margin, unit_g, float(threshold_g), unit_g,
                         )
-                        continue
 
                 existing_orders = b.get("_existing_orders", [])
                 needs_reprice = any(
