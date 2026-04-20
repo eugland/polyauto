@@ -7,10 +7,13 @@ Create restream/.env (this folder, NOT the repo root .env):
     TWITCH_CHANNEL=gettingajob
     YOUTUBE_STREAM_KEY=<your rotated key>
     # optional:
-    # RESTREAM_QUALITY=best        # streamlink quality token: best, 1080p60, 720p, ...
-    # RESTREAM_RETRY_SECONDS=30    # how long to wait when channel is offline
-    # RESTREAM_HLS_LIVE_EDGE=15    # # segments behind live (~2s each); 15 ≈ 30s buffer
-    # RESTREAM_BUFFER_MB=64        # streamlink in-memory ring buffer
+    # RESTREAM_QUALITY=best              # streamlink quality token: best, 1080p60, 720p, ...
+    # RESTREAM_RETRY_SECONDS=30          # how long to wait when channel is offline
+    # RESTREAM_HLS_LIVE_EDGE=15          # # segments behind live (~2s each); 15 ≈ 30s buffer
+    # RESTREAM_BUFFER_MB=64              # streamlink in-memory ring buffer
+    # RESTREAM_REENCODE_AUDIO=1          # re-encode audio to AAC (default on; kills ad-break beeps)
+    # RESTREAM_REENCODE_VIDEO=0          # re-encode video to H.264 (default off; ~1 CPU core)
+    # RESTREAM_VIDEO_BITRATE_KBPS=6000   # only used when RESTREAM_REENCODE_VIDEO=1
 
 restream/.env is gitignored — secrets stay local.
 
