@@ -222,7 +222,7 @@ def run(
         fetch_forecasts_for_events,
     )
 
-    min_no_price  = float(os.getenv("MIN_NO_PRICE", "0.96"))
+    min_no_price  = float(os.getenv("MIN_NO_PRICE", "0.97"))
     max_no_price  = float(os.getenv("MAX_NO_PRICE", "0.997"))
     bet_threshold = float(os.getenv("BET_THRESHOLD", "0.95"))   # auto-bet above this
     bet_shares    = 40.0   # first-fill target per city
