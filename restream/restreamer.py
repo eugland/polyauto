@@ -173,9 +173,11 @@ def main() -> None:
     # Audio re-encode default ON: kills the beeps at ad-break boundaries
     # (resamples across audio PTS jumps), costs ~5% CPU.
     reencode_audio = os.environ.get("RESTREAM_REENCODE_AUDIO", "1").strip() not in ("0", "", "false", "no")
-    # Video re-encode default OFF: only flip on if you still see drops with
-    # audio re-encode enabled. Costs ~1 CPU core for libx264 veryfast 1080p.
-    reencode_video = os.environ.get("RESTREAM_REENCODE_VIDEO", "0").strip() in ("1", "true", "yes", "on")
+    # Video re-encode default ON: smooths video PTS across Twitch ad-break
+    # boundaries (pairs with audio re-encode for max stability). Costs ~1
+    # CPU core for libx264 veryfast 1080p. Set RESTREAM_REENCODE_VIDEO=0
+    # to fall back to passthrough.
+    reencode_video = os.environ.get("RESTREAM_REENCODE_VIDEO", "1").strip() not in ("0", "", "false", "no")
     try:
         video_bitrate_k = int(os.environ.get("RESTREAM_VIDEO_BITRATE_KBPS", "6000"))
     except ValueError:
