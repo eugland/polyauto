@@ -6,7 +6,7 @@ import math
 import os
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -103,6 +103,48 @@ def _extract_title_date(event_title: str) -> str:
     import re
     m = re.search(r" on (.+?)\??$", event_title, re.IGNORECASE)
     return m.group(1).strip() if m else ""
+
+
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+    "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _compute_resolution_dt(city: str, title_date: str, end_date_utc_hint: str) -> datetime | None:
+    """3 PM local time in the city's tz on the title's date, returned as UTC-aware datetime."""
+    if not title_date:
+        return None
+    import re
+    m = re.match(r"([A-Za-z]+)\s+(\d{1,2})", title_date.strip())
+    if not m:
+        return None
+    month = _MONTHS.get(m.group(1).lower())
+    if not month:
+        return None
+    try:
+        day = int(m.group(2))
+    except ValueError:
+        return None
+    try:
+        year = int((end_date_utc_hint or "")[:4]) if end_date_utc_hint else datetime.now(timezone.utc).year
+    except ValueError:
+        year = datetime.now(timezone.utc).year
+    tz_name = CITY_TZ.get(city, "UTC")
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    try:
+        local_dt = datetime(year, month, day, 15, 0, 0, tzinfo=tz)
+    except ValueError:
+        return None
+    return local_dt.astimezone(timezone.utc)
+
+
+_FAR_FUTURE = datetime(9999, 12, 31, tzinfo=timezone.utc)
 
 
 def _as_float(value: Any) -> float | None:
@@ -223,11 +265,29 @@ def run(
             }
         events[event_slug]["markets"].append(raw)
 
-    # ── Drop past-date events, keep only the 15 earliest-resolving ──────────
-    today = datetime.now(timezone.utc).date().isoformat()
-    events = {k: v for k, v in events.items() if (v["date"] or "") >= today}
-    events = dict(sorted(events.items(), key=lambda kv: kv[1]["date"] or "")[:15])
-    log.info("  %d events after date pre-filter (earliest 15, today=%s)", len(events), today)
+    # ── Compute per-event resolution_dt (15:00 local in city tz), drop
+    #    events whose resolution already passed more than POST_RESOLUTION_GRACE_HOURS ago,
+    #    keep only the 15 earliest-resolving ─────────────────────────────────
+    now_utc_dt = datetime.now(timezone.utc)
+    grace_hours = float(os.getenv("POST_RESOLUTION_GRACE_HOURS", "7"))
+    cutoff = now_utc_dt - timedelta(hours=grace_hours)
+    for ev in events.values():
+        ev_city = _extract_city(ev["title"])
+        ev_title_date = _extract_title_date(ev["title"])
+        end_hint = ev["date"] or ""
+        ev["resolution_dt"] = _compute_resolution_dt(ev_city, ev_title_date, end_hint)
+    events = {
+        k: v for k, v in events.items()
+        if v["resolution_dt"] is not None and v["resolution_dt"] >= cutoff
+    }
+    events = dict(sorted(events.items(), key=lambda kv: kv[1]["resolution_dt"])[:15])
+    log.info(
+        "  %d events after resolution filter (earliest 15, now=%s UTC, grace=%.1fh)",
+        len(events), now_utc_dt.strftime("%Y-%m-%d %H:%M"), grace_hours,
+    )
+    for ev in events.values():
+        res_str = ev["resolution_dt"].strftime("%Y-%m-%d %H:%MZ")
+        log.info("    - %s  [res=%s, %s]", ev["title"], res_str, ev["icao"] or "?")
 
     # ── Fetch station coords then forecast highs (Open-Meteo) ────────────────
     all_icaos = [ev["icao"] for ev in events.values() if ev["icao"]]
@@ -268,16 +328,20 @@ def run(
             yes_token_id = _extract_yes_token_id(raw)
 
             threshold, threshold_hi, _unit, direction = parsed
+            city_name = _extract_city(event["title"])
+            title_date = _extract_title_date(event["title"])
+            end_dt_raw = raw.get("endDateIso") or raw.get("endDate") or ""
             all_candidates.append({
                 "question": question,
-                "city": _extract_city(event["title"]),
-                "title_date": _extract_title_date(event["title"]),
+                "city": city_name,
+                "title_date": title_date,
                 "token_id": token_id,
                 "yes_token_id": yes_token_id,
                 "price": 0.0,
                 "yes_price": None,
                 "end_date": end_date,
-                "end_datetime": raw.get("endDateIso") or raw.get("endDate") or "",
+                "end_datetime": end_dt_raw,
+                "resolution_dt": _compute_resolution_dt(city_name, title_date, end_dt_raw),
                 "icao": event["icao"],
                 "unit": event["unit"],
                 "threshold": threshold,
@@ -304,6 +368,8 @@ def run(
             c["bid"] = live_bid
             if live_ask is None:
                 c["skip_reason"] = "no asks in book"
+            elif live_ask > max_no_price:
+                c["skip_reason"] = f"ask {live_ask*100:.2f}¢ > max {max_no_price*100:.2f}¢ (unreachable)"
             elif live_bid is None:
                 c["skip_reason"] = "no bids in book"
             elif live_bid > max_no_price:
@@ -323,22 +389,22 @@ def run(
     for c in bettable:
         ranked_per_city.setdefault(c["city"], []).append(c)
     for city in ranked_per_city:
-        ranked_per_city[city].sort(key=lambda c: c["end_datetime"] or "")
+        ranked_per_city[city].sort(key=lambda c: c.get("resolution_dt") or _FAR_FUTURE)
 
-    # Pick the best candidate per city, then take the 3 soonest globally
-    top3 = sorted(
+    # Pick the best candidate per city, then take the 10 soonest globally
+    top_n = sorted(
         [ranked[0] for ranked in ranked_per_city.values()],
-        key=lambda c: c["end_datetime"] or "",
-    )[:3]
-    ranked_per_city = {c["city"]: [c] for c in top3}
-    log.info("  %d qualifying market(s) selected (top 3 by resolution)", len(ranked_per_city))
+        key=lambda c: c.get("resolution_dt") or _FAR_FUTURE,
+    )[:10]
+    ranked_per_city = {c["city"]: [c] for c in top_n}
+    log.info("  %d qualifying market(s) selected (top 10 by resolution)", len(ranked_per_city))
 
     # ── Dry run: show only autobet (★) items per city ───────────────────────────
     if dry_run:
         now_utc = datetime.now(timezone.utc)
         autobet_items = sorted(
             [ranked[0] for ranked in ranked_per_city.values()],
-            key=lambda c: c["end_datetime"] or "",
+            key=lambda c: c.get("resolution_dt") or _FAR_FUTURE,
         )
 
         # Fetch METAR observations in parallel for the sanity guard preview.
@@ -359,12 +425,16 @@ def run(
                     metar_obs[icao] = None
 
         print(f"  [DRY RUN] {len(autobet_items)} autobet item(s) (closest resolution first):")
-        print(f"    {'':1}  {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'local time':<16}  {'city':<15}  {'date':<10}  {'forecast':>8}  {'guard':<22}  question")
+        print(f"    {'':1}  {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'resolves (PT)':<16}  {'city':<15}  {'date':<10}  {'forecast':>8}  {'guard':<22}  question")
         print(f"    {'-'*1}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*8}  {'-'*22}  {'-'*22}")
+        user_tz = ZoneInfo(os.getenv("USER_TZ", "America/Los_Angeles"))
         for c in autobet_items:
             cost = round(bet_shares * c["price"], 2)
-            tz_name = CITY_TZ.get(c["city"], "UTC")
-            now_local = now_utc.astimezone(ZoneInfo(tz_name)).strftime("%Y-%m-%d %H:%M")
+            res_dt = c.get("resolution_dt")
+            if res_dt is not None:
+                now_local = res_dt.astimezone(user_tz).strftime("%b %d %H:%M")
+            else:
+                now_local = now_utc.astimezone(user_tz).strftime("%b %d %H:%M")
             no_str  = f"{c['price']*100:6.2f}¢"
             yes_str = f"{c['yes_price']*100:6.2f}¢" if c["yes_price"] is not None else "   n/a "
             fcast_val = c.get("forecast_high")
