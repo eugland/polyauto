@@ -1,13 +1,315 @@
 """Flask app + JSON API for the stock decision dashboard."""
 from __future__ import annotations
 
+import logging
 import os
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests as _requests
 from flask import Flask, jsonify, render_template, request
 
 from . import database as db
+
+
+# yfinance logs HTTP 404s and "possibly delisted" messages at ERROR level for
+# every quoteSummary/calendar/dividends fetch that misses. Our dividend +
+# overnight code already swallows these exceptions, so the log noise is
+# purely cosmetic. Suppress it so the actual app log stays useful.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+# yfinance also prints to a child "py.warnings" logger via warnings.warn
+logging.getLogger("py.warnings").setLevel(logging.CRITICAL)
+
+
+# ── Pre-market & overnight live-fetch (yfinance, cached) ─────────────────────
+
+_OVERNIGHT_TICKERS: list[tuple[str, str, str]] = [
+    # symbol,    label,            group
+    ("ES=F",     "S&P fut",        "futures"),
+    ("NQ=F",     "Nasdaq fut",     "futures"),
+    ("YM=F",     "Dow fut",        "futures"),
+    ("RTY=F",    "Russell fut",    "futures"),
+    ("BTC-USD",  "BTC",            "crypto"),
+    ("ETH-USD",  "ETH",            "crypto"),
+    ("DX=F",     "DXY",            "macro"),
+    ("CL=F",     "WTI crude",      "macro"),
+    ("GC=F",     "Gold",           "macro"),
+    ("^TNX",     "10Y yield",      "macro"),
+]
+
+_overnight_cache: dict = {"data": None, "ts": 0.0}
+_overnight_lock = threading.Lock()
+_OVERNIGHT_TTL = 30  # seconds
+
+_premkt_cache: dict = {"data": None, "ts": 0.0}
+_premkt_lock = threading.Lock()
+_PREMKT_TTL = 60  # seconds
+
+# Symbols shown in the overnight-trend fallback chart (used when there's no
+# pre-market data, e.g. weekends and outside the 04:00-09:30 ET window).
+_OVERNIGHT_TREND_TICKERS: list[tuple[str, str]] = [
+    ("ES=F",     "S&P fut"),
+    ("NQ=F",     "Nasdaq fut"),
+    ("BTC-USD",  "BTC"),
+    ("ETH-USD",  "ETH"),
+]
+_overnight_trend_cache: dict = {"data": None, "ts": 0.0}
+_overnight_trend_lock = threading.Lock()
+_OVERNIGHT_TREND_TTL = 120  # seconds
+
+# Maps each overnight futures contract to its underlying cash index for the
+# "futures-implied open" card. Mechanical: implied_open = cash_prev_close *
+# (1 + futures_pct). NQ futures track the Nasdaq 100 (^NDX), not the
+# Composite (^IXIC).
+_IMPLIED_OPEN_MAP: list[tuple[str, str, str]] = [
+    ("ES=F",  "^GSPC", "S&P 500"),
+    ("NQ=F",  "^NDX",  "Nasdaq 100"),
+    ("YM=F",  "^DJI",  "Dow Jones"),
+    ("RTY=F", "^RUT",  "Russell 2000"),
+]
+_implied_cache: dict = {"data": None, "ts": 0.0}
+_implied_lock = threading.Lock()
+_IMPLIED_TTL = 30  # seconds
+
+
+def _fetch_overnight_one(item: tuple[str, str, str]) -> dict:
+    sym, label, group = item
+    try:
+        import yfinance as yf
+        t = yf.Ticker(sym)
+        fi = t.fast_info
+        last = fi.last_price
+        prev = fi.previous_close
+        last_f = float(last) if last is not None else None
+        prev_f = float(prev) if prev is not None else None
+        pct = (last_f - prev_f) / prev_f if (last_f is not None and prev_f) else None
+        return {"symbol": sym, "label": label, "group": group,
+                "last": last_f, "prev_close": prev_f, "pct": pct}
+    except Exception as exc:
+        return {"symbol": sym, "label": label, "group": group, "error": str(exc)}
+
+
+def _fetch_overnight() -> list[dict]:
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        return list(ex.map(_fetch_overnight_one, _OVERNIGHT_TICKERS))
+
+
+def _fetch_premarket_gappers(db_path: str, top_n: int = 100, min_pct: float = 0.01,
+                             limit: int = 25) -> list[dict]:
+    """Pull 1-minute prepost bars for the top-N S&P names by avg volume,
+    compute pre-market % vs prior close + pre-market volume."""
+    import duckdb
+    con = duckdb.connect(db_path, read_only=True)
+    rows = con.execute("""
+        SELECT q.symbol, u.name, u.sector, q.prev_close, q.avg_volume_20d
+        FROM quotes q JOIN universe u ON u.symbol = q.symbol
+        WHERE u.is_sp500 = TRUE AND q.prev_close > 0
+        ORDER BY q.avg_volume_20d DESC NULLS LAST
+        LIMIT ?
+    """, [top_n]).fetchall()
+    con.close()
+    if not rows:
+        return []
+    meta = {r[0]: {"name": r[1], "sector": r[2], "prev_close": float(r[3])} for r in rows}
+    syms = list(meta.keys())
+
+    import yfinance as yf
+    out: list[dict] = []
+    chunk = 50
+    for i in range(0, len(syms), chunk):
+        batch = syms[i:i + chunk]
+        try:
+            df = yf.download(batch, period="1d", interval="1m", prepost=True,
+                             progress=False, threads=False, group_by="ticker",
+                             timeout=20, auto_adjust=False)
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        for sym in batch:
+            try:
+                sub = df[sym] if sym in df.columns.get_level_values(0) else None
+            except Exception:
+                sub = None
+            if sub is None or sub.empty:
+                continue
+            sub = sub.dropna(subset=["Close"])
+            if sub.empty:
+                continue
+            try:
+                idx = sub.index
+                if hasattr(idx, "tz") and idx.tz is not None:
+                    sub = sub.tz_convert("America/New_York")
+                else:
+                    sub = sub.tz_localize("UTC").tz_convert("America/New_York")
+            except Exception:
+                pass
+            mask = [(t.hour > 4 or (t.hour == 4 and t.minute >= 0))
+                    and (t.hour < 9 or (t.hour == 9 and t.minute < 30))
+                    for t in sub.index]
+            pre = sub[mask]
+            if pre.empty:
+                continue
+            try:
+                last_pre = float(pre["Close"].iloc[-1])
+                pre_vol = int(pre["Volume"].fillna(0).sum())
+            except Exception:
+                continue
+            prev_close = meta[sym]["prev_close"]
+            if not prev_close:
+                continue
+            pct = (last_pre - prev_close) / prev_close
+            if abs(pct) < min_pct:
+                continue
+            out.append({
+                "symbol": sym,
+                "name": meta[sym]["name"],
+                "sector": meta[sym]["sector"],
+                "last": last_pre,
+                "prev_close": prev_close,
+                "premarket_pct": pct,
+                "premarket_volume": pre_vol,
+            })
+    out.sort(key=lambda r: abs(r.get("premarket_pct") or 0), reverse=True)
+    return out[:limit]
+
+
+def _fetch_one_quote(sym: str) -> dict:
+    try:
+        import yfinance as yf
+        fi = yf.Ticker(sym).fast_info
+        last = fi.last_price
+        prev = fi.previous_close
+        return {
+            "symbol": sym,
+            "last": float(last) if last is not None else None,
+            "prev_close": float(prev) if prev is not None else None,
+        }
+    except Exception as exc:
+        return {"symbol": sym, "error": str(exc)}
+
+
+def _fetch_implied_open() -> list[dict]:
+    """For each futures→cash pair, compute the mechanical implied open:
+    implied_open = cash_last_close * (1 + futures_pct).
+
+    Uses cash `last_price` (= most-recent regular-session close while markets
+    are closed) as the anchor rather than `previous_close`, because yfinance's
+    `previous_close` on weekends/holidays returns the session-before-last
+    close (e.g. Thursday's close on a Sunday) instead of Friday's.
+
+    Ignores fair-value basis (dividends + financing) — same calc CNBC shows
+    pre-open, accurate enough for a directional read."""
+    syms: list[str] = []
+    for fut, cash, _ in _IMPLIED_OPEN_MAP:
+        syms.append(fut)
+        syms.append(cash)
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(_fetch_one_quote, syms))
+    by_sym = {r["symbol"]: r for r in results}
+    out: list[dict] = []
+    for fut, cash, label in _IMPLIED_OPEN_MAP:
+        f = by_sym.get(fut, {})
+        c = by_sym.get(cash, {})
+        f_last = f.get("last")
+        f_prev = f.get("prev_close")
+        c_anchor = c.get("last")  # last regular-session close for the cash index
+        f_pct = ((f_last - f_prev) / f_prev) if (f_last is not None and f_prev) else None
+        target = (c_anchor * (1 + f_pct)) if (c_anchor is not None and f_pct is not None) else None
+        delta_pts = (target - c_anchor) if (target is not None and c_anchor is not None) else None
+        out.append({
+            "label": label,
+            "futures": fut,
+            "cash": cash,
+            "futures_last": f_last,
+            "futures_prev_close": f_prev,
+            "futures_pct": f_pct,
+            "cash_prev_close": c_anchor,
+            "implied_open": target,
+            "delta_pts": delta_pts,
+            "delta_pct": f_pct,
+        })
+    return out
+
+
+def _fetch_overnight_trend() -> list[dict]:
+    """Pull 5-min bars over the last 2 days for futures + crypto.
+    Returns each series normalized to % change from the first point so they
+    can be overlaid on a single chart."""
+    import yfinance as yf
+    syms = [s for s, _ in _OVERNIGHT_TREND_TICKERS]
+    try:
+        df = yf.download(syms, period="2d", interval="5m", prepost=True,
+                         progress=False, threads=False, group_by="ticker",
+                         timeout=20, auto_adjust=False)
+    except Exception:
+        return []
+    if df is None or df.empty:
+        return []
+    out: list[dict] = []
+    for sym, label in _OVERNIGHT_TREND_TICKERS:
+        try:
+            sub = df[sym] if sym in df.columns.get_level_values(0) else None
+        except Exception:
+            sub = None
+        if sub is None or sub.empty:
+            continue
+        sub = sub.dropna(subset=["Close"])
+        if sub.empty:
+            continue
+        try:
+            idx = sub.index
+            if hasattr(idx, "tz") and idx.tz is not None:
+                sub = sub.tz_convert("America/New_York")
+            else:
+                sub = sub.tz_localize("UTC").tz_convert("America/New_York")
+        except Exception:
+            pass
+        try:
+            base = float(sub["Close"].iloc[0])
+        except Exception:
+            continue
+        if not base:
+            continue
+        points: list[dict] = []
+        for ts, row in sub.iterrows():
+            try:
+                px = float(row["Close"])
+            except Exception:
+                continue
+            label_ts = ts.strftime("%a %H:%M")
+            points.append({"t": label_ts, "value": (px - base) / base})
+        if points:
+            out.append({"symbol": sym, "label": label, "points": points})
+    return out
+
+
+# Patterns for secrets that must never leave the server. Order matters:
+# key=value patterns first (preserve the key for context), then bare hex
+# wallet/key strings.
+_REDACT_PATTERNS = [
+    # CLOB_API_KEY=..., CLOB_SECRET=..., CLOB_PASS=..., RELAYER_API_KEY=...,
+    # POLYMARKET_PRIVATE_KEY=..., api_key=..., secret=..., passphrase=...
+    (re.compile(
+        r"((?:CLOB_API_KEY|CLOB_SECRET|CLOB_PASS|RELAYER_API_KEY|"
+        r"POLYMARKET_PRIVATE_KEY|api[_-]?key|api[_-]?secret|"
+        r"passphrase|secret|private[_-]?key)\s*[:=]\s*)(\S+)",
+        re.IGNORECASE,
+    ), r"\1[REDACTED]"),
+    # Bare 0x-prefixed private keys (64 hex chars)
+    (re.compile(r"\b0x[0-9a-fA-F]{64}\b"), "[REDACTED_KEY]"),
+    # Bearer tokens
+    (re.compile(r"(Bearer\s+)\S+", re.IGNORECASE), r"\1[REDACTED]"),
+]
+
+
+def _redact(line: str) -> str:
+    for pat, repl in _REDACT_PATTERNS:
+        line = pat.sub(repl, line)
+    return line
 
 
 def create_app(db_path: str) -> Flask:
@@ -59,6 +361,74 @@ def create_app(db_path: str) -> Flask:
     @app.route("/api/macro")
     def api_macro():
         return jsonify(db.query_macro(_db()))
+
+    @app.route("/api/overnight")
+    def api_overnight():
+        now = time.time()
+        with _overnight_lock:
+            if (_overnight_cache["data"] is not None
+                    and (now - _overnight_cache["ts"]) < _OVERNIGHT_TTL):
+                return jsonify({"data": _overnight_cache["data"],
+                                "as_of": _overnight_cache["ts"], "cached": True})
+        try:
+            data = _fetch_overnight()
+        except Exception as exc:
+            return jsonify({"error": str(exc), "data": []}), 500
+        with _overnight_lock:
+            _overnight_cache["data"] = data
+            _overnight_cache["ts"] = now
+        return jsonify({"data": data, "as_of": now, "cached": False})
+
+    @app.route("/api/premarket-gappers")
+    def api_premarket_gappers():
+        now = time.time()
+        with _premkt_lock:
+            if (_premkt_cache["data"] is not None
+                    and (now - _premkt_cache["ts"]) < _PREMKT_TTL):
+                return jsonify({"data": _premkt_cache["data"],
+                                "as_of": _premkt_cache["ts"], "cached": True})
+        try:
+            data = _fetch_premarket_gappers(_db())
+        except Exception as exc:
+            return jsonify({"error": str(exc), "data": []}), 500
+        with _premkt_lock:
+            _premkt_cache["data"] = data
+            _premkt_cache["ts"] = now
+        return jsonify({"data": data, "as_of": now, "cached": False})
+
+    @app.route("/api/implied-open")
+    def api_implied_open():
+        now = time.time()
+        with _implied_lock:
+            if (_implied_cache["data"] is not None
+                    and (now - _implied_cache["ts"]) < _IMPLIED_TTL):
+                return jsonify({"data": _implied_cache["data"],
+                                "as_of": _implied_cache["ts"], "cached": True})
+        try:
+            data = _fetch_implied_open()
+        except Exception as exc:
+            return jsonify({"error": str(exc), "data": []}), 500
+        with _implied_lock:
+            _implied_cache["data"] = data
+            _implied_cache["ts"] = now
+        return jsonify({"data": data, "as_of": now, "cached": False})
+
+    @app.route("/api/overnight-trend")
+    def api_overnight_trend():
+        now = time.time()
+        with _overnight_trend_lock:
+            if (_overnight_trend_cache["data"] is not None
+                    and (now - _overnight_trend_cache["ts"]) < _OVERNIGHT_TREND_TTL):
+                return jsonify({"data": _overnight_trend_cache["data"],
+                                "as_of": _overnight_trend_cache["ts"], "cached": True})
+        try:
+            data = _fetch_overnight_trend()
+        except Exception as exc:
+            return jsonify({"error": str(exc), "data": []}), 500
+        with _overnight_trend_lock:
+            _overnight_trend_cache["data"] = data
+            _overnight_trend_cache["ts"] = now
+        return jsonify({"data": data, "as_of": now, "cached": False})
 
     @app.route("/api/vix-term")
     def api_vix_term():
@@ -179,7 +549,7 @@ def create_app(db_path: str) -> Flask:
             with open(_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
                 all_lines = f.readlines()
             return jsonify({
-                "lines": [l.rstrip() for l in all_lines[-lines:]],
+                "lines": [_redact(l.rstrip()) for l in all_lines[-lines:]],
                 "exists": True,
                 "path": path_str,
                 "total_lines": len(all_lines),
@@ -188,9 +558,10 @@ def create_app(db_path: str) -> Flask:
             return jsonify({"error": str(exc), "path": path_str}), 500
 
     _PRO_WALLETS = {
-        "haerder": "0x8dec027d883949a6bfe79842d0ae6b80347e46e0",
-        "sin3000": "0x8d71ff86701227bb479b2039edd92b08f73115d8",
-        "aapang":  "0x104171232971a6db8cf938f76fdbebbb81c5f452",
+        "haerder":    "0x8dec027d883949a6bfe79842d0ae6b80347e46e0",
+        "sin3000":    "0x8d71ff86701227bb479b2039edd92b08f73115d8",
+        "aapang":     "0x104171232971a6db8cf938f76fdbebbb81c5f452",
+        "auniwarper": "0x0ec451646092f877f80d2b53d5500e50dac05ed3",
     }
     _POLYMARKET_DATA_API = "https://data-api.polymarket.com"
 
@@ -235,7 +606,7 @@ def create_app(db_path: str) -> Flask:
     def api_weather_pro_activity():
         from .temp_lookup import annotate_activity
         results = {}
-        limits = {"haerder": 100, "sin3000": 100, "aapang": 500}
+        limits = {"haerder": 100, "sin3000": 100, "aapang": 500, "auniwarper": 500}
         for name, wallet in _PRO_WALLETS.items():
             try:
                 items = _fetch_activity(wallet, limit=limits.get(name, 100))

@@ -138,6 +138,7 @@ async function refreshAll() {
     refreshTslDriftChart(),
     refreshSectors(), refreshCorr(), refreshVolScatter(), refreshBubble(),
     refreshMovers(), refreshScreeners(), refreshEarnings(),
+    refreshOvernight(), refreshImpliedOpen(), refreshPremarketGappers(),
     initDividendSection(),
   ]);
   document.getElementById("last-refresh").textContent =
@@ -148,6 +149,7 @@ async function refreshQuotes() {
   refreshMacro(); refreshBreadth(); refreshSectors();
   refreshBubble(); refreshMovers(); refreshScreeners();
   refreshVixTerm(); refreshFearGreed(); refreshSpyVolumeSignal();
+  refreshOvernight(); refreshImpliedOpen();
   document.getElementById("last-refresh").textContent =
     "last refresh " + new Date().toLocaleTimeString();
 }
@@ -156,6 +158,7 @@ async function refreshSlow() {
   refreshCorr(); refreshVolScatter();
   refreshTslDriftChart();
   refreshEarnings(); refreshEcon();
+  refreshPremarketGappers();
 }
 
 async function initDividendSection() {
@@ -200,6 +203,177 @@ async function refreshMacro() {
       <div class="pct ${cls}">${fmtPct(m.pct)}</div>
     </div>`;
   }).join("");
+}
+
+// ── Overnight markets ─────────────────────────────────────────────────────
+async function refreshOvernight() {
+  const d = await fetchJSON("/api/overnight");
+  const el = document.getElementById("overnight-tiles");
+  const meta = document.getElementById("overnight-meta");
+  if (!el) return;
+  if (!d || !d.data || !d.data.length) {
+    el.innerHTML = `<span class="text-muted small">no data</span>`;
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (meta && d.as_of) {
+    meta.textContent = `as of ${new Date(d.as_of * 1000).toLocaleTimeString()}`
+      + (d.cached ? " (cached)" : "");
+  }
+  el.innerHTML = d.data.map(m => {
+    if (m.error) {
+      return `<div class="macro-tile">
+        <div class="label">${esc(m.label || m.symbol)}</div>
+        <div class="val text-muted">—</div>
+        <div class="pct text-muted small">err</div>
+      </div>`;
+    }
+    const cls = classifyPct(m.pct);
+    const bg  = m.pct > 0 ? "bg-pos" : m.pct < 0 ? "bg-neg" : "";
+    const digits = (m.symbol === "BTC-USD" || m.symbol === "ETH-USD") ? 0
+                : (m.symbol === "^TNX" ? 3 : 2);
+    return `<div class="macro-tile ${bg}" title="${esc(m.symbol)} prev close ${fmtNum(m.prev_close, digits)}">
+      <div class="label">${esc(m.label || m.symbol)}</div>
+      <div class="val">${fmtNum(m.last, digits)}</div>
+      <div class="pct ${cls}">${fmtPct(m.pct)}</div>
+    </div>`;
+  }).join("");
+}
+
+// ── Futures-implied cash open ─────────────────────────────────────────────
+function fmtIndexPrice(v) {
+  if (v == null || Number.isNaN(v)) return "—";
+  return Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtPts(v) {
+  if (v == null || Number.isNaN(v)) return "—";
+  const n = Number(v);
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${n.toFixed(1)} pts`;
+}
+async function refreshImpliedOpen() {
+  const d = await fetchJSON("/api/implied-open");
+  const el = document.getElementById("implied-open-tiles");
+  const meta = document.getElementById("implied-open-meta");
+  if (!el) return;
+  if (!d || !d.data || !d.data.length) {
+    el.innerHTML = `<span class="text-muted small">no data</span>`;
+    if (meta) meta.textContent = "";
+    return;
+  }
+  if (meta && d.as_of) {
+    meta.textContent = `as of ${new Date(d.as_of * 1000).toLocaleTimeString()}`
+      + (d.cached ? " (cached)" : "");
+  }
+  el.innerHTML = d.data.map(r => {
+    const cls = classifyPct(r.delta_pct);
+    const arrow = r.delta_pct == null ? "" : (r.delta_pct > 0 ? "▲" : r.delta_pct < 0 ? "▼" : "—");
+    const bg = r.delta_pct > 0 ? "bg-pos" : r.delta_pct < 0 ? "bg-neg" : "";
+    return `<div class="col-md-6 col-xl-3">
+      <div class="implied-tile ${bg}" style="border:1px solid var(--bs-border-color); border-radius:6px; padding:10px;">
+        <div class="d-flex justify-content-between align-items-baseline">
+          <strong>${esc(r.label)}</strong>
+          <small class="text-muted">${esc(r.futures)} → ${esc(r.cash)}</small>
+        </div>
+        <div class="${cls}" style="font-size:1.4rem; font-weight:600; line-height:1.2;">
+          ${arrow} ${fmtIndexPrice(r.implied_open)}
+        </div>
+        <div class="${cls} small">${fmtPts(r.delta_pts)} (${fmtPct(r.delta_pct)})</div>
+        <div class="text-muted small mt-1">prev close ${fmtIndexPrice(r.cash_prev_close)}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+// ── Pre-market gappers (with overnight-trend fallback) ───────────────────
+async function refreshPremarketGappers() {
+  const d = await fetchJSON("/api/premarket-gappers");
+  const body = document.getElementById("premkt-body");
+  const meta = document.getElementById("premkt-meta");
+  const title = document.getElementById("premkt-title");
+  const tableWrap = document.getElementById("premkt-table-wrap");
+  const chartWrap = document.getElementById("premkt-chart-wrap");
+  if (!body) return;
+
+  const hasData = d && d.data && d.data.length;
+  if (hasData) {
+    if (title) title.textContent = "Pre-Market Gappers (S&P 500, top by avg volume)";
+    if (tableWrap) tableWrap.style.display = "";
+    if (chartWrap) chartWrap.style.display = "none";
+    if (meta && d.as_of) {
+      meta.textContent = `${d.data.length} names · as of ${new Date(d.as_of * 1000).toLocaleTimeString()}`
+        + (d.cached ? " (cached)" : "");
+    }
+    body.innerHTML = d.data.map(r => `
+      <tr>
+        <td><strong>${esc(r.symbol)}</strong></td>
+        <td class="text-truncate" style="max-width:180px">${esc(r.name || "")}</td>
+        <td><small style="color:${sectorColor(r.sector)}">${esc(r.sector || "")}</small></td>
+        <td class="text-end">${fmtNum(r.last)}</td>
+        <td class="text-end text-muted">${fmtNum(r.prev_close)}</td>
+        <td class="text-end">${fmtPct(r.premarket_pct)}</td>
+        <td class="text-end">${fmtCompactVol(r.premarket_volume)}</td>
+      </tr>`).join("");
+    return;
+  }
+  // Fallback: show overnight-trend chart instead.
+  if (title) title.textContent = "Overnight Futures & Crypto (last ~48h, % from start)";
+  if (tableWrap) tableWrap.style.display = "none";
+  if (chartWrap) chartWrap.style.display = "";
+  await refreshOvernightTrend();
+}
+
+const _OVERNIGHT_TREND_COLORS = {
+  "ES=F":    "#60a5fa",
+  "NQ=F":    "#a78bfa",
+  "BTC-USD": "#fbbf24",
+  "ETH-USD": "#34d399",
+};
+async function refreshOvernightTrend() {
+  const d = await fetchJSON("/api/overnight-trend");
+  const meta = document.getElementById("premkt-meta");
+  if (!d || !d.data || !d.data.length) {
+    if (meta) meta.textContent = "no overnight data";
+    return;
+  }
+  if (meta && d.as_of) {
+    meta.textContent = `as of ${new Date(d.as_of * 1000).toLocaleTimeString()}`
+      + (d.cached ? " (cached)" : "");
+  }
+  // Use the longest series as the canonical x-axis label set, then align
+  // shorter series by their own timestamps (category match by string).
+  const longest = d.data.reduce((a, b) => (b.points.length > a.points.length ? b : a), d.data[0]);
+  const labels = longest.points.map(p => p.t);
+  const datasets = d.data.map(s => {
+    const map = new Map(s.points.map(p => [p.t, p.value * 100]));
+    return {
+      label: s.label,
+      data: labels.map(t => (map.has(t) ? map.get(t) : null)),
+      borderColor: _OVERNIGHT_TREND_COLORS[s.symbol] || "#9ca3af",
+      backgroundColor: _OVERNIGHT_TREND_COLORS[s.symbol] || "#9ca3af",
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.15,
+      spanGaps: true,
+    };
+  });
+  setChart("overnight-trend-chart", {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { position: "top" },
+        tooltip: { callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y == null ? "—" : ctx.parsed.y.toFixed(2) + "%"}` } },
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 10, maxRotation: 0, minRotation: 0, font: { size: 10 } } },
+        y: { ticks: { callback: v => v.toFixed(1) + "%" }, title: { display: true, text: "% from start" } },
+      },
+    },
+  });
 }
 
 // ── Breadth ────────────────────────────────────────────────────────────────

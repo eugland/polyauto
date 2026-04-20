@@ -14,10 +14,7 @@ def derive_api_credentials(host: str, private_key: str, funder: str | None = Non
     log = logging.getLogger("automata")
     client = ClobClient(host, key=private_key, chain_id=POLYGON, funder=funder, signature_type=signature_type)
     creds = client.derive_api_key()
-    log.info("Derived API credentials — update your .env with these:")
-    log.info("  CLOB_API_KEY=%s", creds.api_key)
-    log.info("  CLOB_SECRET=%s", creds.api_secret)
-    log.info("  CLOB_PASS=%s", creds.api_passphrase)
+    log.info("Derived API credentials OK (values redacted)")
     return creds
 
 

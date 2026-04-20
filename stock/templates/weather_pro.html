@@ -63,6 +63,14 @@
         <a href="https://polymarket.com/@aapang" target="_blank" style="font-size:0.7rem">Profile ↗</a>
       </div>
     </div>
+
+    <div class="user-card card mb-2 p-2" id="card-auniwarper" onclick="selectUser('auniwarper')">
+      <div class="name">@auniwarper</div>
+      <div class="meta" id="meta-auniwarper">—</div>
+      <div class="mt-1">
+        <a href="https://polymarket.com/@auniwarper" target="_blank" style="font-size:0.7rem">Profile ↗</a>
+      </div>
+    </div>
   </div>
 
   <!-- Main panel -->
@@ -78,9 +86,10 @@ let allData = { positions: {}, activity: {} };
 let selectedUser = 'haerder';
 
 const USERS = {
-  haerder: { label: '@haerder' },
-  sin3000: { label: '@sin3000' },
-  aapang:  { label: '@aapang'  },
+  haerder:    { label: '@haerder'    },
+  sin3000:    { label: '@sin3000'    },
+  aapang:     { label: '@aapang'     },
+  auniwarper: { label: '@auniwarper' },
 };
 
 function esc(s) {

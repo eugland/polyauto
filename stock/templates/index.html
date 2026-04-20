@@ -28,6 +28,57 @@
   <!-- Row 0: Econ banner -->
   <div id="econ-banner" class="alert alert-secondary py-2 mb-3 small" style="display:none"></div>
 
+  <!-- Row 0a: Overnight markets -->
+  <div class="card mb-3">
+    <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+      <span>Overnight Markets &amp; Real-Time Crypto</span>
+      <small class="text-muted" id="overnight-meta"></small>
+    </div>
+    <div class="card-body">
+      <div id="overnight-tiles" class="d-flex flex-wrap gap-2"></div>
+    </div>
+  </div>
+
+  <!-- Row 0b: Futures-implied cash open -->
+  <div class="card mb-3">
+    <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+      <span>Futures-Implied Cash Open
+        <small class="text-muted ms-2 fw-normal">mechanical: prev close × (1 + futures %), ignores fair-value basis</small>
+      </span>
+      <small class="text-muted" id="implied-open-meta"></small>
+    </div>
+    <div class="card-body">
+      <div id="implied-open-tiles" class="row g-2"></div>
+    </div>
+  </div>
+
+  <!-- Row 0c: Pre-market gappers (weekday) / overnight trend chart (weekend or after-hours) -->
+  <div class="card mb-3">
+    <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+      <span id="premkt-title">Pre-Market Gappers (S&amp;P 500, top by avg volume)</span>
+      <small class="text-muted" id="premkt-meta"></small>
+    </div>
+    <div class="card-body p-0">
+      <div id="premkt-table-wrap" style="max-height: 360px; overflow-y: auto;">
+        <table class="table table-sm mb-0">
+          <thead>
+            <tr>
+              <th>Sym</th><th>Name</th><th>Sector</th>
+              <th class="text-end">Pre Last</th>
+              <th class="text-end">Prev Close</th>
+              <th class="text-end">Pre %</th>
+              <th class="text-end">Pre Vol</th>
+            </tr>
+          </thead>
+          <tbody id="premkt-body"><tr><td colspan="7" class="text-muted text-center py-3">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div id="premkt-chart-wrap" style="display:none; padding:12px;">
+        <canvas id="overnight-trend-chart" style="height:300px; max-height:300px"></canvas>
+      </div>
+    </div>
+  </div>
+
   <!-- Row 0b: Fear & Greed | SPY Volume Signal -->
   <div class="row g-3 mb-3">
     <div class="col-xl-5">

@@ -67,22 +67,22 @@ def _weekly_aggregate(rows: list[tuple[Any, float, float | None]]) -> list[tuple
 
 
 DEFAULT_DIVIDEND_PROFILE = [
-    ("MRVL", 0.0037),
-    ("MSFU", 310.0),
-    ("NVHE", 65.0),
-    ("TSLL", 231.0),
-    ("TSLY", 36.0),
-    ("VDY", 0.2168),
-    ("VXUS", 0.0203),
-    ("YCON", 10.0),
-    ("YNVD", 10.0),
-    ("DRAM", 10.0),
-    ("FSYD", 20.0),
-    ("FTN", 116.0),
-    ("HHIS", 90.0),
-    ("HODY", 23.0),
-    ("HPYE", 10.062),
-    ("MHYB", 6.0),
+    ("MRVL",    0.0037),
+    ("MSFU",    310.0),
+    ("NVHE.NE", 65.0),     # Harvest NVIDIA Enhanced High Income Shares (NEO)
+    ("TSLL",    231.0),
+    ("TSLY",    36.0),
+    ("VDY.TO",  0.2168),   # Vanguard FTSE Canadian High Div Yield (Toronto)
+    ("VXUS",    0.0203),
+    ("YCON.NE", 10.0),     # Harvest ETF (NEO)
+    ("YNVD.NE", 10.0),     # Harvest NVIDIA Enhanced High Income (NEO)
+    ("DRAM",    10.0),
+    ("FSYD",    20.0),
+    ("FTN",     116.0),
+    ("HHIS",    90.0),
+    ("HODY",    23.0),
+    ("HPYE",    10.062),
+    ("MHYB.TO", 6.0),      # Manulife Smart (Toronto)
 ]
 
 
@@ -123,6 +123,15 @@ def _as_float(value: Any) -> float | None:
         return None
 
 
+_LEGACY_TICKER_RENAMES = {
+    "NVHE": "NVHE.NE",
+    "VDY":  "VDY.TO",
+    "YCON": "YCON.NE",
+    "YNVD": "YNVD.NE",
+    "MHYB": "MHYB.TO",
+}
+
+
 def _ensure_dividend_tables(con) -> None:
     con.execute("""
         CREATE TABLE IF NOT EXISTS dividend_profiles (
@@ -139,6 +148,22 @@ def _ensure_dividend_tables(con) -> None:
             PRIMARY KEY(profile_name, symbol)
         )
     """)
+    # One-shot rename of legacy un-suffixed Canadian tickers to their proper
+    # exchange-qualified form. Skipped per row when the new symbol already
+    # exists (preserves user edits).
+    for old, new in _LEGACY_TICKER_RENAMES.items():
+        try:
+            con.execute("""
+                UPDATE dividend_holdings SET symbol = ?
+                WHERE symbol = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dividend_holdings h2
+                      WHERE h2.profile_name = dividend_holdings.profile_name
+                        AND h2.symbol = ?
+                  )
+            """, [new, old, new])
+        except Exception:
+            log.exception("legacy ticker rename %s -> %s failed", old, new)
     row = con.execute(
         "SELECT 1 FROM dividend_profiles WHERE profile_name='default' LIMIT 1"
     ).fetchone()
