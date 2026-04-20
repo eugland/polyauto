@@ -42,8 +42,16 @@ def _require_binary(name: str) -> None:
         )
 
 
-def run_one_cycle(channel: str, stream_key: str, quality: str) -> int:
-    """Spawn streamlink piped to ffmpeg, block until ffmpeg exits, return rc."""
+def run_one_cycle(channel: str, stream_key: str, quality: str,
+                  hls_live_edge: int, buffer_mb: int) -> int:
+    """Spawn streamlink piped to ffmpeg, block until ffmpeg exits, return rc.
+
+    Buffering strategy: start `hls_live_edge` segments behind the live edge
+    (Twitch segments are ~2s each, so 15 ≈ 30s lag) and give streamlink a
+    `buffer_mb` ring buffer + parallel segment fetcher with retries. When
+    a single segment is slow / 404s during an ad marker, we have headroom
+    to recover before the gap reaches YouTube's RTMP ingest. ffmpeg's
+    -thread_queue_size and FLV live flags absorb any residual jitter."""
     twitch_url = f"https://twitch.tv/{channel}"
     youtube_url = f"{YOUTUBE_RTMP_INGEST}/{stream_key}"
 
@@ -52,6 +60,11 @@ def run_one_cycle(channel: str, stream_key: str, quality: str) -> int:
         "--stdout",
         "--twitch-disable-ads",
         "--hls-live-restart",
+        "--hls-live-edge", str(hls_live_edge),     # start N segments behind live (~2s/seg)
+        "--ringbuffer-size", f"{buffer_mb}M",      # in-memory buffer between fetcher + stdout
+        "--stream-segment-attempts", "5",          # retry a flaky segment 5x
+        "--stream-segment-timeout", "10",          # per-segment HTTP timeout
+        "--stream-segment-threads", "3",           # parallel segment fetch
         twitch_url,
         quality,
     ]
@@ -59,8 +72,12 @@ def run_one_cycle(channel: str, stream_key: str, quality: str) -> int:
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "warning",
+        "-fflags", "+genpts+discardcorrupt",       # repair PTS gaps + drop bad packets
+        "-thread_queue_size", "4096",              # deeper input packet queue
         "-i", "pipe:0",
         "-c", "copy",
+        "-max_muxing_queue_size", "1024",          # deeper output mux queue
+        "-flvflags", "no_duration_filesize",       # FLV-live correct flags
         "-f", "flv",
         youtube_url,
     ]
@@ -115,6 +132,15 @@ def main() -> None:
         retry_seconds = int(os.environ.get("RESTREAM_RETRY_SECONDS", "30"))
     except ValueError:
         retry_seconds = 30
+    try:
+        # Twitch segments ≈ 2s each, so 15 ≈ 30s behind live edge.
+        hls_live_edge = int(os.environ.get("RESTREAM_HLS_LIVE_EDGE", "15"))
+    except ValueError:
+        hls_live_edge = 15
+    try:
+        buffer_mb = int(os.environ.get("RESTREAM_BUFFER_MB", "64"))
+    except ValueError:
+        buffer_mb = 64
 
     if not channel:
         sys.exit("TWITCH_CHANNEL not set in .env")
@@ -123,12 +149,14 @@ def main() -> None:
 
     log.info("Restream daemon starting: twitch.tv/%s -> YouTube (quality=%s)",
              channel, quality)
+    log.info("Buffering: ~%ds behind live edge (%d segments), %dMB ring buffer",
+             hls_live_edge * 2, hls_live_edge, buffer_mb)
     log.info("Retry interval when offline: %ds", retry_seconds)
 
     backoff = retry_seconds
     while True:
         try:
-            rc = run_one_cycle(channel, key, quality)
+            rc = run_one_cycle(channel, key, quality, hls_live_edge, buffer_mb)
         except KeyboardInterrupt:
             log.info("Exiting on Ctrl-C")
             return

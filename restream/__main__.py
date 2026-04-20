@@ -9,6 +9,8 @@ Create restream/.env (this folder, NOT the repo root .env):
     # optional:
     # RESTREAM_QUALITY=best        # streamlink quality token: best, 1080p60, 720p, ...
     # RESTREAM_RETRY_SECONDS=30    # how long to wait when channel is offline
+    # RESTREAM_HLS_LIVE_EDGE=15    # # segments behind live (~2s each); 15 ≈ 30s buffer
+    # RESTREAM_BUFFER_MB=64        # streamlink in-memory ring buffer
 
 restream/.env is gitignored — secrets stay local.
 
