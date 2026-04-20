@@ -64,6 +64,11 @@ ENV/
 .env
 .env.*
 restream/.env
+restream/recordings/
+restream/cuts/
+restream/youtube_token.json
+restream/youtube_oauth_client.json
+restream/upload_log.json
 
 # IDEs / editors
 .idea/

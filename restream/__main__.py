@@ -1,31 +1,44 @@
-"""Twitch -> YouTube restreamer (streamlink + ffmpeg passthrough).
+"""Twitch -> YouTube restreamer with concurrent topic-segmented uploads.
 
-Setup on Ubuntu:
-    sudo apt install -y streamlink ffmpeg
+Setup:
+    sudo apt install -y streamlink ffmpeg            # Ubuntu
+    # On Windows install streamlink + ffmpeg and ensure both are on PATH.
+    pip install -r requirements.txt
 
-Create restream/.env (this folder, NOT the repo root .env):
-    TWITCH_CHANNEL=gettingajob
-    YOUTUBE_STREAM_KEY=<your rotated key>
-    # optional:
-    # RESTREAM_QUALITY=best              # streamlink quality token: best, 1080p60, 720p, ...
-    # RESTREAM_RETRY_SECONDS=30          # how long to wait when channel is offline
-    # RESTREAM_HLS_LIVE_EDGE=15          # # segments behind live (~2s each); 15 ≈ 30s buffer
-    # RESTREAM_BUFFER_MB=64              # streamlink in-memory ring buffer
-    # RESTREAM_REENCODE_AUDIO=1          # re-encode audio to AAC (default on; kills ad-break beeps)
-    # RESTREAM_REENCODE_VIDEO=1          # re-encode video to H.264 (default on; ~1 CPU core, smooths drops)
-    # RESTREAM_VIDEO_BITRATE_KBPS=6000   # only used when RESTREAM_REENCODE_VIDEO=1
+Configure restream/.env (copy from restream/.env.example). The minimum:
+    TWITCH_CHANNEL=...
+    YOUTUBE_STREAM_KEY=...                           # static fallback key
+    # Recommended for title-sync + dynamic broadcast:
+    TWITCH_CLIENT_ID=...
+    TWITCH_CLIENT_SECRET=...
 
-restream/.env is gitignored — secrets stay local.
+YouTube Data API one-time bootstrap (opens browser):
+    python -m restream.youtube_live --auth
 
-Run:
-    python3 -m restream
+Run the daemon:
+    python -m restream
 
-The loop:
-  - streamlink tries to pull the live HLS stream from twitch.tv/<channel>
-  - if live, output is piped to ffmpeg with -c copy (no re-encode, ~0 CPU)
-  - ffmpeg pushes the FLV mux to YouTube's RTMP ingest
-  - on offline / disconnect / any non-zero exit, sleep RESTREAM_RETRY_SECONDS and retry
-  - Ctrl-C exits cleanly
+What happens per cycle:
+  - If TWITCH_CLIENT_ID/SECRET present: poll Helix /streams; skip if offline.
+  - Otherwise: fall back to streamlink probe (legacy path).
+  - If RESTREAM_USE_DYNAMIC_BROADCAST=1 and YouTube creds are set up: mint
+    a fresh liveBroadcast + liveStream titled after the live Twitch stream
+    and use that stream key for ffmpeg's RTMP output.
+  - If RESTREAM_RECORD_ENABLED=1: ffmpeg also writes 30s MP4 chunks to
+    restream/recordings/<session_id>/, fed into a concurrent pipeline:
+        SegmentWatcher -> Transcriber (faster-whisper) ->
+        TopicDetector (MiniLM cosine) -> Cutter (ffmpeg concat) ->
+        Uploader (videos.insert).
+  - Each detected topic boundary triggers a cut + upload while the live
+    stream is still going.
+  - On clean ffmpeg exit (channel ended): pipeline drains, broadcast is
+    transitioned to 'complete', stream resource is deleted.
+
+Smoke tests:
+    python -m restream.transcriber path/to/seg.mp4
+    python -m restream.topic_detector path/to/sentences.json
+    python -m restream.post_processor --replay path/to/recordings/<session_id>
+    RESTREAM_UPLOAD_ENABLED=0 python -m restream    # full dry-run
 """
 from .restreamer import main
 
