@@ -903,13 +903,13 @@ def _scan_positions(dry_run: bool = True) -> None:
                 log.info("  token %s  %.2f shares — too small, bid not at target yet", token_id[:12], size)
             continue
         orders   = get_open_orders(client, token_id)
-        has_tp   = any(
-            abs(float(o.get("price", 0)) - take_profit) < 0.0001
-            and str(o.get("side", "")).upper() == "SELL"
-            for o in orders
+        existing_sell = next(
+            (o for o in orders if str(o.get("side", "")).upper() == "SELL"),
+            None,
         )
-        if has_tp:
-            log.debug("  token %s  %.2f shares — take-profit order already exists", token_id[:12], size)
+        if existing_sell is not None:
+            existing_price = float(existing_sell.get("price", 0))
+            log.debug("  token %s  %.2f shares — sell order already exists @ %.1f¢", token_id[:12], size, existing_price * 100)
             continue
         if dry_run:
             log.info("  token %s  %.2f shares — [DRY RUN] would place sell @ %.1f¢", token_id[:12], size, take_profit * 100)
