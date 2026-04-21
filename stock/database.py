@@ -1304,3 +1304,88 @@ def query_health(db_path: str) -> dict:
                 "daily_bars": d[0]}
     except Exception as exc:
         return {"db": "error", "error": str(exc)}
+
+
+def query_pro_positions(db_path: str) -> dict:
+    """Latest position snapshot per (trader, asset), grouped by trader name."""
+    if _missing(db_path):
+        return {}
+    try:
+        con = _connect(db_path)
+        rows = con.execute("""
+            SELECT trader, asset, condition_id, title, outcome,
+                   size, avg_price, cur_price, current_value, cash_pnl,
+                   initial_value, redeemable, slug, event_slug, snapped_at
+            FROM (
+                SELECT *, row_number() OVER (
+                    PARTITION BY trader, asset ORDER BY snapped_at DESC
+                ) AS rn
+                FROM pro_positions
+            )
+            WHERE rn = 1
+            ORDER BY trader, title
+        """).fetchall()
+        con.close()
+    except Exception as exc:
+        log.exception("query_pro_positions failed")
+        return {"error": str(exc)}
+    result: dict = {}
+    for row in rows:
+        (trader, asset, cond_id, title, outcome, size, avg_price, cur_price,
+         current_value, cash_pnl, initial_value, redeemable, slug, event_slug,
+         snapped_at) = row
+        result.setdefault(trader, []).append({
+            "asset": asset,
+            "conditionId": cond_id,
+            "title": title,
+            "outcome": outcome,
+            "size": size,
+            "avgPrice": avg_price,
+            "curPrice": cur_price,
+            "currentValue": current_value,
+            "cashPnl": cash_pnl,
+            "initialValue": initial_value,
+            "redeemable": redeemable,
+            "slug": slug,
+            "eventSlug": event_slug,
+            "snappedAt": snapped_at.isoformat() if snapped_at else None,
+        })
+    return result
+
+
+def query_pro_activity(db_path: str) -> dict:
+    """All stored activity records, grouped by trader name, newest first."""
+    if _missing(db_path):
+        return {}
+    try:
+        con = _connect(db_path)
+        rows = con.execute("""
+            SELECT trader, tx_hash, asset, condition_id, title, outcome,
+                   side, type, price, size, usdc_size, timestamp, slug, event_slug
+            FROM pro_activity
+            ORDER BY trader, timestamp DESC
+        """).fetchall()
+        con.close()
+    except Exception as exc:
+        log.exception("query_pro_activity failed")
+        return {"error": str(exc)}
+    result: dict = {}
+    for row in rows:
+        (trader, tx_hash, asset, cond_id, title, outcome, side, type_,
+         price, size, usdc_size, timestamp, slug, event_slug) = row
+        result.setdefault(trader, []).append({
+            "transactionHash": tx_hash,
+            "asset": asset,
+            "conditionId": cond_id,
+            "title": title,
+            "outcome": outcome,
+            "side": side,
+            "type": type_,
+            "price": price,
+            "size": size,
+            "usdcSize": usdc_size,
+            "timestamp": timestamp,
+            "slug": slug,
+            "eventSlug": event_slug,
+        })
+    return result

@@ -1,18 +1,70 @@
+/* Shared theme tokens — light (default) and dark variants selected by
+   Bootstrap's data-bs-theme attribute on <html>. */
+:root {
+  --app-bg-from: #f7fbff;
+  --app-bg-to:   #eef5ff;
+  --card-border: #d9e6ff;
+  --card-shadow: 0 4px 14px rgba(41, 76, 140, 0.06);
+  --thead-bg:    #f5f9ff;
+  --fg-bar-bg:   #e6edf7;
+  --macro-tile-bg:     #ffffff;
+  --macro-tile-border: #dbe8ff;
+  --pos-color: #1a9f53;
+  --neg-color: #d64545;
+  --pos-bg:     rgba(26, 159, 83, 0.12);
+  --pos-border: rgba(26, 159, 83, 0.28);
+  --neg-bg:     rgba(214, 69, 69, 0.12);
+  --neg-border: rgba(214, 69, 69, 0.28);
+  --log-bg:       #0f1626;
+  --log-fg:       #c8ffc8;
+  --log-border:   #23314f;
+  --accent-blue:  #4a9eff;
+  --pill-yes-bg:  rgba(26, 159, 83, 0.14);
+  --pill-yes-fg:  #1a9f53;
+  --pill-no-bg:   rgba(214, 69, 69, 0.14);
+  --pill-no-fg:   #d64545;
+}
+
+[data-bs-theme="dark"] {
+  --app-bg-from: #0b1220;
+  --app-bg-to:   #0d1528;
+  --card-border: #223152;
+  --card-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  --thead-bg:    rgba(96, 165, 250, 0.10);
+  --fg-bar-bg:   #1f2a44;
+  --macro-tile-bg:     #121a2e;
+  --macro-tile-border: #223152;
+  --pos-color: #4ade80;
+  --neg-color: #f87171;
+  --pos-bg:     rgba(74, 222, 128, 0.16);
+  --pos-border: rgba(74, 222, 128, 0.32);
+  --neg-bg:     rgba(248, 113, 113, 0.16);
+  --neg-border: rgba(248, 113, 113, 0.32);
+  --log-bg:       #0b0f18;
+  --log-fg:       #c8ffc8;
+  --log-border:   #1c2540;
+  --pill-yes-bg:  #1a3a1a;
+  --pill-yes-fg:  #6fcf6f;
+  --pill-no-bg:   #3a1a1a;
+  --pill-no-fg:   #cf6f6f;
+}
+
 body {
   font-size: 0.875rem;
-  background: linear-gradient(180deg, #f7fbff 0%, #eef5ff 100%);
+  background: linear-gradient(180deg, var(--app-bg-from) 0%, var(--app-bg-to) 100%);
+  min-height: 100vh;
 }
 
 .card-header { font-size: 0.9rem; }
 
 .card {
-  border-color: #d9e6ff;
-  box-shadow: 0 4px 14px rgba(41, 76, 140, 0.06);
+  border-color: var(--card-border);
+  box-shadow: var(--card-shadow);
 }
 
 .macro-tile {
-  background: #ffffff;
-  border: 1px solid #dbe8ff;
+  background: var(--macro-tile-bg);
+  border: 1px solid var(--macro-tile-border);
   border-radius: .5rem;
   padding: .4rem .7rem;
   min-width: 90px;
@@ -22,15 +74,15 @@ body {
 .macro-tile .val   { font-size: 1rem; font-weight: 600; }
 .macro-tile .pct   { font-size: .8rem; font-weight: 600; }
 
-.pos { color: #1a9f53; }
-.neg { color: #d64545; }
+.pos { color: var(--pos-color); }
+.neg { color: var(--neg-color); }
 .neu { color: var(--bs-secondary-color); }
 
-.bg-pos { background: rgba(26, 159, 83, 0.12); border-color: rgba(26, 159, 83, 0.28); }
-.bg-neg { background: rgba(214, 69, 69, 0.12); border-color: rgba(214, 69, 69, 0.28); }
+.bg-pos { background: var(--pos-bg); border-color: var(--pos-border); }
+.bg-neg { background: var(--neg-bg); border-color: var(--neg-border); }
 
 .table > :not(caption) > * > * { padding: .3rem .6rem; }
-thead th { background: #f5f9ff; font-size: 0.78rem; font-weight: 600; color: var(--bs-secondary-color); }
+thead th { background: var(--thead-bg); font-size: 0.78rem; font-weight: 600; color: var(--bs-secondary-color); }
 
 .nav-tabs .nav-link { font-size: 0.85rem; }
 .nav-tabs .nav-link.active { font-weight: 600; }
@@ -55,7 +107,7 @@ thead th { background: #f5f9ff; font-size: 0.78rem; font-weight: 600; color: var
 .fg-component-row .bar {
   flex: 1;
   height: 6px;
-  background: #e6edf7;
+  background: var(--fg-bar-bg);
   border-radius: 3px;
   overflow: hidden;
   position: relative;
@@ -65,7 +117,7 @@ thead th { background: #f5f9ff; font-size: 0.78rem; font-weight: 600; color: var
   top: 0; bottom: 0; left: 0;
   border-radius: 3px;
 }
-.fg-component-row .lbl { width: 150px; font-size: .72rem; color: #555; }
+.fg-component-row .lbl { width: 150px; font-size: .72rem; color: var(--bs-secondary-color); }
 .fg-component-row .val { width: 36px; text-align: right; font-weight: 600; font-size: .78rem; }
 
 .signal-pill {
@@ -74,10 +126,70 @@ thead th { background: #f5f9ff; font-size: 0.78rem; font-weight: 600; color: var
   font-weight: 600;
   font-size: .75rem;
 }
-.signal-pill.pos { background: rgba(26, 159, 83, .12); }
-.signal-pill.neg { background: rgba(214, 69, 69, .12); }
-.signal-pill.neu { background: rgba(120, 120, 120, .12); }
+.signal-pill.pos { background: var(--pos-bg); }
+.signal-pill.neg { background: var(--neg-bg); }
+.signal-pill.neu { background: rgba(120, 120, 120, .14); }
 
 .earnings-table td, .earnings-table th { white-space: nowrap; }
-.earnings-table .im-hot  { color: #d64545; font-weight: 600; }
-.earnings-table .im-cool { color: #1a9f53; font-weight: 600; }
+.earnings-table .im-hot  { color: var(--neg-color); font-weight: 600; }
+.earnings-table .im-cool { color: var(--pos-color); font-weight: 600; }
+
+/* Shared pills used by weather-pro */
+.pill-yes {
+  display: inline-block; padding: 1px 7px; border-radius: 99px;
+  font-size: 0.72rem; background: var(--pill-yes-bg); color: var(--pill-yes-fg);
+}
+.pill-no {
+  display: inline-block; padding: 1px 7px; border-radius: 99px;
+  font-size: 0.72rem; background: var(--pill-no-bg); color: var(--pill-no-fg);
+}
+.pnl-pos { color: var(--pos-color); }
+.pnl-neg { color: var(--neg-color); }
+.text-dim { color: var(--bs-secondary-color); }
+
+/* Weather log viewer */
+.log-pane {
+  background: var(--log-bg);
+  color: var(--log-fg);
+  font-size: 0.78rem;
+  font-family: 'Courier New', monospace;
+  white-space: pre-wrap; word-break: break-all;
+  height: calc(100vh - 100px); overflow-y: auto; padding: 12px;
+  border: 1px solid var(--log-border); border-radius: 4px;
+}
+.line-ERROR   { color: #ff6b6b; }
+.line-WARNING { color: #ffd93d; }
+.line-INFO    { color: var(--log-fg); }
+
+/* ── Mobile / narrow-screen adjustments ──────────────────────────────── */
+/* Allow any card body to scroll its wide tables horizontally instead of
+   stretching the card past the viewport. */
+.card-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+@media (max-width: 768px) {
+  body { font-size: 0.82rem; }
+  .container-fluid { padding-left: .6rem; padding-right: .6rem; }
+  h5 { font-size: 1rem; }
+  .card-header { font-size: 0.82rem; padding: .45rem .6rem; }
+  .card-body { padding: .7rem; }
+  .nav-tabs .nav-link { font-size: 0.78rem; padding: .3rem .5rem; }
+  .macro-tile { min-width: 72px; padding: .3rem .5rem; }
+  .macro-tile .val { font-size: .9rem; }
+  .fg-component-row .lbl { width: 110px; font-size: .68rem; }
+  /* Let chart canvases use the full card width on narrow screens. */
+  canvas { max-width: 100%; }
+}
+
+@media (max-width: 576px) {
+  body { font-size: 0.8rem; }
+  h5 { font-size: .95rem; }
+  .btn-sm { font-size: .72rem; padding: .22rem .45rem; }
+  .card-header { font-size: 0.8rem; }
+  .card-body { padding: .55rem; }
+  thead th { font-size: .72rem; }
+  .table > :not(caption) > * > * { padding: .25rem .4rem; }
+  .fg-component-row .lbl { width: 90px; }
+  /* Header row: let the trailing buttons wrap under the title on phones
+     instead of squeezing into the same line. */
+  .d-flex.align-items-center.justify-content-between { flex-wrap: wrap; gap: .4rem; }
+}

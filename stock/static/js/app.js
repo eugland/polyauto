@@ -31,12 +31,24 @@ const PALETTE = [
   "#38bdf8","#f472b6","#c084fc","#86efac","#fda4af",
 ];
 
-// Force light mode and chart text/grid styling.
-document.documentElement.setAttribute("data-bs-theme", "light");
-if (window.Chart) {
-  Chart.defaults.color = "#1f2937";
-  Chart.defaults.borderColor = "rgba(31, 41, 55, 0.16)";
+// Chart text/grid styling follows whatever theme the page is currently using
+// (data-bs-theme is set by the inline theme-init snippet in index.html and
+// switched on the fly when the OS color scheme changes).
+function applyChartTheme() {
+  if (!window.Chart) return;
+  const dark = document.documentElement.getAttribute("data-bs-theme") === "dark";
+  Chart.defaults.color = dark ? "#cbd5e1" : "#1f2937";
+  Chart.defaults.borderColor = dark
+    ? "rgba(203, 213, 225, 0.16)"
+    : "rgba(31, 41, 55, 0.16)";
 }
+applyChartTheme();
+// Re-apply when the user / OS flips themes so newly-built charts pick up the
+// right palette. Existing charts keep their old colors until redrawn — the
+// periodic refreshAll() loop rebuilds them within a few seconds.
+new MutationObserver(applyChartTheme).observe(document.documentElement, {
+  attributes: true, attributeFilter: ["data-bs-theme"],
+});
 
 const SECTOR_COLOR = {
   "Technology":             "#60a5fa",
@@ -844,7 +856,10 @@ async function refreshFearGreed() {
     data: {
       datasets: [{
         data: [pct, 100 - pct],
-        backgroundColor: [fgColor(score), "#e6edf7"],
+        backgroundColor: [
+          fgColor(score),
+          getComputedStyle(document.documentElement).getPropertyValue("--fg-bar-bg").trim() || "#e6edf7",
+        ],
         borderWidth: 0,
       }],
     },

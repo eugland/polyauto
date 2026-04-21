@@ -9,7 +9,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import requests as _requests
 from flask import Flask, jsonify, render_template, request
 
 from . import database as db
@@ -557,13 +556,15 @@ def create_app(db_path: str) -> Flask:
         except Exception as exc:
             return jsonify({"error": str(exc), "path": path_str}), 500
 
+    import requests as _requests
     _PRO_WALLETS = {
         "haerder":    "0x8dec027d883949a6bfe79842d0ae6b80347e46e0",
         "sin3000":    "0x8d71ff86701227bb479b2039edd92b08f73115d8",
         "aapang":     "0x104171232971a6db8cf938f76fdbebbb81c5f452",
         "auniwarper": "0x0ec451646092f877f80d2b53d5500e50dac05ed3",
     }
-    _POLYMARKET_DATA_API = "https://data-api.polymarket.com"
+    _POS_LIMITS = {"haerder": 100, "sin3000": 100, "aapang": 500, "auniwarper": 500}
+    _DATA_API = "https://data-api.polymarket.com"
 
     @app.route("/api/weather-pro/positions")
     def api_weather_pro_positions():
@@ -571,52 +572,26 @@ def create_app(db_path: str) -> Flask:
         for name, wallet in _PRO_WALLETS.items():
             try:
                 resp = _requests.get(
-                    f"{_POLYMARKET_DATA_API}/positions",
-                    params={"user": wallet, "limit": 50},
-                    timeout=10,
+                    f"{_DATA_API}/positions",
+                    params={"user": wallet, "limit": _POS_LIMITS.get(name, 100)},
+                    timeout=15,
                 )
                 results[name] = resp.json() if resp.ok else []
             except Exception as exc:
                 results[name] = {"error": str(exc)}
         return jsonify(results)
 
-    def _fetch_activity(wallet: str, limit: int = 100) -> list:
-        """Fetch activity, paginating until limit reached or no more data."""
-        all_items: list = []
-        offset = 0
-        page = 500
-        while len(all_items) < limit:
-            resp = _requests.get(
-                f"{_POLYMARKET_DATA_API}/activity",
-                params={"user": wallet, "limit": page, "offset": offset},
-                timeout=15,
-            )
-            if not resp.ok:
-                break
-            batch = resp.json()
-            if not isinstance(batch, list) or not batch:
-                break
-            all_items.extend(batch)
-            if len(batch) < page:
-                break
-            offset += page
-        return all_items[:limit]
-
     @app.route("/api/weather-pro/activity")
     def api_weather_pro_activity():
         from .temp_lookup import annotate_activity
-        results = {}
-        limits = {"haerder": 100, "sin3000": 100, "aapang": 500, "auniwarper": 500}
-        for name, wallet in _PRO_WALLETS.items():
-            try:
-                items = _fetch_activity(wallet, limit=limits.get(name, 100))
-                try:
-                    annotate_activity(items)
-                except Exception:
-                    pass  # never fail the response on a temp-cache hiccup
-                results[name] = items
-            except Exception as exc:
-                results[name] = {"error": str(exc)}
+        results = db.query_pro_activity(_db())
+        if isinstance(results, dict) and "error" not in results:
+            for items in results.values():
+                if isinstance(items, list):
+                    try:
+                        annotate_activity(items)
+                    except Exception:
+                        pass
         return jsonify(results)
 
     return app

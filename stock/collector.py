@@ -21,6 +21,7 @@ log = logging.getLogger("stock.collector")
 # ── DB schema ─────────────────────────────────────────────────────────────────
 
 def init_db(path: str | Path) -> duckdb.DuckDBPyConnection:
+    from .pro_collector import init_pro_schema
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     con = duckdb.connect(str(path))
 
@@ -119,6 +120,7 @@ def init_db(path: str | Path) -> duckdb.DuckDBPyConnection:
             PRIMARY KEY(event_date, event_time, name)
         )
     """)
+    init_pro_schema(con)
     return con
 
 
@@ -928,11 +930,26 @@ def collect_once(con: duckdb.DuckDBPyConnection, state: dict,
             log.exception("econ refresh failed")
         state["last_econ"] = now
 
+    from .pro_collector import upsert_activity, prune_pro_data
+
+    last_pro_act = state.get("last_pro_act")
+    if last_pro_act is None or (now - last_pro_act).total_seconds() >= 1800:
+        try:
+            n = upsert_activity(con)
+            log.info("Pro activity upsert: %d rows", n)
+        except Exception:
+            log.exception("pro activity upsert failed")
+        state["last_pro_act"] = now
+
     last_prune = state.get("last_prune")
     if last_prune is None or (now - last_prune).total_seconds() >= 3600:
         prune_intraday(con)
         prune_daily(con)
         prune_vol(con)
+        try:
+            prune_pro_data(con)
+        except Exception:
+            log.exception("prune_pro_data failed")
         state["last_prune"] = now
 
     con.commit()
