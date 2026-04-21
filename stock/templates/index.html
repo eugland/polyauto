@@ -22,7 +22,7 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.1/dist/chartjs-chart-matrix.min.js"></script>
-  <link rel="stylesheet" href="static/css/style.css?v=adaptive1">
+  <link rel="stylesheet" href="static/css/style.css?v=views1d5y">
 </head>
 <body>
 <div class="container-fluid py-3">
@@ -127,13 +127,12 @@
           </div>
           <div class="d-flex flex-wrap gap-2 mt-2 align-items-center">
             <div class="btn-group btn-group-sm" role="group">
-              <button type="button" class="btn btn-outline-secondary active" data-obv-view="current">Current</button>
-              <button type="button" class="btn btn-outline-secondary" data-obv-view="weekly">Weekly</button>
-              <button type="button" class="btn btn-outline-secondary" data-obv-view="intraday">Intraday</button>
+              <button type="button" class="btn btn-outline-secondary active" data-obv-view="1d">1D</button>
+              <button type="button" class="btn btn-outline-secondary" data-obv-view="5d">5D</button>
+              <button type="button" class="btn btn-outline-secondary" data-obv-view="1m">1M</button>
+              <button type="button" class="btn btn-outline-secondary" data-obv-view="1y">1Y</button>
+              <button type="button" class="btn btn-outline-secondary" data-obv-view="5y">5Y</button>
             </div>
-            <input type="date" class="form-control form-control-sm" id="spy-obv-start" style="max-width: 150px;">
-            <input type="date" class="form-control form-control-sm" id="spy-obv-end" style="max-width: 150px;">
-            <button type="button" class="btn btn-sm btn-outline-primary" id="apply-spy-obv-range">Apply</button>
           </div>
         </div>
         <div class="card-body">
@@ -174,8 +173,11 @@
         <div class="card-header d-flex justify-content-between align-items-center fw-semibold">
           <span>SVIX vs UVIX (normalized)</span>
           <div class="btn-group btn-group-sm" role="group">
-            <button type="button" class="btn btn-outline-secondary active" data-pair="svix" data-view="5d">5d</button>
-            <button type="button" class="btn btn-outline-secondary" data-pair="svix" data-view="intraday">Intraday</button>
+            <button type="button" class="btn btn-outline-secondary active" data-pair="svix" data-view="1d">1D</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="svix" data-view="5d">5D</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="svix" data-view="1m">1M</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="svix" data-view="1y">1Y</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="svix" data-view="5y">5Y</button>
           </div>
         </div>
         <div class="card-body">
@@ -191,8 +193,11 @@
         <div class="card-header d-flex justify-content-between align-items-center fw-semibold">
           <span>TSLL vs TSLZ (normalized)</span>
           <div class="btn-group btn-group-sm" role="group">
-            <button type="button" class="btn btn-outline-secondary active" data-pair="tsl" data-view="5d">5d</button>
-            <button type="button" class="btn btn-outline-secondary" data-pair="tsl" data-view="intraday">Intraday</button>
+            <button type="button" class="btn btn-outline-secondary active" data-pair="tsl" data-view="1d">1D</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="tsl" data-view="5d">5D</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="tsl" data-view="1m">1M</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="tsl" data-view="1y">1Y</button>
+            <button type="button" class="btn btn-outline-secondary" data-pair="tsl" data-view="5y">5Y</button>
           </div>
         </div>
         <div class="card-body">
@@ -215,13 +220,12 @@
           </div>
           <div class="d-flex flex-wrap gap-2 mt-2 align-items-center">
             <div class="btn-group btn-group-sm" role="group">
-              <button type="button" class="btn btn-outline-secondary active" data-drift-view="current">Current</button>
-              <button type="button" class="btn btn-outline-secondary" data-drift-view="weekly">Weekly</button>
-              <button type="button" class="btn btn-outline-secondary" data-drift-view="intraday">Intraday</button>
+              <button type="button" class="btn btn-outline-secondary active" data-drift-view="1d">1D</button>
+              <button type="button" class="btn btn-outline-secondary" data-drift-view="5d">5D</button>
+              <button type="button" class="btn btn-outline-secondary" data-drift-view="1m">1M</button>
+              <button type="button" class="btn btn-outline-secondary" data-drift-view="1y">1Y</button>
+              <button type="button" class="btn btn-outline-secondary" data-drift-view="5y">5Y</button>
             </div>
-            <input type="date" class="form-control form-control-sm" id="tsl-drift-start" style="max-width: 150px;">
-            <input type="date" class="form-control form-control-sm" id="tsl-drift-end" style="max-width: 150px;">
-            <button type="button" class="btn btn-sm btn-outline-primary" id="apply-tsl-drift-range">Apply</button>
           </div>
         </div>
         <div class="card-body">
@@ -419,6 +423,6 @@
   </div>
 
 </div>
-<script src="static/js/app.js?v=adaptive1"></script>
+<script src="static/js/app.js?v=views1d5y"></script>
 </body>
 </html>

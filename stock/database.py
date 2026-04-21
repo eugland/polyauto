@@ -23,49 +23,6 @@ def _missing(db_path: str) -> bool:
     return not os.path.exists(db_path)
 
 
-def _parse_date_param(value: str | None) -> date | None:
-    if not value:
-        return None
-    try:
-        return datetime.strptime(value, "%Y-%m-%d").date()
-    except Exception:
-        return None
-
-
-def _apply_date_window(rows: list[tuple[Any, ...]], start: date | None,
-                       end: date | None, ts_index: int = 0) -> list[tuple[Any, ...]]:
-    if start is None and end is None:
-        return rows
-    out: list[tuple[Any, ...]] = []
-    for r in rows:
-        t = r[ts_index]
-        td = t.date() if isinstance(t, datetime) else t
-        if start and td < start:
-            continue
-        if end and td > end:
-            continue
-        out.append(r)
-    return out
-
-
-def _weekly_aggregate(rows: list[tuple[Any, float, float | None]]) -> list[tuple[date, float, float]]:
-    buckets: dict[date, tuple[date, float, float]] = {}
-    for d, close, vol in rows:
-        if d is None or close is None:
-            continue
-        week_key = d - timedelta(days=d.weekday())
-        prev = buckets.get(week_key)
-        if prev is None:
-            buckets[week_key] = (d, close, float(vol or 0))
-            continue
-        prev_d, _, prev_vol = prev
-        last_d = d if d >= prev_d else prev_d
-        last_close = close if d >= prev_d else prev[1]
-        buckets[week_key] = (last_d, last_close, prev_vol + float(vol or 0))
-    ordered = sorted(buckets.items(), key=lambda x: x[0])
-    return [(k, v[1], v[2]) for k, v in ordered]
-
-
 DEFAULT_DIVIDEND_PROFILE = [
     ("MRVL",    0.0037),
     ("MSFU",    310.0),
@@ -193,30 +150,59 @@ def _normalize_series(points: list[tuple[Any, float]]) -> list[dict]:
             for t, v in points]
 
 
+_VIEW_ALIASES = {
+    "intraday": "1d",
+    "current":  "1d",
+    "weekly":   "5d",
+}
+
+
+def _canon_view(view: str | None) -> str:
+    v = (view or "1d").lower()
+    return _VIEW_ALIASES.get(v, v)
+
+
+_DAILY_WINDOW_DAYS = {
+    "1m": 31,
+    "1y": 400,        # a bit of slack past 365 so calendars line up
+    "5y": 5 * 365 + 20,
+}
+
+
 def query_pair(db_path: str, symbols: list[str], view: str) -> dict:
     if _missing(db_path):
         return {"series": [], "error": "DB not found — start the collector first."}
     try:
         con = _connect(db_path)
+        v = _canon_view(view)
         series = []
         for sym in symbols:
-            if view == "5d":
-                rows = con.execute("""
-                    SELECT date, close FROM daily_bars
-                    WHERE symbol = ? AND date >= CURRENT_DATE - INTERVAL 10 DAY
-                    ORDER BY date
-                """, [sym]).fetchall()
-            else:  # intraday
+            if v == "1d":
                 rows = con.execute("""
                     SELECT ts, price FROM intraday_bars
                     WHERE symbol = ? AND ts >= CURRENT_DATE
                     ORDER BY ts
                 """, [sym]).fetchall()
+            elif v == "5d":
+                # Use intraday so the 5D view has real granularity, not one
+                # point per day.
+                rows = con.execute("""
+                    SELECT ts, price FROM intraday_bars
+                    WHERE symbol = ? AND ts >= CURRENT_DATE - INTERVAL 5 DAY
+                    ORDER BY ts
+                """, [sym]).fetchall()
+            else:
+                days = _DAILY_WINDOW_DAYS.get(v, 31)
+                rows = con.execute(f"""
+                    SELECT date, close FROM daily_bars
+                    WHERE symbol = ? AND date >= CURRENT_DATE - INTERVAL {days} DAY
+                    ORDER BY date
+                """, [sym]).fetchall()
             pts = [(r[0], r[1]) for r in rows]
             series.append({"symbol": sym, "points": _normalize_series(pts),
                            "raw_points": [{"t": str(t), "value": v} for t, v in pts]})
         con.close()
-        return {"series": series, "normalized": True, "view": view}
+        return {"series": series, "normalized": True, "view": v}
     except Exception as exc:
         log.exception("query_pair failed")
         return {"series": [], "error": str(exc)}
@@ -433,69 +419,48 @@ def query_breadth(db_path: str) -> dict:
 # ── tracking error (leveraged ETF decay) ──────────────────────────────────────
 
 def query_tracking_error(db_path: str, pair: str, base: str, leverage: float,
-                         days: int = 10, view: str = "current",
+                         days: int = 10, view: str = "1d",
                          start: str | None = None, end: str | None = None) -> dict:
     """Compare actual leveraged ETF path against a synthetic compounded version."""
     if _missing(db_path):
         return {"actual": [], "synthetic": []}
     try:
         con = _connect(db_path)
-        view = (view or "current").lower()
-        start_d = _parse_date_param(start)
-        end_d = _parse_date_param(end)
+        v = _canon_view(view)
 
-        if view == "intraday":
-            pair_rows_raw = con.execute("""
+        if v in ("1d", "5d"):
+            window_days = 1 if v == "1d" else 5
+            pair_rows_raw = con.execute(f"""
                 SELECT ts, price FROM intraday_bars
-                WHERE symbol = ? AND ts >= CURRENT_DATE - INTERVAL 7 DAY
+                WHERE symbol = ? AND ts >= CURRENT_DATE - INTERVAL {window_days} DAY
                 ORDER BY ts
             """, [pair]).fetchall()
-            base_rows_raw = con.execute("""
+            base_rows_raw = con.execute(f"""
                 SELECT ts, price FROM intraday_bars
-                WHERE symbol = ? AND ts >= CURRENT_DATE - INTERVAL 7 DAY
+                WHERE symbol = ? AND ts >= CURRENT_DATE - INTERVAL {window_days} DAY
                 ORDER BY ts
             """, [base]).fetchall()
             con.close()
-
-            pair_rows_raw = _apply_date_window(pair_rows_raw, start_d, end_d)
-            base_rows_raw = _apply_date_window(base_rows_raw, start_d, end_d)
-            if start_d is None and end_d is None:
-                pair_rows_raw = pair_rows_raw[-900:]
-                base_rows_raw = base_rows_raw[-900:]
-
             pair_rows = [(r[0], r[1]) for r in pair_rows_raw if r[1] is not None]
             base_rows = [(r[0], r[1]) for r in base_rows_raw if r[1] is not None]
         else:
-            pair_daily = con.execute("""
+            window_days = _DAILY_WINDOW_DAYS.get(v, 31)
+            pair_daily = con.execute(f"""
                 SELECT date, close, volume FROM daily_bars
-                WHERE symbol = ? AND date >= CURRENT_DATE - INTERVAL 420 DAY
+                WHERE symbol = ? AND date >= CURRENT_DATE - INTERVAL {window_days} DAY
                 ORDER BY date
             """, [pair]).fetchall()
-            base_daily = con.execute("""
+            base_daily = con.execute(f"""
                 SELECT date, close, volume FROM daily_bars
-                WHERE symbol = ? AND date >= CURRENT_DATE - INTERVAL 420 DAY
+                WHERE symbol = ? AND date >= CURRENT_DATE - INTERVAL {window_days} DAY
                 ORDER BY date
             """, [base]).fetchall()
             con.close()
-
-            pair_daily = _apply_date_window(pair_daily, start_d, end_d)
-            base_daily = _apply_date_window(base_daily, start_d, end_d)
-
-            if view == "weekly":
-                pair_rows = [(r[0], r[1]) for r in pair_daily if r[1] is not None]
-                base_rows = [(r[0], r[1]) for r in base_daily if r[1] is not None]
-                if start_d is None and end_d is None:
-                    pair_rows = pair_rows[-7:]
-                    base_rows = base_rows[-7:]
-            else:
-                pair_rows = [(r[0], r[1]) for r in pair_daily if r[1] is not None]
-                base_rows = [(r[0], r[1]) for r in base_daily if r[1] is not None]
-                if start_d is None and end_d is None:
-                    pair_rows = pair_rows[-(days + 3):]
-                    base_rows = base_rows[-(days + 3):]
+            pair_rows = [(r[0], r[1]) for r in pair_daily if r[1] is not None]
+            base_rows = [(r[0], r[1]) for r in base_daily if r[1] is not None]
 
         if not pair_rows or not base_rows:
-            return {"actual": [], "synthetic": [], "view": view}
+            return {"actual": [], "synthetic": [], "view": v}
 
         base_by_date = {d: c for d, c in base_rows}
         base_dates = sorted(base_by_date.keys())
@@ -512,11 +477,11 @@ def query_tracking_error(db_path: str, pair: str, base: str, leverage: float,
 
         aligned_dates = [d for d, _ in pair_rows if d in synth_map]
         if not aligned_dates:
-            return {"actual": [], "synthetic": [], "view": view}
+            return {"actual": [], "synthetic": [], "view": v}
         start_key = aligned_dates[0]
         base_pair = dict(pair_rows).get(start_key)
         if not base_pair:
-            return {"actual": [], "synthetic": [], "view": view}
+            return {"actual": [], "synthetic": [], "view": v}
         synth_start = synth_map[start_key]
 
         actual = []
@@ -537,9 +502,7 @@ def query_tracking_error(db_path: str, pair: str, base: str, leverage: float,
             "pair": pair,
             "base": base,
             "leverage": leverage,
-            "view": view,
-            "start": str(start_d) if start_d else None,
-            "end": str(end_d) if end_d else None,
+            "view": v,
         }
     except Exception as exc:
         log.exception("query_tracking_error failed")
@@ -1124,9 +1087,9 @@ def query_fear_greed(db_path: str) -> dict:
 
 # ── SPY forward volume signal (OBV + accumulation/distribution) ───────────────
 
-def query_spy_volume_signal(db_path: str, view: str = "current",
+def query_spy_volume_signal(db_path: str, view: str = "1d",
                             start: str | None = None, end: str | None = None) -> dict:
-    """OBV + volume-flow diagnostics on SPY. Returns 60d OBV series + summary.
+    """OBV + volume-flow diagnostics on SPY. Returns OBV series + summary.
 
     On-Balance Volume (OBV) accumulates signed volume: +V on up days, -V on down days.
     Rising OBV on flat/down price signals accumulation (bullish leading); falling OBV
@@ -1136,37 +1099,27 @@ def query_spy_volume_signal(db_path: str, view: str = "current",
         return {"error": "DB not found.", "points": []}
     try:
         con = _connect(db_path)
-        view = (view or "current").lower()
-        start_d = _parse_date_param(start)
-        end_d = _parse_date_param(end)
+        v = _canon_view(view)
 
-        if view == "intraday":
-            rows_raw = con.execute("""
+        if v in ("1d", "5d"):
+            window_days = 1 if v == "1d" else 5
+            rows_raw = con.execute(f"""
                 SELECT ts, price, volume FROM intraday_bars
-                WHERE symbol = 'SPY' AND ts >= CURRENT_DATE - INTERVAL 7 DAY
+                WHERE symbol = 'SPY' AND ts >= CURRENT_DATE - INTERVAL {window_days} DAY
                 ORDER BY ts
             """).fetchall()
             con.close()
-            rows_raw = _apply_date_window(rows_raw, start_d, end_d)
-            if start_d is None and end_d is None:
-                rows_raw = rows_raw[-900:]
             rows = [(r[0], r[1], r[2]) for r in rows_raw]
         else:
-            daily_rows = con.execute("""
+            limit = {"1m": 31, "1y": 400, "5y": 5 * 365 + 20}.get(v, 31)
+            daily_rows = con.execute(f"""
                 SELECT date, close, volume FROM daily_bars
-                WHERE symbol = 'SPY' ORDER BY date DESC LIMIT 420
+                WHERE symbol = 'SPY'
+                  AND date >= CURRENT_DATE - INTERVAL {limit} DAY
+                ORDER BY date
             """).fetchall()
             con.close()
-            daily_rows = list(reversed(daily_rows))
-            daily_rows = _apply_date_window(daily_rows, start_d, end_d)
-            if view == "weekly":
-                rows = daily_rows
-                if start_d is None and end_d is None:
-                    rows = rows[-7:]
-            else:
-                rows = daily_rows
-                if start_d is None and end_d is None:
-                    rows = rows[-80:]
+            rows = list(daily_rows)
 
         if len(rows) < 2:
             return {"error": "not enough SPY history yet", "points": []}
@@ -1261,17 +1214,9 @@ def query_spy_volume_signal(db_path: str, view: str = "current",
         elif up_vol > 0:
             up_dn_ratio = float("inf")
 
-        if start_d is None and end_d is None:
-            keep = 390 if view == "intraday" else 60
-            out_obv = obv_series[-keep:]
-            out_px = price_series[-keep:]
-        else:
-            out_obv = obv_series
-            out_px = price_series
-
         return {
-            "points": out_obv,
-            "price_points": out_px,
+            "points": obv_series,
+            "price_points": price_series,
             "signal": signal,
             "reason": reason,
             "obv_slope": obv_slope,
@@ -1282,9 +1227,7 @@ def query_spy_volume_signal(db_path: str, view: str = "current",
             "up_days": up_days,
             "down_days": dn_days,
             "up_down_ratio": up_dn_ratio if up_dn_ratio != float("inf") else None,
-            "view": view,
-            "start": str(start_d) if start_d else None,
-            "end": str(end_d) if end_d else None,
+            "view": v,
         }
     except Exception as exc:
         log.exception("query_spy_volume_signal failed")

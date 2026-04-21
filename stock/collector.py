@@ -251,10 +251,12 @@ def upsert_intraday_bars(con: duckdb.DuckDBPyConnection, symbol: str, sub) -> in
 
 
 def prune_intraday(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute("DELETE FROM intraday_bars WHERE ts < CURRENT_DATE - INTERVAL 2 DAY")
+    # Keep 7 days so the UI's 5D view (intraday granularity) has full data.
+    con.execute("DELETE FROM intraday_bars WHERE ts < CURRENT_DATE - INTERVAL 7 DAY")
 
 
-def prune_daily(con: duckdb.DuckDBPyConnection, keep_days: int = 300) -> None:
+def prune_daily(con: duckdb.DuckDBPyConnection, keep_days: int = 1850) -> None:
+    # 5y + slack so the 5Y view in the UI is never front-edge truncated.
     con.execute(f"DELETE FROM daily_bars WHERE date < CURRENT_DATE - INTERVAL {keep_days} DAY")
 
 
@@ -265,11 +267,11 @@ def prune_vol(con: duckdb.DuckDBPyConnection, keep_days: int = 60) -> None:
 # ── Steps ─────────────────────────────────────────────────────────────────────
 
 def refresh_daily_bars(con: duckdb.DuckDBPyConnection, symbols: list[str],
-                       on_chunk=None) -> int:
-    """Pull 300d of daily history for all symbols (batched).
+                       on_chunk=None, period: str = "300d") -> int:
+    """Pull daily history for all symbols (batched).
 
-    If `on_chunk` is provided it's called after each chunk commits with
-    (chunks_done, total_chunks) so the caller can refresh derived tables.
+    `period` is forwarded to yfinance: "300d" is enough for the 1Y dashboard
+    view, pass "5y" for pair/SPY tickers that back the 5Y toggle.
     """
     chunk = 50
     total = 0
@@ -278,7 +280,7 @@ def refresh_daily_bars(con: duckdb.DuckDBPyConnection, symbols: list[str],
         batch = symbols[i:i + chunk]
         t0 = time.time()
         try:
-            df = _yf_download(batch, period="300d", interval="1d")
+            df = _yf_download(batch, period=period, interval="1d")
         except Exception as exc:
             log.warning("daily chunk %d/%d failed: %s", ci, n_chunks, exc)
             continue
@@ -301,8 +303,10 @@ def refresh_daily_bars(con: duckdb.DuckDBPyConnection, symbols: list[str],
 
 
 def refresh_intraday_pairs(con: duckdb.DuckDBPyConnection, symbols: list[str]) -> int:
+    # yfinance caps 1m data at 7d. Pull 7d so the UI's 5D toggle has a full
+    # window even on Monday morning (weekends compress the available bars).
     try:
-        df = _yf_download(symbols, period="2d", interval="1m", prepost=True)
+        df = _yf_download(symbols, period="7d", interval="1m", prepost=True)
     except Exception as exc:
         log.warning("intraday batch failed: %s", exc)
         return 0
@@ -878,9 +882,15 @@ def collect_once(con: duckdb.DuckDBPyConnection, state: dict,
     if last_daily is None or (now - last_daily).total_seconds() >= 600:
         log.info("Refreshing daily bars for %d symbols...", len(all_syms))
         try:
-            n_fast = refresh_daily_bars(con, fast_syms)
+            # Pair + SPY back the 5Y chart toggle, so pull long history only
+            # for that tiny set; the rest get the standard 300d window.
+            long_hist_syms = sorted({*(t.symbol for t in universe.PAIR_TICKERS), "SPY"})
+            n_long = refresh_daily_bars(con, long_hist_syms, period="5y")
+            fast_rest = [s for s in fast_syms if s not in set(long_hist_syms)]
+            n_fast = refresh_daily_bars(con, fast_rest)
             n_quotes_fast = refresh_quotes(con)
-            log.info("Fast pass complete (%d rows, %d quote rows)", n_fast, n_quotes_fast)
+            log.info("Fast pass complete (%d long + %d rows, %d quote rows)",
+                     n_long, n_fast, n_quotes_fast)
         except Exception:
             log.exception("fast daily refresh failed")
 

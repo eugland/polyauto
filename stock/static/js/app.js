@@ -41,6 +41,10 @@ function applyChartTheme() {
   Chart.defaults.borderColor = dark
     ? "rgba(203, 213, 225, 0.16)"
     : "rgba(31, 41, 55, 0.16)";
+  // Kill all animations globally — updates are snappy and don't "flash" on
+  // the periodic refresh loop.
+  Chart.defaults.animation = false;
+  Chart.defaults.animations = {};
 }
 applyChartTheme();
 // Re-apply when the user / OS flips themes so newly-built charts pick up the
@@ -67,10 +71,23 @@ const SECTOR_COLOR = {
 function sectorColor(s) { return SECTOR_COLOR[s] || "#9ca3af"; }
 
 // ── chart registry ─────────────────────────────────────────────────────────
+// Charts update in-place so the periodic refresh loop never destroys and
+// re-creates the canvas — that destroy/create cycle is what users see as a
+// flash every 30 seconds. Only rebuild if the chart type changes.
 const charts = {};
 function setChart(id, cfg) {
-  if (charts[id]) charts[id].destroy();
-  charts[id] = new Chart(document.getElementById(id).getContext("2d"), cfg);
+  const el = document.getElementById(id);
+  if (!el) return;
+  const existing = charts[id];
+  if (existing && existing.config.type === cfg.type) {
+    existing.data.labels = cfg.data.labels;
+    existing.data.datasets = cfg.data.datasets;
+    if (cfg.options) existing.options = cfg.options;
+    existing.update("none");
+    return;
+  }
+  if (existing) existing.destroy();
+  charts[id] = new Chart(el.getContext("2d"), cfg);
 }
 
 function withBasePath(url) {
@@ -95,10 +112,10 @@ async function fetchJSON(url) {
 
 // ── state ─────────────────────────────────────────────────────────────────
 const state = {
-  svix_view: "5d",
-  tsl_view: "5d",
-  spy_obv_view: "current",
-  tsl_drift_view: "current",
+  svix_view: "1d",
+  tsl_view: "1d",
+  spy_obv_view: "1d",
+  tsl_drift_view: "1d",
   div_profile: "default",
 };
 
@@ -118,7 +135,7 @@ window.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("button[data-obv-view]")
         .forEach(b => b.classList.toggle("active", b === btn));
-      state.spy_obv_view = btn.dataset.obvView || "current";
+      state.spy_obv_view = btn.dataset.obvView || "1d";
       refreshSpyVolumeSignal();
     });
   });
@@ -126,12 +143,10 @@ window.addEventListener("DOMContentLoaded", () => {
     btn.addEventListener("click", () => {
       document.querySelectorAll("button[data-drift-view]")
         .forEach(b => b.classList.toggle("active", b === btn));
-      state.tsl_drift_view = btn.dataset.driftView || "current";
+      state.tsl_drift_view = btn.dataset.driftView || "1d";
       refreshTslDriftChart();
     });
   });
-  document.getElementById("apply-spy-obv-range")?.addEventListener("click", refreshSpyVolumeSignal);
-  document.getElementById("apply-tsl-drift-range")?.addEventListener("click", refreshTslDriftChart);
   document.getElementById("div-load-profile")?.addEventListener("click", loadSelectedDividendProfile);
   document.getElementById("div-save-profile")?.addEventListener("click", saveDividendProfile);
   document.getElementById("div-duplicate-profile")?.addEventListener("click", duplicateDividendProfile);
@@ -472,18 +487,18 @@ async function renderPairCanvas(canvasId, symbols, view) {
   const d = await fetchJSON(`/api/pair?symbols=${symbols.join(",")}&view=${view}`);
   if (!d || !d.series) return;
   const labels = (d.series[0]?.points || []).map(p => p.t);
+  const intraday = isIntradayView(view);
   const datasets = d.series.map((s, i) => ({
     label: s.symbol,
     data: s.points.map(p => p.value),
     borderColor: PALETTE[i],
     backgroundColor: PALETTE[i] + "22",
-    pointRadius: view === "intraday" ? 0 : 2,
+    pointRadius: intraday ? 0 : 2,
     tension: 0.25, borderWidth: 2, spanGaps: true,
   }));
   setChart(canvasId, {
     type: "line",
-    data: { labels: labels.map(t => view === "intraday" ? t.slice(11, 16) : t.slice(0, 10)),
-            datasets },
+    data: { labels: labels.map(t => labelForView(t, view)), datasets },
     options: {
       responsive: true,
       interaction: { mode: "index", intersect: false },
@@ -504,16 +519,6 @@ async function renderTsl() {
 }
 
 // ── tracking error ─────────────────────────────────────────────────────────
-function buildRangeQS(view, startId, endId) {
-  const qs = new URLSearchParams();
-  qs.set("view", view || "current");
-  const start = document.getElementById(startId)?.value;
-  const end = document.getElementById(endId)?.value;
-  if (start) qs.set("start", start);
-  if (end) qs.set("end", end);
-  return qs.toString();
-}
-
 function alignSeries(labels, points) {
   const byTs = {};
   (points || []).forEach(p => { byTs[p.t] = p.value; });
@@ -522,15 +527,22 @@ function alignSeries(labels, points) {
 
 function labelForView(ts, view) {
   if (!ts) return "";
-  if (view === "intraday") return ts.slice(11, 16);
+  // 1D: just HH:MM. 5D: date + time since it crosses midnights.
+  // 1M/1Y/5Y: date only.
+  if (view === "1d" || view === "intraday") return ts.slice(11, 16);
+  if (view === "5d") return ts.length > 10 ? ts.slice(5, 16) : ts.slice(5, 10);
   return ts.slice(0, 10);
 }
 
+function isIntradayView(view) {
+  return view === "1d" || view === "5d" || view === "intraday";
+}
+
 async function refreshTslDriftChart() {
-  const qs = buildRangeQS(state.tsl_drift_view, "tsl-drift-start", "tsl-drift-end");
+  const view = state.tsl_drift_view || "1d";
   const [tsll, tslz] = await Promise.all([
-    fetchJSON(`/api/tracking-error?pair=TSLL&base=TSLA&leverage=2&${qs}`),
-    fetchJSON(`/api/tracking-error?pair=TSLZ&base=TSLA&leverage=-1&${qs}`),
+    fetchJSON(`/api/tracking-error?pair=TSLL&base=TSLA&leverage=2&view=${view}`),
+    fetchJSON(`/api/tracking-error?pair=TSLZ&base=TSLA&leverage=-1&view=${view}`),
   ]);
   if (!tsll || !tslz) return;
 
@@ -559,7 +571,7 @@ async function refreshTslDriftChart() {
           backgroundColor: "#60a5fa22",
           tension: 0.25,
           borderWidth: 2,
-          pointRadius: state.tsl_drift_view === "intraday" ? 0 : 1.5,
+          pointRadius: isIntradayView(state.tsl_drift_view) ? 0 : 1.5,
         },
         {
           label: "synthetic 2x TSLA",
@@ -577,7 +589,7 @@ async function refreshTslDriftChart() {
           backgroundColor: "#f9731622",
           tension: 0.25,
           borderWidth: 2,
-          pointRadius: state.tsl_drift_view === "intraday" ? 0 : 1.5,
+          pointRadius: isIntradayView(state.tsl_drift_view) ? 0 : 1.5,
         },
         {
           label: "synthetic -1x TSLA",
@@ -893,8 +905,8 @@ function signalClass(sig) {
   return "neu";
 }
 async function refreshSpyVolumeSignal() {
-  const qs = buildRangeQS(state.spy_obv_view, "spy-obv-start", "spy-obv-end");
-  const d = await fetchJSON(`/api/spy-volume-signal?${qs}`);
+  const view = state.spy_obv_view || "1d";
+  const d = await fetchJSON(`/api/spy-volume-signal?view=${view}`);
   if (!d) return;
   const pill = document.getElementById("spy-vol-signal");
   const cls = signalClass(d.signal);
