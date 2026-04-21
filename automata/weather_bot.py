@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from automata import config
+
 CITY_TZ: dict[str, str] = {
     "Ankara":        "Europe/Istanbul",
     "Atlanta":       "America/New_York",
@@ -222,16 +224,19 @@ def run(
         fetch_forecasts_for_events,
     )
 
-    min_no_price  = float(os.getenv("MIN_NO_PRICE", "0.97"))
-    max_no_price  = float(os.getenv("MAX_NO_PRICE", "0.997"))
-    bet_threshold = float(os.getenv("BET_THRESHOLD", "0.95"))   # auto-bet above this
+    min_no_price  = config.get_float("MIN_NO_PRICE", "weather", "min_no_price", 0.97)
+    max_no_price  = config.get_float("MAX_NO_PRICE", "weather", "max_no_price", 0.997)
+    bet_threshold = config.get_float("BET_THRESHOLD", "weather", "bet_threshold", 0.95)   # auto-bet above this
     bet_shares    = 22.0   # first-fill target per city
     max_shares    = 80.0   # top-up ceiling per city
-    mm_tick_size = float(os.getenv("MM_TICK_SIZE", "0.001"))
-    mm_join_bid_ticks = int(os.getenv("MM_JOIN_BID_TICKS", "1"))
-    mm_reprice_cents = float(os.getenv("MM_REPRICE_CENTS", "0.10"))
+    mm_tick_size = config.get_float("MM_TICK_SIZE", "weather", "mm_tick_size", 0.001)
+    mm_join_bid_ticks = config.get_int("MM_JOIN_BID_TICKS", "weather", "mm_join_bid_ticks", 1)
+    mm_reprice_cents = config.get_float("MM_REPRICE_CENTS", "weather", "mm_reprice_cents", 0.10)
     mm_reprice_delta = mm_reprice_cents / 100.0
-    city_blacklist = {c.strip() for c in os.getenv("CITY_BLACKLIST", "Seoul,Taipei,Lagos,Denver,Jakarta").split(",") if c.strip()}
+    city_blacklist = set(config.get_list_str(
+        "CITY_BLACKLIST", "weather", "city_blacklist",
+        ["Seoul", "Taipei", "Lagos", "Denver", "Jakarta"],
+    ))
 
     # ── Fetch markets ─────────────────────────────────────────────────────────
     log.info("Fetching Polymarket temperature markets...")
@@ -269,7 +274,7 @@ def run(
     #    events whose resolution already passed more than POST_RESOLUTION_GRACE_HOURS ago,
     #    keep only the 15 earliest-resolving ─────────────────────────────────
     now_utc_dt = datetime.now(timezone.utc)
-    grace_hours = float(os.getenv("POST_RESOLUTION_GRACE_HOURS", "7"))
+    grace_hours = config.get_float("POST_RESOLUTION_GRACE_HOURS", "weather", "post_resolution_grace_hours", 7.0)
     cutoff = now_utc_dt - timedelta(hours=grace_hours)
     for ev in events.values():
         ev_city = _extract_city(ev["title"])
@@ -353,7 +358,7 @@ def run(
     # ── Fetch live order book prices in bulk for ALL candidates ───────────────
     if all_candidates:
         from automata.client import get_best_books_bulk
-        host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
+        host = config.get_str("POLYMARKET_HOST", "polymarket", "host", "https://clob.polymarket.com")
         no_ids  = [c["token_id"]     for c in all_candidates]
         yes_ids = [c["yes_token_id"] for c in all_candidates if c["yes_token_id"]]
         log.info("Fetching live order book prices for %d candidates (bulk)...", len(all_candidates))
@@ -410,8 +415,8 @@ def run(
         # Fetch METAR observations in parallel for the sanity guard preview.
         from concurrent.futures import ThreadPoolExecutor
         from automata.weather import fetch_metar_temp
-        guard_margin_c = float(os.getenv("METAR_GUARD_MARGIN_C", "2.0"))
-        guard_margin_f = float(os.getenv("METAR_GUARD_MARGIN_F", "4.0"))
+        guard_margin_c = config.get_float("METAR_GUARD_MARGIN_C", "weather", "metar_guard_margin_c", 2.0)
+        guard_margin_f = config.get_float("METAR_GUARD_MARGIN_F", "weather", "metar_guard_margin_f", 4.0)
         metar_obs: dict[str, float | None] = {}
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(autobet_items)))) as ex:
             futures = {
@@ -427,7 +432,7 @@ def run(
         print(f"  [DRY RUN] {len(autobet_items)} autobet item(s) (closest resolution first):")
         print(f"    {'':1}  {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'resolves (PT)':<16}  {'city':<15}  {'date':<10}  {'forecast':>8}  {'guard':<22}  question")
         print(f"    {'-'*1}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*8}  {'-'*22}  {'-'*22}")
-        user_tz = ZoneInfo(os.getenv("USER_TZ", "America/Los_Angeles"))
+        user_tz = ZoneInfo(config.get_str("USER_TZ", "weather", "user_tz", "America/Los_Angeles"))
         for c in autobet_items:
             cost = round(bet_shares * c["price"], 2)
             res_dt = c.get("resolution_dt")
@@ -482,7 +487,7 @@ def run(
         api_secret=os.environ["CLOB_SECRET"],
         api_passphrase=os.environ["CLOB_PASS"],
         funder=funder or None,
-        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+        signature_type=config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0),
     )
     try:
         balance = get_usdc_balance(client)
@@ -516,8 +521,8 @@ def run(
             token_to_city_date[tid] = cd
 
     import time as _time
-    stale_minutes = float(os.getenv("STALE_ORDER_MINUTES", "1"))
-    max_passes = int(os.getenv("BET_PASSES", "3"))
+    stale_minutes = config.get_float("STALE_ORDER_MINUTES", "weather", "stale_order_minutes", 1.0)
+    max_passes = config.get_int("BET_PASSES", "weather", "bet_passes", 3)
     orders_placed = 0
 
     for pass_num in range(1, max_passes + 1):
@@ -763,10 +768,10 @@ def run(
                 # Sanity guard (advisory only — does NOT block the bet).
                 # Logs a warning when observed METAR temp is within margin of threshold.
                 unit_g = b.get("unit") or "C"
-                guard_margin = float(os.getenv(
-                    "METAR_GUARD_MARGIN_F" if unit_g.upper() == "F" else "METAR_GUARD_MARGIN_C",
-                    "4.0" if unit_g.upper() == "F" else "2.0",
-                ))
+                if unit_g.upper() == "F":
+                    guard_margin = config.get_float("METAR_GUARD_MARGIN_F", "weather", "metar_guard_margin_f", 4.0)
+                else:
+                    guard_margin = config.get_float("METAR_GUARD_MARGIN_C", "weather", "metar_guard_margin_c", 2.0)
                 icao_g = b.get("icao")
                 threshold_g = b.get("threshold")
                 if icao_g and threshold_g is not None:
@@ -850,7 +855,7 @@ def run(
                 break
 
         if pass_num < max_passes:
-            wait = int(os.getenv("BET_PASS_WAIT_SECONDS", "10"))
+            wait = config.get_int("BET_PASS_WAIT_SECONDS", "weather", "bet_pass_wait_seconds", 10)
             log.info("Waiting %ds before pass %d...", wait, pass_num + 1)
             _time.sleep(wait)
 
@@ -864,7 +869,7 @@ def _scan_positions(dry_run: bool = True) -> None:
     if any(not os.getenv(k) for k in required):
         return
 
-    take_profit = float(os.getenv("TAKE_PROFIT_PRICE", "0.999"))
+    take_profit = config.get_float("TAKE_PROFIT_PRICE", "weather", "take_profit_price", 0.999)
 
     funder = os.getenv("POLYMARKET_FUNDER") or ""
     if not funder:
@@ -879,7 +884,7 @@ def _scan_positions(dry_run: bool = True) -> None:
         api_secret=os.environ["CLOB_SECRET"],
         api_passphrase=os.environ["CLOB_PASS"],
         funder=funder,
-        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+        signature_type=config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0),
     )
 
     positions = get_positions(funder)

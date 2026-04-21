@@ -574,6 +574,8 @@ def print_verify_report(report: dict) -> None:
 def _derive_clob_credentials() -> None:
     import os
 
+    from automata import config as _config
+
     required = ["POLYMARKET_PRIVATE_KEY", "POLYMARKET_HOST"]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
@@ -585,7 +587,7 @@ def _derive_clob_credentials() -> None:
         host=os.environ["POLYMARKET_HOST"],
         private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
         funder=os.getenv("POLYMARKET_FUNDER") or None,
-        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+        signature_type=_config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0),
     )
     os.environ["CLOB_API_KEY"] = creds.api_key
     os.environ["CLOB_SECRET"] = creds.api_secret
@@ -603,6 +605,8 @@ def run_weather_daemon(
     import time
 
     from dotenv import load_dotenv
+
+    from automata import config as _config
 
     load_dotenv()
     if not logging.getLogger().handlers:
@@ -623,7 +627,7 @@ def run_weather_daemon(
 
         if bet:
             _scan_positions(dry_run=False)
-            bet_shares = float(os.getenv("BET_SIZE_SHARES", "20.0"))
+            bet_shares = _config.get_float("BET_SIZE_SHARES", "weather", "bet_size_shares", 20.0)
             try:
                 from automata.client import build_client, get_usdc_balance
 
@@ -634,10 +638,10 @@ def run_weather_daemon(
                     api_secret=os.environ["CLOB_SECRET"],
                     api_passphrase=os.environ["CLOB_PASS"],
                     funder=os.getenv("POLYMARKET_FUNDER") or None,
-                    signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+                    signature_type=_config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0),
                 )
                 balance = get_usdc_balance(client)
-                max_no_price = float(os.getenv("MAX_NO_PRICE", "0.997"))
+                max_no_price = _config.get_float("MAX_NO_PRICE", "weather", "max_no_price", 0.997)
                 # Minimum viable: enough for at least 1 share (run() scales bet_shares to 90% of balance)
                 min_required = max_no_price
                 effective_balance = min(balance, max_balance_usdc) if max_balance_usdc is not None else balance

@@ -28,6 +28,8 @@ import time
 
 from dotenv import load_dotenv
 
+from automata import config
+
 
 def _derive_clob_credentials() -> None:
     required = ["POLYMARKET_PRIVATE_KEY", "POLYMARKET_HOST"]
@@ -41,7 +43,7 @@ def _derive_clob_credentials() -> None:
         host=os.environ["POLYMARKET_HOST"],
         private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
         funder=os.getenv("POLYMARKET_FUNDER") or None,
-        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+        signature_type=config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0),
     )
     os.environ["CLOB_API_KEY"] = creds.api_key
     os.environ["CLOB_SECRET"] = creds.api_secret
@@ -103,7 +105,7 @@ def run_eth_daemon(
     last_redeem_cmd_at = 0.0
     next_redeem_due = 0.0
 
-    host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
+    host = config.get_str("POLYMARKET_HOST", "polymarket", "host", "https://clob.polymarket.com")
     iteration = 0
     while True:
         iteration += 1

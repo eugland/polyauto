@@ -37,23 +37,34 @@ python -m experiment.temp_market_collector
 python -m experiment.temp_market_collector --poll 5 --once
 ```
 
-## Environment Variables (`.env`)
+## Configuration
 
-```
-POLYMARKET_PRIVATE_KEY=0x...
-POLYMARKET_HOST=https://clob.polymarket.com
-POLYMARKET_FUNDER=0x...         # proxy wallet address
-POLYMARKET_SIG_TYPE=0
-# Derived from private key (can be auto-populated):
-CLOB_API_KEY=...
-CLOB_SECRET=...
-CLOB_PASS=...
-POLYGON_RPC_URL=https://...     # for onchain redeem mode
-BET_SIZE_SHARES=20.0
-MAX_NO_PRICE=0.998
-```
+Split across two files:
 
-Optional weather-only env vars: `MIN_NO_PRICE`, `BET_THRESHOLD`, `MM_TICK_SIZE`, `MM_JOIN_BID_TICKS`, `MM_REPRICE_CENTS`, `CITY_BLACKLIST`, `TAKE_PROFIT_PRICE`.
+- **`.env`** (gitignored) — secrets and endpoints only:
+  ```
+  POLYMARKET_PRIVATE_KEY=0x...
+  POLYMARKET_FUNDER=0x...            # proxy wallet address
+  POLYMARKET_HOST=https://clob.polymarket.com
+  RELAYER_API_KEY=...
+  RELAYER_API_KEY_ADDRESS=0x...
+  POLYGON_RPC_URL=https://...        # for onchain redeem mode
+  # CLOB_API_KEY / CLOB_SECRET / CLOB_PASS are derived at startup
+  ```
+
+- **`config.toml`** (git-committed) — every tunable setting. Organized into
+  `[polymarket]`, `[weather]`, `[eth_1h]`, `[gamma]`. This is where
+  `city_blacklist`, `min_no_price`, `bet_size_shares`, `sell_target`,
+  `redeem_only_mode`, etc. live.
+
+Runtime precedence at each call site: **env var > `config.toml` > hardcoded default**.
+So you can still override any value with an env var for one-off runs, e.g.
+`BET_SIZE_SHARES=5 python -m automata.weather --bet`.
+
+All getters go through `automata/config.py` (`get_str`, `get_int`, `get_float`,
+`get_bool`, `get_list_str`). Add a new tunable by: (a) adding a line in
+`config.toml`, (b) calling `config.get_*(ENV_NAME, section, key, default)`
+at the usage site.
 
 ## Architecture
 

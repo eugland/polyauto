@@ -3,7 +3,10 @@
     "allow": [
       "Bash(grep -E \"\\\\.\\(txt|md|yml|yaml\\)$\")",
       "WebFetch(domain:api.open-meteo.com)",
-      "WebFetch(domain:archive-api.open-meteo.com)"
+      "WebFetch(domain:archive-api.open-meteo.com)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(/home/weugene/dev/polyauto/.venv/bin/python *)"
     ]
   }
 }

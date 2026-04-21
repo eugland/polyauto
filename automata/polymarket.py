@@ -8,18 +8,20 @@ from typing import Any
 
 import requests
 
-EVENT_HORIZON_HOURS = 30
-EVENTS_PAGE_SIZE = 10
-EVENTS_MAX_PAGES = 20
+from automata import config
+
+EVENT_HORIZON_HOURS = config.get_int("EVENT_HORIZON_HOURS", "gamma", "event_horizon_hours", 30)
+EVENTS_PAGE_SIZE = config.get_int("EVENTS_PAGE_SIZE", "gamma", "events_page_size", 10)
+EVENTS_MAX_PAGES = config.get_int("EVENTS_MAX_PAGES", "gamma", "events_max_pages", 20)
 POLYMARKET_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 WEATHER_TAG_SLUGS = {"weather", "highest-temperature"}
 
 # Gamma occasionally stalls under load; separate connect vs. read timeout and
 # retry transient failures so a single slow response doesn't kill the caller.
-GAMMA_CONNECT_TIMEOUT = 10
-GAMMA_READ_TIMEOUT = 30
-GAMMA_MAX_ATTEMPTS = 4
-GAMMA_BACKOFF_BASE = 1.5
+GAMMA_CONNECT_TIMEOUT = config.get_int("GAMMA_CONNECT_TIMEOUT", "gamma", "connect_timeout", 10)
+GAMMA_READ_TIMEOUT = config.get_int("GAMMA_READ_TIMEOUT", "gamma", "read_timeout", 30)
+GAMMA_MAX_ATTEMPTS = config.get_int("GAMMA_MAX_ATTEMPTS", "gamma", "max_attempts", 4)
+GAMMA_BACKOFF_BASE = config.get_float("GAMMA_BACKOFF_BASE", "gamma", "backoff_base", 1.5)
 
 _log = logging.getLogger(__name__)
 

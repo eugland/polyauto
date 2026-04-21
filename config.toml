@@ -1,0 +1,97 @@
+# polyauto tunable configuration
+#
+# Precedence at runtime: environment variable > this file > code default.
+# Secrets (POLYMARKET_PRIVATE_KEY, RELAYER_API_KEY, etc.) stay in .env.
+# Edit these values freely — every setting here has a matching default in
+# Python code, so removing a key just restores the default.
+
+[polymarket]
+# POLYMARKET_HOST
+host = "https://clob.polymarket.com"
+# POLYMARKET_SIG_TYPE — 0=EOA, 1=Gnosis Safe/Magic.link, 2=Polymarket proxy
+signature_type = 2
+# POLYMARKET_RELAYER_URL
+relayer_url = "https://relayer-v2.polymarket.com"
+
+
+[weather]
+# ── Price gates ───────────────────────────────────────────────────────────
+# MIN_NO_PRICE — don't buy if the live bid is below this
+min_no_price = 0.97
+# MAX_NO_PRICE — don't buy if the live ask/bid is above this
+max_no_price = 0.997
+# BET_THRESHOLD — auto-bet above this price
+bet_threshold = 0.95
+# BET_SIZE_SHARES — USDC notional used to compute bet shares (run-time scales)
+bet_size_shares = 10.0
+# TAKE_PROFIT_PRICE — price at which to place the resting sell on held positions
+take_profit_price = 0.999
+
+# ── Market-maker pricing ──────────────────────────────────────────────────
+# MM_TICK_SIZE
+mm_tick_size = 0.001
+# MM_JOIN_BID_TICKS — how many ticks above best bid to join
+mm_join_bid_ticks = 1
+# MM_REPRICE_CENTS — reprice an existing order only when delta exceeds this
+mm_reprice_cents = 0.10
+
+# ── City filter ───────────────────────────────────────────────────────────
+# CITY_BLACKLIST — cities excluded from all candidates and top-ups.
+# Override at runtime with comma-separated env var, e.g.
+# CITY_BLACKLIST=Seoul,Lagos python -m automata.weather --bet
+city_blacklist = [
+    "Seoul",
+    "Taipei",
+    "Lagos",
+    "Denver",
+    "Jakarta",
+    "Chongqing",
+]
+
+# ── Temperature safety margins ────────────────────────────────────────────
+# METAR_GUARD_MARGIN_C / METAR_GUARD_MARGIN_F — advisory only, logs a warning
+# when observed METAR temp is within this many degrees of the threshold.
+metar_guard_margin_c = 2.0
+metar_guard_margin_f = 4.0
+
+# ── Scheduling ────────────────────────────────────────────────────────────
+# POST_RESOLUTION_GRACE_HOURS — keep events in scope this long after resolve
+post_resolution_grace_hours = 7.0
+# USER_TZ — timezone used for dry-run display
+user_tz = "America/Los_Angeles"
+
+# ── Order retries ─────────────────────────────────────────────────────────
+# STALE_ORDER_MINUTES — cancel unfilled BUY orders older than this
+stale_order_minutes = 1.0
+# BET_PASSES — total passes per cycle
+bet_passes = 3
+# BET_PASS_WAIT_SECONDS — sleep between passes
+bet_pass_wait_seconds = 10
+
+
+[eth_1h]
+# SELL_TARGET — take-profit price (ignored when redeem_only_mode = true)
+sell_target = 0.99
+# STOP_LOSS — exit immediately if position bid drops below this
+stop_loss = 0.60
+# BET_SHARES — target shares per trade
+bet_shares = 20
+# K_DEFAULT — Brownian Bridge k, auto-calibrated once >= 10 outcomes exist
+k_default = 0.09
+# MIN_MINUTES / MAX_MINUTES — entry window in minutes remaining before expiry
+min_minutes = 0
+max_minutes = 7
+# REDEEM_ONLY_MODE — hold to resolution/redeem; no TP sell placement
+redeem_only_mode = true
+
+
+[gamma]
+# EVENT_HORIZON_HOURS — how far out to fetch events from Gamma
+event_horizon_hours = 30
+events_page_size = 10
+events_max_pages = 20
+# Connection tuning
+connect_timeout = 10
+read_timeout = 30
+max_attempts = 4
+backoff_base = 1.5

@@ -35,6 +35,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from automata import config
+
 log = logging.getLogger("automata.eth_1h")
 
 
@@ -52,13 +54,13 @@ def _init_file_logging() -> None:
 
 # ── Parameters ─────────────────────────────────────────────────────────────────
 
-SELL_TARGET  = 0.99    # used only when redeem-only mode is disabled
-STOP_LOSS    = 0.60    # exit immediately if position bid drops below this
-BET_SHARES   = 20      # target shares per trade
-K_DEFAULT    = 0.09   # Brownian Bridge k — auto-calibrated when >= 10 outcomes exist
-MIN_MINUTES  = 0       # allow entry from expiry up to MAX_MINUTES remaining
-MAX_MINUTES  = 7       # only enter in the last 7 minutes before expiry
-REDEEM_ONLY_MODE = True  # hold to resolution/redeem; no TP sell placement
+SELL_TARGET  = config.get_float("SELL_TARGET", "eth_1h", "sell_target", 0.99)    # used only when redeem-only mode is disabled
+STOP_LOSS    = config.get_float("STOP_LOSS", "eth_1h", "stop_loss", 0.60)    # exit immediately if position bid drops below this
+BET_SHARES   = config.get_int("BET_SHARES", "eth_1h", "bet_shares", 20)      # target shares per trade
+K_DEFAULT    = config.get_float("K_DEFAULT", "eth_1h", "k_default", 0.09)   # Brownian Bridge k — auto-calibrated when >= 10 outcomes exist
+MIN_MINUTES  = config.get_int("MIN_MINUTES", "eth_1h", "min_minutes", 0)       # allow entry from expiry up to MAX_MINUTES remaining
+MAX_MINUTES  = config.get_int("MAX_MINUTES", "eth_1h", "max_minutes", 7)       # only enter in the last 7 minutes before expiry
+REDEEM_ONLY_MODE = config.get_bool("REDEEM_ONLY_MODE", "eth_1h", "redeem_only_mode", True)  # hold to resolution/redeem; no TP sell placement
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_PATH  = _REPO_ROOT / "db" / "bets.db"
@@ -218,7 +220,7 @@ def _redeem_condition_positions(private_key: str, condition_id: str, rpc_url: st
 
 
 def _redeem_condition_positions_relayer(private_key: str, condition_id: str, relayer_url: str | None = None) -> str | None:
-    relayer_base = relayer_url or os.getenv("POLYMARKET_RELAYER_URL") or "https://relayer-v2.polymarket.com"
+    relayer_base = relayer_url or config.get_str("POLYMARKET_RELAYER_URL", "polymarket", "relayer_url", "https://relayer-v2.polymarket.com")
     relayer_key = os.getenv("RELAYER_API_KEY")
     relayer_addr = os.getenv("RELAYER_API_KEY_ADDRESS")
 
@@ -1071,7 +1073,7 @@ def run_eth_1h(
                             api_secret=os.environ["CLOB_SECRET"],
                             api_passphrase=os.environ["CLOB_PASS"],
                             funder=os.getenv("POLYMARKET_FUNDER") or None,
-                            signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+                            signature_type=config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0),
                         )
                         if _position["sell_order_id"] and _position["sell_order_id"] != "?":
                             cancel_order(client, _position["sell_order_id"])
@@ -1341,7 +1343,7 @@ def run_eth_1h(
         api_secret=os.environ["CLOB_SECRET"],
         api_passphrase=os.environ["CLOB_PASS"],
         funder=os.getenv("POLYMARKET_FUNDER") or None,
-        signature_type=int(os.getenv("POLYMARKET_SIG_TYPE", "0")),
+        signature_type=config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0),
     )
 
     # Determine shares based on available balance
@@ -1494,5 +1496,5 @@ if __name__ == "__main__":
     from dotenv import load_dotenv
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
-    host = os.getenv("POLYMARKET_HOST", "https://clob.polymarket.com")
+    host = config.get_str("POLYMARKET_HOST", "polymarket", "host", "https://clob.polymarket.com")
     analyze(host=host)
