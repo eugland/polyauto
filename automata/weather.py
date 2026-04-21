@@ -664,11 +664,17 @@ def run_weather_daemon(
                 time.sleep(interval_seconds)
                 continue
 
-        run(
-            dry_run=not bet,
-            max_spend_usdc=max_balance_usdc if bet else None,
-            max_orders=1 if (bet and once) else None,
-        )
+        try:
+            run(
+                dry_run=not bet,
+                max_spend_usdc=max_balance_usdc if bet else None,
+                max_orders=1 if (bet and once) else None,
+            )
+        except Exception as exc:
+            log.warning("[weather] Cycle failed: %s: %s — continuing", type(exc).__name__, exc)
+            if once:
+                log.info("[weather] --once set, exiting after failed cycle")
+                break
         if once:
             log.info("[weather] --once set, exiting after single cycle")
             break

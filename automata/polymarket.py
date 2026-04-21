@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 import re
+import time
 from typing import Any
 
 import requests
@@ -11,6 +13,49 @@ EVENTS_PAGE_SIZE = 10
 EVENTS_MAX_PAGES = 20
 POLYMARKET_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 WEATHER_TAG_SLUGS = {"weather", "highest-temperature"}
+
+# Gamma occasionally stalls under load; separate connect vs. read timeout and
+# retry transient failures so a single slow response doesn't kill the caller.
+GAMMA_CONNECT_TIMEOUT = 10
+GAMMA_READ_TIMEOUT = 30
+GAMMA_MAX_ATTEMPTS = 4
+GAMMA_BACKOFF_BASE = 1.5
+
+_log = logging.getLogger(__name__)
+
+
+def _gamma_get(url: str, params: dict[str, Any]) -> requests.Response:
+    last_exc: Exception | None = None
+    for attempt in range(1, GAMMA_MAX_ATTEMPTS + 1):
+        try:
+            resp = requests.get(
+                url,
+                params=params,
+                timeout=(GAMMA_CONNECT_TIMEOUT, GAMMA_READ_TIMEOUT),
+            )
+            # Retry on 429 and 5xx; raise on other 4xx immediately.
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                raise requests.HTTPError(
+                    f"{resp.status_code} from Gamma", response=resp
+                )
+            resp.raise_for_status()
+            return resp
+        except (
+            requests.Timeout,
+            requests.ConnectionError,
+            requests.HTTPError,
+        ) as exc:
+            last_exc = exc
+            if attempt == GAMMA_MAX_ATTEMPTS:
+                break
+            delay = GAMMA_BACKOFF_BASE ** attempt
+            _log.warning(
+                "Gamma request failed (attempt %d/%d): %s — retrying in %.1fs",
+                attempt, GAMMA_MAX_ATTEMPTS, exc, delay,
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 # Matches: highest-temperature-in-<city>-on-<month>-<day>-<year>
 EVENT_SLUG_RE = re.compile(
@@ -78,7 +123,7 @@ def fetch_temperature_markets_payload() -> dict[str, Any]:
     for query_tag in ("weather", "highest-temperature"):
         for page_index in range(EVENTS_MAX_PAGES):
             offset = page_index * EVENTS_PAGE_SIZE
-            resp = requests.get(
+            resp = _gamma_get(
                 POLYMARKET_EVENTS_URL,
                 params={
                     "tag_slug": query_tag,
@@ -87,9 +132,7 @@ def fetch_temperature_markets_payload() -> dict[str, Any]:
                     "offset": offset,
                     "end_date_max": end_date_max_iso,
                 },
-                timeout=15,
             )
-            resp.raise_for_status()
             page_events = resp.json()
             if not isinstance(page_events, list) or not page_events:
                 break
