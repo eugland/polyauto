@@ -562,8 +562,16 @@ def create_app(db_path: str) -> Flask:
         "sin3000":    "0x8d71ff86701227bb479b2039edd92b08f73115d8",
         "aapang":     "0x104171232971a6db8cf938f76fdbebbb81c5f452",
         "auniwarper": "0x0ec451646092f877f80d2b53d5500e50dac05ed3",
+        "gopfan2":    "0xf2f6af4f27ec2dcf4072095ab804016e14cd5817",
+        "aenews2":    "0x44c1dfe43260c94ed4f1d00de2e1f80fb113ebc1",
+        "gopfan":     "0x6af75d4e4aaf700450efbac3708cce1665810ff1",
+        "ColdMath":   "0x594edb9112f526fa6a80b8f858a6379c8a2c1c11",
+        "Hans323":    "0x0f37cb80dee49d55b5f6d9e595d52591d6371410",
     }
-    _POS_LIMITS = {"haerder": 100, "sin3000": 100, "aapang": 500, "auniwarper": 500}
+    _POS_LIMITS = {
+        "haerder": 100, "sin3000": 100, "aapang": 500, "auniwarper": 500,
+        "gopfan2": 500, "aenews2": 100, "gopfan": 100, "ColdMath": 500, "Hans323": 100,
+    }
     _DATA_API = "https://data-api.polymarket.com"
 
     @app.route("/api/weather-pro/positions")
