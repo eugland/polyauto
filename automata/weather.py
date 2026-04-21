@@ -35,6 +35,12 @@ _WUNDERGROUND_STATION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# NOAA timeseries URL: https://www.weather.gov/wrh/timeseries?site=LTFM → LTFM
+_NOAA_TIMESERIES_RE = re.compile(
+    r"weather\.gov/[^\s\"']*[?&]site=([A-Z0-9]{3,6})(?:[&#]|$)",
+    re.IGNORECASE,
+)
+
 
 def extract_all_urls(text: str) -> list[str]:
     """Extract every URL found in a block of text."""
@@ -58,6 +64,17 @@ def extract_icao_from_wunderground_url(url: str) -> str | None:
     """Extract ICAO station code from the last path segment of a Wunderground URL."""
     m = _WUNDERGROUND_STATION_RE.search(url)
     return m.group(1).upper() if m else None
+
+
+def extract_icao_from_noaa_url(url: str) -> str | None:
+    """Extract ICAO from a NOAA timeseries URL, e.g. weather.gov/wrh/timeseries?site=LTFM."""
+    m = _NOAA_TIMESERIES_RE.search(url)
+    return m.group(1).upper() if m else None
+
+
+def extract_icao_from_url(url: str) -> str | None:
+    """Try all known URL formats that embed an ICAO station code."""
+    return extract_icao_from_wunderground_url(url) or extract_icao_from_noaa_url(url)
 
 
 # ── Station coordinates ───────────────────────────────────────────────────────
@@ -319,6 +336,241 @@ def fetch_forecasts_for_events(
     return results
 
 
+# ── Station sanity check / verification ─────────────────────────────────────
+
+def fetch_metar_history(icao: str, hours: int = 168) -> list[dict]:
+    """Return METAR observations for the past `hours` hours ([] on failure)."""
+    try:
+        resp = requests.get(
+            "https://aviationweather.gov/api/data/metar",
+            params={"ids": icao, "hours": hours, "format": "json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def assess_freshness(icao: str, days: int = 7) -> dict:
+    """
+    METAR coverage over the past `days` days.
+
+    Returns: {
+      total_hours, hours_with_obs, coverage_pct, max_gap_hours, obs_count,
+      latest_obs_age_hours
+    }
+    """
+    import time as _time
+
+    hours = days * 24
+    obs = fetch_metar_history(icao, hours=hours)
+    now = int(_time.time())
+    window_start = now - hours * 3600
+
+    obs_hour_buckets: set[int] = set()
+    latest_ts = 0
+    for o in obs:
+        ts = o.get("obsTime")
+        if ts is None:
+            continue
+        try:
+            ts = int(ts)
+        except (TypeError, ValueError):
+            continue
+        if ts < window_start:
+            continue
+        latest_ts = max(latest_ts, ts)
+        obs_hour_buckets.add((ts - window_start) // 3600)
+
+    if not obs_hour_buckets:
+        return {
+            "total_hours": hours,
+            "hours_with_obs": 0,
+            "coverage_pct": 0.0,
+            "max_gap_hours": hours,
+            "obs_count": len(obs),
+            "latest_obs_age_hours": None,
+        }
+
+    sorted_hrs = sorted(obs_hour_buckets)
+    # Leading gap (window_start → first obs)
+    max_gap = sorted_hrs[0]
+    for i in range(1, len(sorted_hrs)):
+        gap = sorted_hrs[i] - sorted_hrs[i - 1] - 1
+        if gap > max_gap:
+            max_gap = gap
+    # Trailing gap (last obs → now)
+    trailing = (hours - 1) - sorted_hrs[-1]
+    if trailing > max_gap:
+        max_gap = trailing
+
+    return {
+        "total_hours": hours,
+        "hours_with_obs": len(obs_hour_buckets),
+        "coverage_pct": round(len(obs_hour_buckets) * 100.0 / hours, 1),
+        "max_gap_hours": int(max_gap),
+        "obs_count": len(obs),
+        "latest_obs_age_hours": round((now - latest_ts) / 3600.0, 1),
+    }
+
+
+def _to_float(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def find_markets_for_city(city: str) -> list[dict]:
+    """Return open temperature markets whose question/title/slug mentions `city`."""
+    from automata.polymarket import fetch_temperature_markets_payload
+
+    payload = fetch_temperature_markets_payload()
+    markets = payload.get("markets") or []
+    needle = city.strip().lower()
+    matches: list[dict] = []
+    for m in markets:
+        haystacks = [
+            str(m.get("question") or ""),
+            str(m.get("groupItemTitle") or ""),
+            str(m.get("slug") or ""),
+            str(m.get("event_title") or ""),
+            str(m.get("event_slug") or ""),
+            str(m.get("event_description") or ""),
+        ]
+        if any(needle in h.lower() for h in haystacks):
+            matches.append(m)
+    return matches
+
+
+def get_volume_stats(market: dict) -> dict:
+    """Extract volume/liquidity signals from a Polymarket market dict."""
+    return {
+        "volume_total": _to_float(market.get("volumeNum")) or _to_float(market.get("volume")),
+        "volume_24h": _to_float(market.get("volume24hr")),
+        "liquidity": _to_float(market.get("liquidityNum")) or _to_float(market.get("liquidity")),
+    }
+
+
+def verify_station(city: str) -> dict:
+    """Run all sanity checks for a city's weather market."""
+    from datetime import date
+
+    report: dict = {"city": city}
+    markets = find_markets_for_city(city)
+    if not markets:
+        report["error"] = f"no open temperature market found for '{city}'"
+        return report
+
+    # Prefer the highest-volume matching market
+    markets.sort(key=lambda m: _to_float(m.get("volumeNum")) or 0.0, reverse=True)
+    market = markets[0]
+
+    report["market_question"] = market.get("question")
+    report["event_title"] = market.get("event_title")
+    report["event_slug"] = market.get("event_slug")
+    report["matched_markets"] = len(markets)
+
+    desc = str(market.get("event_description") or "")
+    report["station_name"] = extract_station_name(desc)
+    report["unit"] = extract_unit(desc)
+
+    icao = None
+    for u in extract_all_urls(desc):
+        icao = extract_icao_from_url(u)
+        if icao:
+            break
+    report["icao"] = icao
+
+    report["volume"] = get_volume_stats(market)
+
+    if not icao:
+        report["error"] = "could not extract ICAO from market description"
+        return report
+
+    report["coords"] = fetch_station_coords(icao)
+    report["freshness"] = assess_freshness(icao, days=7)
+
+    today = date.today().isoformat()
+    if report["coords"]:
+        lat, lon = report["coords"]
+        report["forecast_open_meteo"] = fetch_open_meteo_high(lat, lon, today, unit=report["unit"])
+        report["forecast_noaa"] = fetch_noaa_high(lat, lon, today, unit=report["unit"])
+    else:
+        report["forecast_open_meteo"] = None
+        report["forecast_noaa"] = None
+
+    return report
+
+
+def _rating(pass_: bool, warn: bool = False) -> str:
+    if pass_:
+        return "PASS"
+    if warn:
+        return "WARN"
+    return "FAIL"
+
+
+def print_verify_report(report: dict) -> None:
+    city = report.get("city", "?")
+    print(f"\n=== {city} ===")
+    if err := report.get("error"):
+        q = report.get("market_question")
+        if q:
+            print(f"  Market   : {q}")
+            print(f"  Station  : {report.get('station_name')}")
+        print(f"  [FAIL] {err}")
+        return
+
+    print(f"  Market   : {report.get('market_question')}")
+    print(f"  Station  : {report.get('station_name')}  (ICAO: {report.get('icao')})")
+    if report.get("matched_markets", 0) > 1:
+        print(f"  (matched {report['matched_markets']} markets — showing highest-volume)")
+
+    coords = report.get("coords")
+    if coords:
+        print(f"  [PASS] Coords found         : {coords[0]:.3f}, {coords[1]:.3f}")
+    else:
+        print(f"  [FAIL] Coords found         : none (station not in METAR/airport DB)")
+
+    f = report.get("freshness") or {}
+    if f.get("hours_with_obs", 0) > 0:
+        pct = f.get("coverage_pct", 0.0)
+        gap = f.get("max_gap_hours", 0)
+        age = f.get("latest_obs_age_hours")
+        pass_ = pct >= 95.0 and gap <= 3 and (age is None or age <= 3)
+        warn = (not pass_) and pct >= 80.0 and gap <= 12
+        rating = _rating(pass_, warn)
+        print(f"  [{rating}] Past-7d METAR coverage : "
+              f"{f['hours_with_obs']}/{f['total_hours']}h ({pct}%), "
+              f"max gap {gap}h, latest {age}h ago")
+    else:
+        print(f"  [FAIL] Past-7d METAR coverage : no observations returned")
+
+    unit = report.get("unit", "C")
+    om = report.get("forecast_open_meteo")
+    om_str = "none" if om is None else f"{om:.1f}°{unit}"
+    print(f"  [{_rating(om is not None)}] Open-Meteo forecast    : {om_str}")
+
+    noaa = report.get("forecast_noaa")
+    if noaa is not None:
+        print(f"  [PASS] NOAA forecast          : {noaa:.1f}°{unit}")
+    else:
+        print(f"  [N/A ] NOAA forecast          : not available (likely non-US)")
+
+    vol = report.get("volume") or {}
+    total = vol.get("volume_total") or 0
+    v24 = vol.get("volume_24h") or 0
+    liq = vol.get("liquidity") or 0
+    pass_ = total >= 10_000 and v24 >= 500
+    warn = (not pass_) and total >= 1_000
+    rating = _rating(pass_, warn)
+    print(f"  [{rating}] Polymarket volume      : "
+          f"total ${total:,.0f}, 24h ${v24:,.0f}, liquidity ${liq:,.0f}")
+
+
 def _derive_clob_credentials() -> None:
     import os
 
@@ -431,7 +683,25 @@ if __name__ == "__main__":
     parser.add_argument("--interval", type=int, default=60, help="Loop interval in seconds (default: 60)")
     parser.add_argument("--once", action="store_true", help="Run one cycle, place at most one order, then exit")
     parser.add_argument("--max-balance", type=float, default=None, help="Max USDC this process is allowed to spend")
+    parser.add_argument(
+        "--verify", nargs="+", metavar="CITY",
+        help="Run station sanity checks for the given cities and exit (no daemon, no orders)",
+    )
     args = parser.parse_args()
+
+    if args.verify:
+        import sys
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+        for city in args.verify:
+            try:
+                report = verify_station(city)
+                print_verify_report(report)
+            except Exception as exc:
+                print(f"\n=== {city} ===\n  [ERROR] {type(exc).__name__}: {exc}")
+        raise SystemExit(0)
 
     run_weather_daemon(
         bet=args.bet,

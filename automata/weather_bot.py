@@ -225,13 +225,13 @@ def run(
     min_no_price  = float(os.getenv("MIN_NO_PRICE", "0.97"))
     max_no_price  = float(os.getenv("MAX_NO_PRICE", "0.997"))
     bet_threshold = float(os.getenv("BET_THRESHOLD", "0.95"))   # auto-bet above this
-    bet_shares    = 40.0   # first-fill target per city
+    bet_shares    = 22.0   # first-fill target per city
     max_shares    = 80.0   # top-up ceiling per city
     mm_tick_size = float(os.getenv("MM_TICK_SIZE", "0.001"))
     mm_join_bid_ticks = int(os.getenv("MM_JOIN_BID_TICKS", "1"))
     mm_reprice_cents = float(os.getenv("MM_REPRICE_CENTS", "0.10"))
     mm_reprice_delta = mm_reprice_cents / 100.0
-    city_blacklist = {c.strip() for c in os.getenv("CITY_BLACKLIST", "Seoul,Taipei").split(",") if c.strip()}
+    city_blacklist = {c.strip() for c in os.getenv("CITY_BLACKLIST", "Seoul,Taipei,Lagos,Denver,Jakarta").split(",") if c.strip()}
 
     # ── Fetch markets ─────────────────────────────────────────────────────────
     log.info("Fetching Polymarket temperature markets...")
@@ -705,6 +705,7 @@ def run(
                 "threshold_hi": candidate.get("threshold_hi"),
                 "direction": candidate.get("direction"),
                 "forecast_high": candidate.get("forecast_high"),
+                "resolution_dt": candidate.get("resolution_dt"),
                 "_top_up": True,
                 "_held_shares": held_tu,
                 "_existing_orders": existing_orders,
@@ -720,8 +721,8 @@ def run(
         if not bets_to_place:
             log.info("Pass %d: no bets to place (only cancellations this pass).", pass_num)
         else:
-            # Round 1 before Round 2; within each round, lowest ask first
-            bets_to_place.sort(key=lambda b: (b.get("_fill_round", 1), b.get("_live_ask") or 1.0))
+            # Round 1 before Round 2; within each round, closest resolution first
+            bets_to_place.sort(key=lambda b: (b.get("_fill_round", 1), b.get("resolution_dt") or _FAR_FUTURE))
 
             print(f"  Pass {pass_num} — placing {len(bets_to_place)} order(s)...")
             print()
@@ -903,20 +904,47 @@ def _scan_positions(dry_run: bool = True) -> None:
                 log.info("  token %s  %.2f shares — too small, bid not at target yet", token_id[:12], size)
             continue
         orders   = get_open_orders(client, token_id)
-        existing_sell = next(
-            (o for o in orders if str(o.get("side", "")).upper() == "SELL"),
-            None,
-        )
-        if existing_sell is not None:
-            existing_price = float(existing_sell.get("price", 0))
-            log.debug("  token %s  %.2f shares — sell order already exists @ %.1f¢", token_id[:12], size, existing_price * 100)
+        existing_sells = [o for o in orders if str(o.get("side", "")).upper() == "SELL"]
+        sell_remaining_total = sum(_order_open_shares(o) for o in existing_sells)
+        gap = round(size - sell_remaining_total, 2)
+        # Minimum top-up is $1 / take_profit shares (Polymarket min-order rule) — skip noise below that
+        min_topup_shares = max(1.01, 1.0 / max(take_profit, 0.01))
+
+        if existing_sells and gap < min_topup_shares:
+            existing_price = float(existing_sells[0].get("price", 0))
+            log.debug(
+                "  token %s  %.2f shares — sell order already covers position "
+                "(%d order(s) totaling %.2f sh @ ~%.1f¢, gap %.2f)",
+                token_id[:12], size, len(existing_sells), sell_remaining_total,
+                existing_price * 100, gap,
+            )
             continue
+
+        topup_shares = gap if existing_sells else size
+        if topup_shares < min_topup_shares:
+            log.info(
+                "  token %s  %.2f shares — gap %.2f < min $1 order, skipping top-up",
+                token_id[:12], size, gap,
+            )
+            continue
+
+        if existing_sells:
+            log.info(
+                "  token %s  %.2f shares — sells total %.2f, gap %.2f → topping up",
+                token_id[:12], size, sell_remaining_total, topup_shares,
+            )
         if dry_run:
-            log.info("  token %s  %.2f shares — [DRY RUN] would place sell @ %.1f¢", token_id[:12], size, take_profit * 100)
+            log.info(
+                "  token %s  %.2f shares — [DRY RUN] would place sell @ %.1f¢ for %.2f sh",
+                token_id[:12], size, take_profit * 100, topup_shares,
+            )
         else:
             try:
-                resp = place_sell_order(client, token_id, take_profit, size)
+                resp = place_sell_order(client, token_id, take_profit, topup_shares)
                 order_id = resp.get("orderID") or resp.get("id") or "?"
-                log.info("  token %s  %.2f shares — sell @ %.1f¢ placed  id=%s", token_id[:12], size, take_profit * 100, order_id)
+                log.info(
+                    "  token %s  %.2f shares — sell @ %.1f¢ for %.2f sh placed  id=%s",
+                    token_id[:12], size, take_profit * 100, topup_shares, order_id,
+                )
             except Exception as exc:
                 log.error("  token %s — sell order failed: %s", token_id[:12], exc)
