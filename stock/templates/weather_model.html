@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Weather Model</title>
+  <script>
+    (function () {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const set = (m) => document.documentElement.setAttribute(
+        'data-bs-theme', m.matches ? 'dark' : 'light');
+      set(mq);
+      mq.addEventListener('change', set);
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="static/css/style.css?v=weathermodel1">
+  <style>
+    .small-muted { font-size: 0.78rem; color: var(--bs-secondary-color); }
+    .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+    .edge-pos { color: #16a34a; }
+    .edge-neg { color: #dc2626; }
+    .tbl-compact th, .tbl-compact td { padding: 0.25rem 0.5rem; font-size: 0.82rem; }
+    .tbl-compact tbody tr { cursor: pointer; }
+    .tbl-compact tbody tr:hover { background: var(--bs-tertiary-bg); }
+    .section-title { font-weight: 600; margin-bottom: 0.25rem; }
+    .chart-box { position: relative; height: 340px; }
+    .chart-box-sm { position: relative; height: 240px; }
+  </style>
+</head>
+<body>
+<div class="container-fluid py-3">
+
+  <div class="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+    <div class="d-flex align-items-center gap-2">
+      <a class="btn btn-sm btn-outline-secondary" href="./">&larr; Dashboard</a>
+      <a class="btn btn-sm btn-outline-primary" href="weather-log">Weather Log</a>
+      <a class="btn btn-sm btn-outline-success" href="weather-pro">Weather Pro</a>
+      <h5 class="mb-0 ms-3" id="page-title">Weather Model</h5>
+    </div>
+    <div class="d-flex gap-2 align-items-center">
+      <small class="text-muted" id="page-meta"></small>
+      <button class="btn btn-sm btn-outline-secondary" onclick="refreshAll()">&#x21bb; Refresh</button>
+    </div>
+  </div>
+
+  <!-- OVERVIEW MODE -->
+  <div id="overview-mode">
+    <div class="row g-3">
+      <div class="col-lg-7">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span class="fw-semibold">Cities</span>
+            <small class="text-muted" id="cities-meta"></small>
+          </div>
+          <div class="card-body p-0">
+            <table class="table tbl-compact mb-0">
+              <thead><tr>
+                <th>City</th><th>ICAO</th>
+                <th class="text-end">Events</th>
+                <th class="text-end">Resolved</th>
+                <th class="text-end">Scans</th>
+                <th>Last seen</th>
+              </tr></thead>
+              <tbody id="cities-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-5">
+        <div class="card mb-3">
+          <div class="card-header fw-semibold">Calibration
+            <small class="text-muted ms-2 fw-normal">predicted P(NO) vs empirical hit rate</small>
+          </div>
+          <div class="card-body">
+            <div class="chart-box-sm"><canvas id="calibration-chart"></canvas></div>
+            <div id="calibration-meta" class="small-muted mt-2"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header fw-semibold">Station bias (°)</div>
+          <div class="card-body p-0">
+            <table class="table tbl-compact mb-0">
+              <thead><tr>
+                <th>ICAO</th><th>Source</th>
+                <th class="text-end">Bias</th>
+                <th class="text-end">n</th>
+                <th>Updated</th>
+              </tr></thead>
+              <tbody id="bias-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card mt-3">
+          <div class="card-header fw-semibold">Station σ by lead-time</div>
+          <div class="card-body p-0">
+            <table class="table tbl-compact mb-0">
+              <thead><tr>
+                <th>ICAO</th><th>Lead</th>
+                <th class="text-end">σ</th>
+                <th class="text-end">n</th>
+                <th>Updated</th>
+              </tr></thead>
+              <tbody id="sigma-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CITY MODE -->
+  <div id="city-mode" style="display:none">
+    <div class="row g-3">
+      <div class="col-lg-8">
+        <div class="card">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span class="fw-semibold">Forecast vs METAR vs Market — <span id="city-title-name"></span></span>
+            <small class="text-muted" id="city-chart-meta"></small>
+          </div>
+          <div class="card-body">
+            <div class="chart-box"><canvas id="city-timeline"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4">
+        <div class="card">
+          <div class="card-header fw-semibold">Resolved outcomes</div>
+          <div class="card-body p-0">
+            <table class="table tbl-compact mb-0">
+              <thead><tr>
+                <th>Date</th><th>Actual</th><th>Bucket</th><th>Source</th>
+              </tr></thead>
+              <tbody id="city-outcomes-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card mt-3">
+          <div class="card-header fw-semibold">Residuals (actual − forecast)</div>
+          <div class="card-body">
+            <div class="chart-box-sm"><canvas id="residual-chart"></canvas></div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header fw-semibold">Scan history <small class="text-muted ms-2 fw-normal">newest first</small></div>
+          <div class="card-body p-0 table-responsive">
+            <table class="table tbl-compact mb-0">
+              <thead><tr>
+                <th>When</th><th>Question</th><th>Thr</th>
+                <th class="text-end">OM</th><th class="text-end">NOAA</th>
+                <th class="text-end">METAR now</th><th class="text-end">METAR max</th>
+                <th class="text-end">μ̂</th><th class="text-end">σ̂</th>
+                <th class="text-end">Lead</th>
+                <th class="text-end">Fair NO</th>
+                <th class="text-end">Mkt NO</th>
+                <th class="text-end">Edge</th>
+              </tr></thead>
+              <tbody id="city-scans-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const qs = new URLSearchParams(window.location.search);
+const selectedCity = qs.get('city');
+
+function fmt(v, digits=2) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v !== 'number') v = parseFloat(v);
+  if (!isFinite(v)) return '—';
+  return v.toFixed(digits);
+}
+function fmtPct(v, digits=1) {
+  if (v === null || v === undefined || !isFinite(v)) return '—';
+  return (v * 100).toFixed(digits) + '¢';
+}
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  return d.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+function fmtShort(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso.slice(0, 16);
+  return d.toLocaleDateString([], {month:'short', day:'numeric'});
+}
+function edgeCell(bps) {
+  if (bps === null || bps === undefined || !isFinite(bps)) return '<td class="text-end num">—</td>';
+  const klass = bps > 0 ? 'edge-pos' : (bps < 0 ? 'edge-neg' : '');
+  return `<td class="text-end num ${klass}">${bps > 0 ? '+' : ''}${bps.toFixed(0)} bp</td>`;
+}
+
+// ── Overview ────────────────────────────────────────────────────────────────
+
+async function loadOverview() {
+  const [citiesRes, stationsRes, calibRes] = await Promise.all([
+    fetch('api/weather-model/cities').then(r => r.json()).catch(() => ({cities: []})),
+    fetch('api/weather-model/stations').then(r => r.json()).catch(() => ({bias: [], sigma: []})),
+    fetch('api/weather-model/calibration').then(r => r.json()).catch(() => ({buckets: []})),
+  ]);
+  renderCities(citiesRes.cities || []);
+  renderBias(stationsRes.bias || []);
+  renderSigma(stationsRes.sigma || []);
+  renderCalibration(calibRes.buckets || [], calibRes.total_paired || 0);
+  document.getElementById('page-meta').textContent =
+    `${(citiesRes.cities || []).length} cities · ${calibRes.total_paired || 0} paired (scan, outcome)`;
+}
+
+function renderCities(cities) {
+  const tbody = document.getElementById('cities-tbody');
+  if (!cities.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-3">No scans recorded yet. Start the weather bot to begin collecting.</td></tr>`;
+    document.getElementById('cities-meta').textContent = '';
+    return;
+  }
+  document.getElementById('cities-meta').textContent = `${cities.length} cities`;
+  tbody.innerHTML = cities.map(c => `
+    <tr onclick="window.location.href='weather-model?city=${encodeURIComponent(c.city)}'">
+      <td>${c.city}</td>
+      <td class="num">${c.icao || '—'}</td>
+      <td class="text-end num">${c.n_events ?? '—'}</td>
+      <td class="text-end num">${c.n_resolved ?? '—'}</td>
+      <td class="text-end num">${c.n_scans}</td>
+      <td class="num">${fmtDate(c.last_seen)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderBias(bias) {
+  const tbody = document.getElementById('bias-tbody');
+  if (!bias.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-2">No bias learned yet — needs at least one resolved outcome.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = bias.map(b => `
+    <tr>
+      <td class="num">${b.icao}</td>
+      <td>${b.source}</td>
+      <td class="text-end num">${b.bias === null ? '—' : (b.bias >= 0 ? '+' : '') + b.bias.toFixed(2)}</td>
+      <td class="text-end num">${b.n}</td>
+      <td class="num small-muted">${fmtShort(b.last_updated)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderSigma(sigma) {
+  const tbody = document.getElementById('sigma-tbody');
+  if (!sigma.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-2">No σ learned yet — priors in effect.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = sigma.map(s => `
+    <tr>
+      <td class="num">${s.icao}</td>
+      <td>${s.lead_bucket}</td>
+      <td class="text-end num">${s.sigma === null ? '—' : s.sigma.toFixed(2)}</td>
+      <td class="text-end num">${s.n}</td>
+      <td class="num small-muted">${fmtShort(s.last_updated)}</td>
+    </tr>
+  `).join('');
+}
+
+let calibChart = null;
+function renderCalibration(buckets, total) {
+  document.getElementById('calibration-meta').textContent =
+    `${total} paired (scan, outcome) points · perfect calibration = diagonal`;
+  const data = {
+    datasets: [
+      {
+        label: 'Model',
+        data: buckets.map(b => ({ x: b.predicted_mean, y: b.empirical_hit_rate, n: b.n })),
+        backgroundColor: '#2563eb',
+        borderColor: '#2563eb',
+        pointRadius: 6,
+        showLine: false,
+      },
+      {
+        label: 'Perfect',
+        data: [{x:0, y:0},{x:1, y:1}],
+        borderColor: '#9ca3af',
+        borderDash: [4, 4],
+        pointRadius: 0,
+        showLine: true,
+        fill: false,
+      },
+    ],
+  };
+  const ctx = document.getElementById('calibration-chart').getContext('2d');
+  if (calibChart) calibChart.destroy();
+  calibChart = new Chart(ctx, {
+    type: 'scatter',
+    data,
+    options: {
+      maintainAspectRatio: false,
+      scales: {
+        x: { title: {display: true, text: 'Predicted P(NO)'}, min: 0, max: 1 },
+        y: { title: {display: true, text: 'Empirical hit rate'}, min: 0, max: 1 },
+      },
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const d = ctx.raw;
+              if (d.n !== undefined) {
+                return `pred=${fmt(d.x, 3)} emp=${fmt(d.y, 3)} n=${d.n}`;
+              }
+              return '';
+            }
+          }
+        }
+      }
+    },
+  });
+}
+
+// ── City detail ─────────────────────────────────────────────────────────────
+
+let cityChart = null;
+let residualChart = null;
+
+async function loadCity(city) {
+  document.getElementById('page-title').innerHTML = `Weather Model · <span class="num">${city}</span>`;
+  document.getElementById('city-title-name').textContent = city;
+  const res = await fetch(`api/weather-model/scans?city=${encodeURIComponent(city)}&limit=2000`)
+    .then(r => r.json()).catch(() => ({scans: [], outcomes: []}));
+  const scans = res.scans || [];
+  const outcomes = res.outcomes || [];
+  document.getElementById('page-meta').textContent =
+    `${scans.length} scans · ${outcomes.length} resolved`;
+  renderCityTimeline(scans, outcomes);
+  renderCityOutcomes(outcomes);
+  renderCityScans(scans);
+  renderResiduals(scans, outcomes);
+}
+
+function renderCityOutcomes(outcomes) {
+  const tbody = document.getElementById('city-outcomes-tbody');
+  if (!outcomes.length) {
+    tbody.innerHTML = `<tr><td colspan="4" class="text-center text-muted py-3">No resolved outcomes yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = outcomes.map(o => {
+    const bucket = (o.bucket_lo !== null && o.bucket_hi !== null)
+      ? `${o.bucket_lo}–${o.bucket_hi}°${o.unit || ''}` : '—';
+    return `<tr>
+      <td>${o.event_date}</td>
+      <td class="num">${fmt(o.actual_high, 1)}°${o.unit || ''}</td>
+      <td class="num small-muted">${bucket}</td>
+      <td class="small-muted">${o.source}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderCityScans(scans) {
+  const tbody = document.getElementById('city-scans-tbody');
+  if (!scans.length) {
+    tbody.innerHTML = `<tr><td colspan="13" class="text-center text-muted py-3">No scans yet.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = scans.slice(0, 200).map(s => {
+    const thr = s.direction === 'range' && s.threshold_hi
+      ? `${s.threshold}–${s.threshold_hi}` : `${s.threshold ?? '—'}`;
+    const edgeHtml = edgeCell(s.edge_bps);
+    return `<tr>
+      <td class="num">${fmtDate(s.scanned_at)}</td>
+      <td>${s.question}</td>
+      <td class="num">${thr}°${s.unit || ''}</td>
+      <td class="text-end num">${fmt(s.openmeteo_high, 1)}</td>
+      <td class="text-end num">${fmt(s.noaa_high, 1)}</td>
+      <td class="text-end num">${fmt(s.metar_current, 1)}</td>
+      <td class="text-end num">${fmt(s.metar_max_so_far, 1)}</td>
+      <td class="text-end num">${fmt(s.calibrated_mu, 2)}</td>
+      <td class="text-end num">${fmt(s.calibrated_sigma, 2)}</td>
+      <td class="text-end num small-muted">${s.lead_bucket || '—'}</td>
+      <td class="text-end num">${fmtPct(s.fair_no_prob)}</td>
+      <td class="text-end num">${fmtPct(s.no_ask)}</td>
+      ${edgeHtml}
+    </tr>`;
+  }).join('');
+}
+
+function renderCityTimeline(scans, outcomes) {
+  // One line per (event_date, threshold) — identified by question text so we
+  // can show multiple simultaneous markets for the same city. Too busy above
+  // 4 — cap to the 4 soonest-resolving event_dates.
+  const byEvent = new Map();
+  for (const s of scans) {
+    const key = `${s.event_date}|${s.threshold}|${s.threshold_hi ?? ''}`;
+    if (!byEvent.has(key)) byEvent.set(key, []);
+    byEvent.get(key).push(s);
+  }
+  const eventKeys = [...byEvent.keys()]
+    .sort((a, b) => {
+      const sa = byEvent.get(a)[0], sb = byEvent.get(b)[0];
+      return (sa.event_date || '').localeCompare(sb.event_date || '');
+    })
+    .slice(0, 4);
+
+  const palette = ['#2563eb', '#dc2626', '#16a34a', '#a855f7', '#f59e0b'];
+  const datasets = [];
+  eventKeys.forEach((key, i) => {
+    const seq = byEvent.get(key).slice().sort((a, b) => a.scanned_at.localeCompare(b.scanned_at));
+    const label = `${seq[0].event_date} thr ${seq[0].threshold}${seq[0].threshold_hi ? '–' + seq[0].threshold_hi : ''}°${seq[0].unit || ''}`;
+    const c = palette[i % palette.length];
+    datasets.push({
+      label: `${label}  ·  OM`,
+      data: seq.map(s => ({x: s.scanned_at, y: s.openmeteo_high})).filter(p => p.y !== null),
+      borderColor: c, backgroundColor: c, pointRadius: 2, borderWidth: 1.5, tension: 0.1,
+    });
+    datasets.push({
+      label: `${label}  ·  μ̂`,
+      data: seq.map(s => ({x: s.scanned_at, y: s.calibrated_mu})).filter(p => p.y !== null),
+      borderColor: c, backgroundColor: c, borderDash: [4, 3], pointRadius: 2, borderWidth: 1.5, tension: 0.1,
+    });
+    datasets.push({
+      label: `${label}  ·  METAR max`,
+      data: seq.map(s => ({x: s.scanned_at, y: s.metar_max_so_far})).filter(p => p.y !== null),
+      borderColor: c, backgroundColor: 'transparent', pointStyle: 'triangle', pointRadius: 4,
+      showLine: false,
+    });
+    // Threshold line
+    if (seq[0].threshold !== null) {
+      datasets.push({
+        label: `${label}  ·  thr`,
+        data: seq.map(s => ({x: s.scanned_at, y: s.threshold})),
+        borderColor: c, backgroundColor: c, borderWidth: 1, borderDash: [1, 3],
+        pointRadius: 0,
+      });
+    }
+  });
+  // Overlay actual (horizontal marker at outcome.actual_high, at the time of resolution)
+  outcomes.slice(0, 4).forEach((o) => {
+    datasets.push({
+      label: `actual ${o.event_date}`,
+      data: [{x: o.resolved_at || (o.event_date + 'T15:00:00Z'), y: o.actual_high}],
+      borderColor: '#000', backgroundColor: '#000',
+      pointStyle: 'rectRot', pointRadius: 7, showLine: false,
+    });
+  });
+
+  const ctx = document.getElementById('city-timeline').getContext('2d');
+  if (cityChart) cityChart.destroy();
+  cityChart = new Chart(ctx, {
+    type: 'line',
+    data: {datasets},
+    options: {
+      maintainAspectRatio: false,
+      parsing: false,
+      scales: {
+        x: {type: 'time', time: {unit: 'hour'}, title: {display: true, text: 'Scanned'}},
+        y: {title: {display: true, text: '°'}},
+      },
+      plugins: {
+        legend: {position: 'bottom', labels: {boxWidth: 10, font: {size: 10}}},
+      },
+    },
+  });
+  document.getElementById('city-chart-meta').textContent =
+    `${eventKeys.length} event(s) plotted · solid=Open-Meteo, dashed=calibrated μ̂, ▲=METAR max, ◆=actual`;
+}
+
+// chartjs-adapter-date-fns substitute — Chart.js needs a time-axis adapter. Use luxon (lightweight).
+(function loadLuxonAdapter(){
+  const s1 = document.createElement('script');
+  s1.src = 'https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js';
+  s1.onload = () => {
+    const s2 = document.createElement('script');
+    s2.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js';
+    s2.onload = boot;
+    document.head.appendChild(s2);
+  };
+  document.head.appendChild(s1);
+})();
+
+function renderResiduals(scans, outcomes) {
+  // Join scans to outcomes on (icao, event_date); residual = actual - forecast
+  const outByKey = new Map();
+  for (const o of outcomes) outByKey.set(`${o.icao}|${o.event_date}`, o);
+  const residuals = [];
+  const seen = new Set(); // pick one scan per event (longest lead)
+  const scansByEvent = new Map();
+  for (const s of scans) {
+    const k = `${s.icao}|${s.event_date}`;
+    if (!scansByEvent.has(k)) scansByEvent.set(k, []);
+    scansByEvent.get(k).push(s);
+  }
+  for (const [k, arr] of scansByEvent) {
+    const o = outByKey.get(k);
+    if (!o) continue;
+    // Pick the scan with the largest hours_to_res (longest lead)
+    arr.sort((a, b) => (b.hours_to_res || 0) - (a.hours_to_res || 0));
+    const s = arr[0];
+    if (s.openmeteo_high !== null && s.openmeteo_high !== undefined) {
+      residuals.push(o.actual_high - s.openmeteo_high);
+    }
+  }
+  // Bin into integer-width histogram
+  if (!residuals.length) {
+    const ctx = document.getElementById('residual-chart').getContext('2d');
+    if (residualChart) residualChart.destroy();
+    residualChart = new Chart(ctx, {
+      type: 'bar',
+      data: {labels: [], datasets: [{label: 'residuals', data: []}]},
+      options: {maintainAspectRatio: false, plugins: {legend: {display: false},
+        subtitle: {display: true, text: 'no paired (scan, outcome) pairs yet'}}},
+    });
+    return;
+  }
+  const mn = Math.floor(Math.min(...residuals));
+  const mx = Math.ceil(Math.max(...residuals));
+  const bins = new Array(mx - mn + 1).fill(0);
+  for (const r of residuals) bins[Math.floor(r) - mn]++;
+  const labels = bins.map((_, i) => `${mn + i}`);
+  const ctx = document.getElementById('residual-chart').getContext('2d');
+  if (residualChart) residualChart.destroy();
+  const mean = residuals.reduce((a, b) => a + b, 0) / residuals.length;
+  residualChart = new Chart(ctx, {
+    type: 'bar',
+    data: {labels, datasets: [{label: 'residuals (actual − OM)', data: bins, backgroundColor: '#2563eb'}]},
+    options: {
+      maintainAspectRatio: false,
+      plugins: {legend: {display: false},
+        subtitle: {display: true, text: `n=${residuals.length}, mean=${mean.toFixed(2)}° — ideal: centered at 0`}},
+    },
+  });
+}
+
+function boot() {
+  if (selectedCity) {
+    document.getElementById('overview-mode').style.display = 'none';
+    document.getElementById('city-mode').style.display = '';
+    loadCity(selectedCity);
+  } else {
+    document.getElementById('overview-mode').style.display = '';
+    document.getElementById('city-mode').style.display = 'none';
+    loadOverview();
+  }
+}
+
+function refreshAll() {
+  boot();
+}
+</script>
+</body>
+</html>

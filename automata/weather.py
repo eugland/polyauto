@@ -156,6 +156,73 @@ def fetch_coords_for_stations(icao_list: list[str]) -> dict[str, tuple[float, fl
     return results
 
 
+def fetch_metar_today_stats(
+    icao: str,
+    tz_name: str,
+    event_date: str,
+    unit: str = "C",
+) -> tuple[float | None, float | None]:
+    """
+    Return (current_temp, max_so_far_today) for `icao` in market `unit`.
+
+    `current_temp` is the most recent METAR observation. `max_so_far_today` is
+    the max temperature observed between local-midnight on `event_date` and
+    now, and is only meaningful when `event_date` matches today's local date
+    in `tz_name` — for future event dates it returns None.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    from zoneinfo import ZoneInfo as _ZI
+
+    obs = fetch_metar_history(icao, hours=24)
+    if not obs:
+        return None, None
+
+    # Most recent obs = index 0 (aviationweather.gov returns reverse chrono).
+    latest = obs[0]
+    current_val: float | None = None
+    latest_c = latest.get("temp")
+    if latest_c is not None:
+        try:
+            c = float(latest_c)
+            current_val = c * 9.0 / 5.0 + 32.0 if unit.upper() == "F" else c
+        except (TypeError, ValueError):
+            current_val = None
+
+    try:
+        tz = _ZI(tz_name)
+    except Exception:
+        tz = _ZI("UTC")
+    now_local = _dt.now(tz)
+    today_local = now_local.strftime("%Y-%m-%d")
+    if event_date != today_local:
+        return current_val, None
+
+    max_c: float | None = None
+    for o in obs:
+        ts = o.get("obsTime")
+        temp = o.get("temp")
+        if ts is None or temp is None:
+            continue
+        try:
+            ts_i = int(ts)
+        except (TypeError, ValueError):
+            continue
+        obs_local = _dt.fromtimestamp(ts_i, tz=_tz.utc).astimezone(tz)
+        if obs_local.strftime("%Y-%m-%d") != today_local:
+            continue
+        try:
+            c = float(temp)
+        except (TypeError, ValueError):
+            continue
+        if max_c is None or c > max_c:
+            max_c = c
+
+    if max_c is None:
+        return current_val, None
+    max_val = max_c * 9.0 / 5.0 + 32.0 if unit.upper() == "F" else max_c
+    return current_val, max_val
+
+
 def fetch_open_meteo_archive_high(lat: float, lon: float, date_str: str, unit: str = "C") -> float | None:
     """Historical daily max from Open-Meteo archive (for past dates)."""
     try:
@@ -614,16 +681,33 @@ def run_weather_daemon(
     log = logging.getLogger("automata.weather")
 
     from automata.db import init_db
+    from automata import weather_model
     from automata.weather_bot import _scan_positions, run
 
     if bet:
         _derive_clob_credentials()
     init_db()
+    weather_model.init_db()
 
     iteration = 0
+    last_backfill_iter = 0
     while True:
         iteration += 1
         log.info("[weather] Iteration %d", iteration)
+
+        # Run the Polymarket outcome backfill every ~10 iterations (≈10 min at
+        # the default 60s interval). Cheap — only queries closed events we
+        # haven't seen before — so running it often is fine.
+        if iteration - last_backfill_iter >= 10 or iteration == 1:
+            try:
+                stats = weather_model.backfill_outcomes_from_polymarket()
+                log.info(
+                    "[weather-model] backfill: checked=%d resolved=%d skipped=%d errors=%d",
+                    stats["checked"], stats["resolved"], stats["skipped"], stats["errors"],
+                )
+            except Exception as exc:
+                log.warning("[weather-model] backfill failed: %s", exc)
+            last_backfill_iter = iteration
 
         if bet:
             _scan_positions(dry_run=False)

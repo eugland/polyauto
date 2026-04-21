@@ -330,6 +330,75 @@ def create_app(db_path: str) -> Flask:
     def weather_pro():
         return render_template("weather_pro.html")
 
+    @app.route("/weather-model")
+    def weather_model_index():
+        return render_template("weather_model.html")
+
+    @app.route("/api/weather-model/cities")
+    def api_weather_model_cities():
+        try:
+            from automata import weather_model
+            weather_model.init_db()
+            cities = weather_model.list_cities()
+            # Join with outcome counts + hit-rate so the overview is one call.
+            import duckdb as _duck
+            con = _duck.connect(str(weather_model.DB_PATH), read_only=True)
+            try:
+                rows = con.execute("""
+                    SELECT s.city,
+                           COUNT(DISTINCT s.event_date) AS n_events,
+                           COUNT(DISTINCT CASE WHEN o.icao IS NOT NULL
+                                               THEN s.event_date END) AS n_resolved
+                    FROM scans s
+                    LEFT JOIN outcomes o
+                        ON o.icao = s.icao AND o.event_date = s.event_date
+                    GROUP BY s.city
+                """).fetchall()
+            finally:
+                con.close()
+            resolved_by_city = {r[0]: (int(r[1] or 0), int(r[2] or 0)) for r in rows}
+            for c in cities:
+                n_evt, n_res = resolved_by_city.get(c["city"], (0, 0))
+                c["n_events"] = n_evt
+                c["n_resolved"] = n_res
+            return jsonify({"cities": cities})
+        except Exception as exc:
+            return jsonify({"cities": [], "error": str(exc)}), 500
+
+    @app.route("/api/weather-model/scans")
+    def api_weather_model_scans():
+        try:
+            from automata import weather_model
+            weather_model.init_db()
+            city = request.args.get("city") or None
+            try:
+                limit = int(request.args.get("limit", "500"))
+            except ValueError:
+                limit = 500
+            scans = weather_model.list_scans(city=city, limit=limit)
+            outcomes = weather_model.list_outcomes(city=city, limit=limit)
+            return jsonify({"scans": scans, "outcomes": outcomes})
+        except Exception as exc:
+            return jsonify({"scans": [], "outcomes": [], "error": str(exc)}), 500
+
+    @app.route("/api/weather-model/stations")
+    def api_weather_model_stations():
+        try:
+            from automata import weather_model
+            weather_model.init_db()
+            return jsonify(weather_model.list_stations())
+        except Exception as exc:
+            return jsonify({"bias": [], "sigma": [], "error": str(exc)}), 500
+
+    @app.route("/api/weather-model/calibration")
+    def api_weather_model_calibration():
+        try:
+            from automata import weather_model
+            weather_model.init_db()
+            return jsonify(weather_model.calibration_summary())
+        except Exception as exc:
+            return jsonify({"buckets": [], "total_paired": 0, "error": str(exc)}), 500
+
     @app.route("/api/health")
     def api_health():
         return jsonify(db.query_health(_db()))

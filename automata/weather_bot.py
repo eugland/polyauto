@@ -338,6 +338,7 @@ def run(
             end_dt_raw = raw.get("endDateIso") or raw.get("endDate") or ""
             all_candidates.append({
                 "question": question,
+                "event_slug": event_slug,
                 "city": city_name,
                 "title_date": title_date,
                 "token_id": token_id,
@@ -386,6 +387,85 @@ def run(
     for c in all_candidates:
         fc = forecasts.get((c["icao"], c["end_date"])) if c.get("icao") else None
         c["forecast_high"] = fc["open_meteo"] if fc else None
+        c["noaa_high"] = fc["noaa"] if fc else None
+
+    # ── Fetch METAR current + max-so-far-today for each unique ICAO ─────────
+    from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
+    from automata.weather import fetch_metar_today_stats
+    metar_keys: set[tuple[str, str, str, str]] = set()
+    for c in all_candidates:
+        if not c.get("icao"):
+            continue
+        tz_name = CITY_TZ.get(c["city"], "UTC")
+        metar_keys.add((c["icao"], tz_name, c["end_date"], c.get("unit") or "C"))
+    metar_stats: dict[tuple[str, str], tuple[float | None, float | None]] = {}
+    if metar_keys:
+        with _TPE(max_workers=min(16, max(1, len(metar_keys)))) as _ex:
+            _futs = {
+                _ex.submit(fetch_metar_today_stats, icao, tz, ed, u): (icao, ed)
+                for (icao, tz, ed, u) in metar_keys
+            }
+            for fut in _ac(_futs):
+                try:
+                    metar_stats[_futs[fut]] = fut.result()
+                except Exception:
+                    metar_stats[_futs[fut]] = (None, None)
+    for c in all_candidates:
+        key = (c.get("icao") or "", c["end_date"])
+        cur, mx = metar_stats.get(key, (None, None))
+        c["metar_current"] = cur
+        c["metar_max_so_far"] = mx
+
+    # ── Record every candidate into the weather_model DB (shadow mode) ───────
+    try:
+        from automata import weather_model
+        weather_model.init_db()
+        scan_recs = [
+            weather_model.ScanRecord(
+                city=c["city"],
+                icao=c.get("icao"),
+                event_date=c["end_date"],
+                event_slug=c.get("event_slug"),
+                question=c["question"],
+                token_id=c.get("token_id"),
+                yes_token_id=c.get("yes_token_id"),
+                resolution_dt=c.get("resolution_dt"),
+                unit=c.get("unit"),
+                threshold=c.get("threshold"),
+                threshold_hi=c.get("threshold_hi"),
+                direction=c.get("direction"),
+                openmeteo_high=c.get("forecast_high"),
+                noaa_high=c.get("noaa_high"),
+                metar_current=c.get("metar_current"),
+                metar_max_so_far=c.get("metar_max_so_far"),
+                no_bid=c.get("bid"),
+                no_ask=c.get("price") if c.get("price") else None,
+                yes_bid=None,
+                yes_ask=c.get("yes_price"),
+            )
+            for c in all_candidates
+        ]
+        model_out = weather_model.record_scan_batch(scan_recs)
+        # Compact per-scan log line so the operator can follow bias corrections
+        # even before any UI is open.
+        edges: list[tuple[str, float]] = []
+        for rec, m in zip(all_candidates, model_out):
+            fp = m.get("fair_no_prob")
+            ask = rec.get("price")
+            if fp is not None and ask:
+                edge = (ask - fp) * 10000.0
+                if abs(edge) >= 50:  # only flag edges >= 50 bps (0.5¢)
+                    edges.append((f"{rec['city']} {rec['question']}", edge))
+        log.info(
+            "[weather-model] scanned %d candidates across %d cities; %d flagged edges",
+            len(all_candidates),
+            len({c["city"] for c in all_candidates}),
+            len(edges),
+        )
+        for label, edge in sorted(edges, key=lambda t: -abs(t[1]))[:5]:
+            log.info("  edge %+.0fbps  %s", edge, label)
+    except Exception as exc:
+        log.warning("[weather-model] record_scan_batch failed: %s — continuing", exc)
 
     # ── Ranked candidates per city, capped to 3 closest-resolving markets ───
     bettable = [c for c in all_candidates if not c["skip_reason"] and c["city"] not in city_blacklist]

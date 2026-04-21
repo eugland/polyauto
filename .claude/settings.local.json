@@ -6,7 +6,8 @@
       "WebFetch(domain:archive-api.open-meteo.com)",
       "Bash(python *)",
       "Bash(python3 *)",
-      "Bash(/home/weugene/dev/polyauto/.venv/bin/python *)"
+      "Bash(/home/weugene/dev/polyauto/.venv/bin/python *)",
+      "Bash(./.venv/bin/python -c ' *)"
     ]
   }
 }

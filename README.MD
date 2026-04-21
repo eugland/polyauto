@@ -73,6 +73,52 @@ python -m automata.view_bets
 
 Open: `http://localhost:5050`
 
+## Weather Model (self-tuning forecast-bias model)
+
+`automata/weather_model.py` records every weather-bot scan into DuckDB
+(`db/weather_model.db`) and maintains per-station **bias** (EMA of
+`actual − forecast`) and **σ** (EMA of residual², bucketed by lead time).
+After each market resolves, the YES-winning bucket's midpoint is pulled from
+Polymarket and back-propagated into the bias and σ tables automatically — no
+manual retraining. Shadow mode only right now: scans + fair NO prices are
+logged, but actual bet selection still uses the old `min_no_price` gate.
+
+**Run it:**
+
+```bash
+# 1. Start the weather bot (dry-run is fine — scans get recorded either way)
+python -m automata.weather --interval 60
+
+# 2. Start the stock UI in another terminal
+python -m stock --port 8081
+```
+
+Open `http://localhost:8081/weather-model` for the cities table, per-station
+bias/σ, calibration chart, and per-city scan timelines (forecast vs METAR
+vs actual with market overlay).
+
+**Reminder — next steps after letting it run:**
+
+- [ ] **Run for 1–2 days** so scans accumulate and at least a few markets
+      resolve (backfill runs every ~10 iterations).
+- [ ] **Check `/weather-model`** — verify per-station bias converges and
+      calibration points sit near the diagonal. If Open-Meteo is biased hot
+      for London (actual < forecast), `bias[EGLC, openmeteo]` should go
+      negative after a few outcomes.
+- [ ] **Widen the scan net** if desired — `weather_bot.py:288` caps at the
+      15 earliest-resolving events; bump to 25–30 if you want more
+      observations per cycle (scales linearly).
+- [ ] **Graduate to v2 (let the model drive bet selection):** after ~2 weeks
+      with populated bias tables, change the gate in `weather_bot.run()`
+      from `market_no ≥ MIN_NO_PRICE` to `market_no ≥ fair_no + EDGE_BPS`.
+      The fair NO price is already computed every scan and stored in the
+      `scans.fair_no_prob` column — just read it in the bet-selection loop
+      instead of using the flat 0.97 threshold.
+- [ ] **Add covariates (v3)** once you have ≥200 resolved outcomes per
+      station: regress residual on cloud cover, dewpoint, wind,
+      `(metar_max_so_far − forecast)`. Keep the same
+      `fair_no_price(scan) → prob` interface so the bot doesn't change.
+
 ## Crypto 5m penny scanner (experiment)
 
 Records signals across **all** active crypto 5m Up/Down markets (BTC, ETH, XRP, BNB, SOL, DOGE, and any others listed). No orders are placed — paper-only signal recorder.
