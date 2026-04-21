@@ -494,9 +494,13 @@ def run(
         log.info("Balance cap enabled: available $%.2f, capped spend $%.2f", balance, capped_balance)
         balance = capped_balance
 
-    if 0.9 * balance < bet_shares:
-        bet_shares = round(0.9 * balance, 2)
+    if balance < bet_shares:
+        bet_shares = round(0.9 * balance / max_no_price, 2)
         log.info("Balance-adjusted bet_shares: %.2f (90%% of $%.2f)", bet_shares, balance)
+    else:
+        n_bets = math.ceil(balance / bet_shares)
+        bet_shares = round((balance - 0.10) / n_bets / max_no_price, 2)
+        log.info("Balance-adjusted bet_shares: %.2f (split $%.2f across %d bets, 0.10 margin)", bet_shares, balance, n_bets)
 
     # Build token_id → (city, date) lookup from all candidates
     token_to_city_date: dict[str, tuple[str, str]] = {
