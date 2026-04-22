@@ -54,17 +54,19 @@ city_blacklist = [
 metar_guard_margin_c = 2.0
 metar_guard_margin_f = 4.0
 
-# ── Weather-model gate ─────────────────────────────────────────────────────
-# MODEL_GATE_ENABLED — if true, the trained weather_model vetoes a candidate
-# when market NO ask is more than MODEL_EDGE_MAX_BPS above the model's fair
-# NO probability. Requires `python -m scripts.backfill_training` to populate
-# bias/σ first, otherwise priors make the gate harmless but also unhelpful.
-model_gate_enabled = false
+# ── Weather-model edge logging ─────────────────────────────────────────────
+# MODEL_EDGE_MAX_BPS — candidates where market NO ask exceeds the model's
+# fair NO prob by more than this many bps are logged as "would-veto" but
+# are not blocked. Useful for calibrating before enforcing the gate.
 model_edge_max_bps = 200.0
 
 # ── Scheduling ────────────────────────────────────────────────────────────
 # POST_RESOLUTION_GRACE_HOURS — keep events in scope this long after resolve
 post_resolution_grace_hours = 7.0
+# SCAN_TARGET_CITIES — scan batches of 15 events (earliest-resolution first)
+# until we've found this many distinct viable cities, then stop. Matches the
+# downstream top-10 cap; raise to scan more, lower to scan less per cycle.
+scan_target_cities = 10
 # USER_TZ — timezone used for dry-run display
 user_tz = "America/Los_Angeles"
 

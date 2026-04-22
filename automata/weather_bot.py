@@ -229,10 +229,8 @@ def run(
     bet_threshold = config.get_float("BET_THRESHOLD", "weather", "bet_threshold", 0.95)   # auto-bet above this
     bet_shares    = 22.0   # first-fill target per city
     max_shares    = 80.0   # top-up ceiling per city
-    # Model gate: if the trained weather_model disagrees with the crowd
-    # strongly enough (market NO ask is this many bps above the model's
-    # fair NO prob), veto the bet. Defaults: enabled, 200 bps (2¢) cushion.
-    model_gate_enabled  = config.get_bool("MODEL_GATE_ENABLED", "weather", "model_gate_enabled", True)
+    # Model edge threshold: log (but don't block) candidates where market NO
+    # ask is more than this many bps above the model's fair NO prob.
     model_edge_max_bps  = config.get_float("MODEL_EDGE_MAX_BPS", "weather", "model_edge_max_bps", 200.0)
     mm_tick_size = config.get_float("MM_TICK_SIZE", "weather", "mm_tick_size", 0.001)
     mm_join_bid_ticks = config.get_int("MM_JOIN_BID_TICKS", "weather", "mm_join_bid_ticks", 1)
@@ -275,9 +273,7 @@ def run(
             }
         events[event_slug]["markets"].append(raw)
 
-    # ── Compute per-event resolution_dt (15:00 local in city tz), drop
-    #    events whose resolution already passed more than POST_RESOLUTION_GRACE_HOURS ago,
-    #    keep only the 15 earliest-resolving ─────────────────────────────────
+    # ── Compute per-event resolution_dt, drop events past grace cutoff ─────
     now_utc_dt = datetime.now(timezone.utc)
     grace_hours = config.get_float("POST_RESOLUTION_GRACE_HOURS", "weather", "post_resolution_grace_hours", 7.0)
     cutoff = now_utc_dt - timedelta(hours=grace_hours)
@@ -290,86 +286,88 @@ def run(
         k: v for k, v in events.items()
         if v["resolution_dt"] is not None and v["resolution_dt"] >= cutoff
     }
-    events = dict(sorted(events.items(), key=lambda kv: kv[1]["resolution_dt"])[:15])
+    sorted_event_items = sorted(events.items(), key=lambda kv: kv[1]["resolution_dt"])
     log.info(
-        "  %d events after resolution filter (earliest 15, now=%s UTC, grace=%.1fh)",
-        len(events), now_utc_dt.strftime("%Y-%m-%d %H:%M"), grace_hours,
+        "  %d events after resolution filter (now=%s UTC, grace=%.1fh)",
+        len(sorted_event_items), now_utc_dt.strftime("%Y-%m-%d %H:%M"), grace_hours,
     )
-    for ev in events.values():
-        res_str = ev["resolution_dt"].strftime("%Y-%m-%d %H:%MZ")
-        log.info("    - %s  [res=%s, %s]", ev["title"], res_str, ev["icao"] or "?")
 
-    # ── Fetch station coords then forecast highs (Open-Meteo) ────────────────
-    all_icaos = [ev["icao"] for ev in events.values() if ev["icao"]]
-    coords = fetch_coords_for_stations(list(set(all_icaos))) if all_icaos else {}
+    # ── Scan in batches of 15, earliest-resolution first. Fetch order books
+    #    first (cheap); accumulate viable candidates across batches and stop
+    #    once we have enough distinct viable cities to cover every bet slot
+    #    (or we run out of events). Forecast + METAR only run on whatever
+    #    we accumulated. ────────────────────────────────────────────────
+    from automata.parser import _extract_no_token_id, _extract_yes_token_id
+    from automata.client import get_best_books_bulk
+    BATCH_SIZE = 15
+    scan_target_cities = config.get_int("SCAN_TARGET_CITIES", "weather", "scan_target_cities", 10)
+    host = config.get_str("POLYMARKET_HOST", "polymarket", "host", "https://clob.polymarket.com")
 
-    event_list = [
-        {"icao": ev["icao"], "date": ev["date"], "unit": ev["unit"]}
-        for ev in events.values() if ev["icao"] and ev["date"]
-    ]
-    log.info("Fetching forecasts for %d event/station pairs...", len(set(
-        (e["icao"], e["date"]) for e in event_list
-    )))
-    forecasts = fetch_forecasts_for_events(event_list, coords)
-
-    # ── Collect ALL candidates (no price filter, no dedup yet) ───────────────
-    from automata.parser import _extract_no_token_id
-    total_markets = 0
+    selected_events: dict[str, dict[str, Any]] = {}
     all_candidates: list[dict[str, Any]] = []
+    distinct_viable_cities: set[str] = set()
 
-    for event_slug, event in sorted(events.items()):
-        visible = [
-            r for r in event["markets"]
-            if not r.get("closed") and not (r.get("active") is not None and not r.get("active"))
-        ]
+    for batch_start in range(0, len(sorted_event_items), BATCH_SIZE):
+        batch_slice = sorted_event_items[batch_start:batch_start + BATCH_SIZE]
+        batch_events = dict(batch_slice)
+        batch_num = batch_start // BATCH_SIZE + 1
+        first_res = batch_slice[0][1]["resolution_dt"].strftime("%H:%MZ")
+        last_res  = batch_slice[-1][1]["resolution_dt"].strftime("%H:%MZ")
+        log.info("  Batch %d: %d events (%s → %s)", batch_num, len(batch_events), first_res, last_res)
+        for ev in batch_events.values():
+            res_str = ev["resolution_dt"].strftime("%Y-%m-%d %H:%MZ")
+            log.info("    - %s  [res=%s, %s]", ev["title"], res_str, ev["icao"] or "?")
 
-        for raw in visible:
-            total_markets += 1
-            question = str(raw.get("groupItemTitle") or raw.get("question") or "-")
-            end_date = _fmt_end_date(raw.get("endDateIso") or raw.get("endDate"))
+        # Build candidate dicts (parse only — no network yet)
+        batch_candidates: list[dict[str, Any]] = []
+        for event_slug, event in sorted(batch_events.items()):
+            visible = [
+                r for r in event["markets"]
+                if not r.get("closed") and not (r.get("active") is not None and not r.get("active"))
+            ]
+            for raw in visible:
+                question = str(raw.get("groupItemTitle") or raw.get("question") or "-")
+                end_date = _fmt_end_date(raw.get("endDateIso") or raw.get("endDate"))
+                parsed = _parse_threshold(question)
+                if not parsed:
+                    continue
+                token_id = _extract_no_token_id(raw)
+                if not token_id:
+                    continue
+                yes_token_id = _extract_yes_token_id(raw)
+                threshold, threshold_hi, _unit, direction = parsed
+                city_name = _extract_city(event["title"])
+                title_date = _extract_title_date(event["title"])
+                end_dt_raw = raw.get("endDateIso") or raw.get("endDate") or ""
+                batch_candidates.append({
+                    "question": question,
+                    "event_slug": event_slug,
+                    "city": city_name,
+                    "title_date": title_date,
+                    "token_id": token_id,
+                    "yes_token_id": yes_token_id,
+                    "price": 0.0,
+                    "yes_price": None,
+                    "end_date": end_date,
+                    "end_datetime": end_dt_raw,
+                    "resolution_dt": _compute_resolution_dt(city_name, title_date, end_dt_raw),
+                    "icao": event["icao"],
+                    "unit": event["unit"],
+                    "threshold": threshold,
+                    "threshold_hi": threshold_hi,
+                    "direction": direction,
+                    "skip_reason": None,
+                })
 
-            parsed = _parse_threshold(question)
-            if not parsed:
-                continue
-            token_id = _extract_no_token_id(raw)
-            if not token_id:
-                continue
-            from automata.parser import _extract_yes_token_id
-            yes_token_id = _extract_yes_token_id(raw)
+        if not batch_candidates:
+            log.info("  batch %d: no parseable candidates — next batch", batch_num)
+            continue
 
-            threshold, threshold_hi, _unit, direction = parsed
-            city_name = _extract_city(event["title"])
-            title_date = _extract_title_date(event["title"])
-            end_dt_raw = raw.get("endDateIso") or raw.get("endDate") or ""
-            all_candidates.append({
-                "question": question,
-                "event_slug": event_slug,
-                "city": city_name,
-                "title_date": title_date,
-                "token_id": token_id,
-                "yes_token_id": yes_token_id,
-                "price": 0.0,
-                "yes_price": None,
-                "end_date": end_date,
-                "end_datetime": end_dt_raw,
-                "resolution_dt": _compute_resolution_dt(city_name, title_date, end_dt_raw),
-                "icao": event["icao"],
-                "unit": event["unit"],
-                "threshold": threshold,
-                "threshold_hi": threshold_hi,
-                "direction": direction,
-                "skip_reason": None,
-            })
-
-    # ── Fetch live order book prices in bulk for ALL candidates ───────────────
-    if all_candidates:
-        from automata.client import get_best_books_bulk
-        host = config.get_str("POLYMARKET_HOST", "polymarket", "host", "https://clob.polymarket.com")
-        no_ids  = [c["token_id"]     for c in all_candidates]
-        yes_ids = [c["yes_token_id"] for c in all_candidates if c["yes_token_id"]]
-        log.info("Fetching live order book prices for %d candidates (bulk)...", len(all_candidates))
+        no_ids  = [c["token_id"]     for c in batch_candidates]
+        yes_ids = [c["yes_token_id"] for c in batch_candidates if c["yes_token_id"]]
+        log.info("  batch %d: fetching order books for %d candidates...", batch_num, len(batch_candidates))
         books = get_best_books_bulk(host, no_ids + yes_ids)
-        for c in all_candidates:
+        for c in batch_candidates:
             book = books.get(c["token_id"], {})
             live_ask = book.get("ask")
             live_bid = book.get("bid")
@@ -388,7 +386,39 @@ def run(
             elif live_bid < min_no_price:
                 c["skip_reason"] = f"bid {live_bid*100:.2f}¢ < min {min_no_price*100:.2f}¢"
 
-    # ── Attach forecast high for each candidate ────────────────────────────────
+        viable = [c for c in batch_candidates if not c["skip_reason"] and c["city"] not in city_blacklist]
+        if not viable:
+            log.info("  batch %d: 0 viable (price/blacklist) — next batch", batch_num)
+            continue
+
+        all_candidates.extend(batch_candidates)
+        for slug, ev in batch_events.items():
+            selected_events[slug] = ev
+        distinct_viable_cities.update(c["city"] for c in viable)
+        log.info(
+            "  batch %d: +%d viable; cumulative distinct cities = %d/%d",
+            batch_num, len(viable), len(distinct_viable_cities), scan_target_cities,
+        )
+        if len(distinct_viable_cities) >= scan_target_cities:
+            log.info("  reached target %d distinct viable cities — stopping scan", scan_target_cities)
+            break
+
+    if not all_candidates:
+        log.info("  no viable candidates across any batch — nothing to do")
+        return
+
+    # ── Fetch station coords + forecasts for the selected batch only ────────
+    all_icaos = [ev["icao"] for ev in selected_events.values() if ev["icao"]]
+    coords = fetch_coords_for_stations(list(set(all_icaos))) if all_icaos else {}
+    event_list = [
+        {"icao": ev["icao"], "date": ev["date"], "unit": ev["unit"]}
+        for ev in selected_events.values() if ev["icao"] and ev["date"]
+    ]
+    log.info("Fetching forecasts for %d event/station pairs...", len(set(
+        (e["icao"], e["date"]) for e in event_list
+    )))
+    forecasts = fetch_forecasts_for_events(event_list, coords)
+
     for c in all_candidates:
         fc = forecasts.get((c["icao"], c["end_date"])) if c.get("icao") else None
         c["forecast_high"] = fc["open_meteo"] if fc else None
@@ -456,7 +486,7 @@ def run(
         # Compact per-scan log line so the operator can follow bias corrections
         # even before any UI is open.
         edges: list[tuple[str, float]] = []
-        model_vetoed = 0
+        would_veto = 0
         for rec, m in zip(all_candidates, model_out):
             fp = m.get("fair_no_prob")
             ask = rec.get("price")
@@ -464,25 +494,20 @@ def run(
                 edge = (ask - fp) * 10000.0
                 if abs(edge) >= 50:  # only flag edges >= 50 bps (0.5¢)
                     edges.append((f"{rec['city']} {rec['question']}", edge))
-                # Model veto: if the market ask is meaningfully above fair,
-                # we're overpaying vs. the calibrated model → skip.
-                if (
-                    model_gate_enabled
-                    and not rec["skip_reason"]
-                    and edge > model_edge_max_bps
-                ):
-                    rec["skip_reason"] = (
-                        f"model veto: ask {ask*100:.1f}¢ > fair "
-                        f"{fp*100:.1f}¢ ({edge:+.0f} bps > {model_edge_max_bps:.0f})"
+                if edge > model_edge_max_bps:
+                    would_veto += 1
+                    log.warning(
+                        "[weather-model] would-veto %s %s — ask %.1f¢ > fair %.1f¢ (%+0.f bps > %.0f)",
+                        rec["city"], rec["question"],
+                        ask * 100, fp * 100, edge, model_edge_max_bps,
                     )
-                    model_vetoed += 1
         log.info(
             "[weather-model] scanned %d candidates across %d cities; "
-            "%d flagged edges; %d model-vetoed",
+            "%d flagged edges; %d would-veto (not enforced)",
             len(all_candidates),
             len({c["city"] for c in all_candidates}),
             len(edges),
-            model_vetoed,
+            would_veto,
         )
         for label, edge in sorted(edges, key=lambda t: -abs(t[1]))[:5]:
             log.info("  edge %+.0fbps  %s", edge, label)
