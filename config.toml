@@ -54,6 +54,14 @@ city_blacklist = [
 metar_guard_margin_c = 2.0
 metar_guard_margin_f = 4.0
 
+# ── Weather-model gate ─────────────────────────────────────────────────────
+# MODEL_GATE_ENABLED — if true, the trained weather_model vetoes a candidate
+# when market NO ask is more than MODEL_EDGE_MAX_BPS above the model's fair
+# NO probability. Requires `python -m scripts.backfill_training` to populate
+# bias/σ first, otherwise priors make the gate harmless but also unhelpful.
+model_gate_enabled = false
+model_edge_max_bps = 200.0
+
 # ── Scheduling ────────────────────────────────────────────────────────────
 # POST_RESOLUTION_GRACE_HOURS — keep events in scope this long after resolve
 post_resolution_grace_hours = 7.0

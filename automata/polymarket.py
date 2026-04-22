@@ -175,3 +175,53 @@ def fetch_temperature_markets_payload() -> dict[str, Any]:
             })
 
     return {"market_count": len(markets), "markets": markets}
+
+
+def fetch_closed_temperature_events(
+    days_back: int = 180,
+    page_size: int = 50,
+    max_pages: int = 200,
+) -> list[dict[str, Any]]:
+    """
+    Walk Gamma's closed temperature events ending within the last `days_back`
+    days. Returns raw event dicts (each with a `markets` list) in no particular
+    order. Intended for offline training backfill — not on the hot path.
+    """
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(days=days_back)).isoformat()
+    end = now.isoformat()
+
+    events: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for query_tag in ("weather", "highest-temperature"):
+        for page in range(max_pages):
+            offset = page * page_size
+            resp = _gamma_get(
+                POLYMARKET_EVENTS_URL,
+                params={
+                    "tag_slug": query_tag,
+                    "closed": "true",
+                    "limit": page_size,
+                    "offset": offset,
+                    "end_date_min": start,
+                    "end_date_max": end,
+                },
+            )
+            page_events = resp.json()
+            if not isinstance(page_events, list) or not page_events:
+                break
+            for event in page_events:
+                tag_slugs = _event_tag_slugs(event)
+                if not WEATHER_TAG_SLUGS.intersection(tag_slugs):
+                    continue
+                if not _event_is_temperature(event):
+                    continue
+                key = str(event.get("id") or "")
+                if key and key in seen_ids:
+                    continue
+                if key:
+                    seen_ids.add(key)
+                events.append(event)
+            if len(page_events) < page_size:
+                break
+    return events

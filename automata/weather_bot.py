@@ -218,7 +218,7 @@ def run(
     from automata.polymarket import fetch_temperature_markets_payload
     from automata.parser import _parse_threshold
     from automata.weather import (
-        extract_all_urls, extract_icao_from_wunderground_url,
+        extract_all_urls, extract_icao_from_url,
         extract_station_name, extract_unit,
         fetch_coords_for_stations,
         fetch_forecasts_for_events,
@@ -229,6 +229,11 @@ def run(
     bet_threshold = config.get_float("BET_THRESHOLD", "weather", "bet_threshold", 0.95)   # auto-bet above this
     bet_shares    = 22.0   # first-fill target per city
     max_shares    = 80.0   # top-up ceiling per city
+    # Model gate: if the trained weather_model disagrees with the crowd
+    # strongly enough (market NO ask is this many bps above the model's
+    # fair NO prob), veto the bet. Defaults: enabled, 200 bps (2¢) cushion.
+    model_gate_enabled  = config.get_bool("MODEL_GATE_ENABLED", "weather", "model_gate_enabled", True)
+    model_edge_max_bps  = config.get_float("MODEL_EDGE_MAX_BPS", "weather", "model_edge_max_bps", 200.0)
     mm_tick_size = config.get_float("MM_TICK_SIZE", "weather", "mm_tick_size", 0.001)
     mm_join_bid_ticks = config.get_int("MM_JOIN_BID_TICKS", "weather", "mm_join_bid_ticks", 1)
     mm_reprice_cents = config.get_float("MM_REPRICE_CENTS", "weather", "mm_reprice_cents", 0.10)
@@ -254,7 +259,7 @@ def run(
             description = str(raw.get("event_description") or "")
             urls = extract_all_urls(description)
             icao = next(
-                (extract_icao_from_wunderground_url(u) for u in urls if "wunderground" in u.lower()),
+                (code for u in urls if (code := extract_icao_from_url(u)) is not None),
                 None,
             )
             end_raw = raw.get("endDateIso") or raw.get("endDate") or ""
@@ -388,6 +393,7 @@ def run(
         fc = forecasts.get((c["icao"], c["end_date"])) if c.get("icao") else None
         c["forecast_high"] = fc["open_meteo"] if fc else None
         c["noaa_high"] = fc["noaa"] if fc else None
+        c["taf_high"] = fc["taf"] if fc else None
 
     # ── Fetch METAR current + max-so-far-today for each unique ICAO ─────────
     from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
@@ -436,6 +442,7 @@ def run(
                 direction=c.get("direction"),
                 openmeteo_high=c.get("forecast_high"),
                 noaa_high=c.get("noaa_high"),
+                taf_high=c.get("taf_high"),
                 metar_current=c.get("metar_current"),
                 metar_max_so_far=c.get("metar_max_so_far"),
                 no_bid=c.get("bid"),
@@ -449,6 +456,7 @@ def run(
         # Compact per-scan log line so the operator can follow bias corrections
         # even before any UI is open.
         edges: list[tuple[str, float]] = []
+        model_vetoed = 0
         for rec, m in zip(all_candidates, model_out):
             fp = m.get("fair_no_prob")
             ask = rec.get("price")
@@ -456,11 +464,25 @@ def run(
                 edge = (ask - fp) * 10000.0
                 if abs(edge) >= 50:  # only flag edges >= 50 bps (0.5¢)
                     edges.append((f"{rec['city']} {rec['question']}", edge))
+                # Model veto: if the market ask is meaningfully above fair,
+                # we're overpaying vs. the calibrated model → skip.
+                if (
+                    model_gate_enabled
+                    and not rec["skip_reason"]
+                    and edge > model_edge_max_bps
+                ):
+                    rec["skip_reason"] = (
+                        f"model veto: ask {ask*100:.1f}¢ > fair "
+                        f"{fp*100:.1f}¢ ({edge:+.0f} bps > {model_edge_max_bps:.0f})"
+                    )
+                    model_vetoed += 1
         log.info(
-            "[weather-model] scanned %d candidates across %d cities; %d flagged edges",
+            "[weather-model] scanned %d candidates across %d cities; "
+            "%d flagged edges; %d model-vetoed",
             len(all_candidates),
             len({c["city"] for c in all_candidates}),
             len(edges),
+            model_vetoed,
         )
         for label, edge in sorted(edges, key=lambda t: -abs(t[1]))[:5]:
             log.info("  edge %+.0fbps  %s", edge, label)

@@ -399,6 +399,73 @@ def create_app(db_path: str) -> Flask:
         except Exception as exc:
             return jsonify({"buckets": [], "total_paired": 0, "error": str(exc)}), 500
 
+    @app.route("/api/weather-model/live")
+    def api_weather_model_live():
+        """
+        Most-recent scan per currently-open market (one row per bet item).
+        Filters to scans taken in the last `window_min` minutes and whose
+        resolution_dt is still in the future, so the output is the live
+        scanner's working set.
+        """
+        try:
+            from automata import weather_model
+            weather_model.init_db()
+            try:
+                window_min = int(request.args.get("window_min", "10"))
+            except ValueError:
+                window_min = 10
+
+            import duckdb as _duck
+            con = _duck.connect(str(weather_model.DB_PATH), read_only=True)
+            try:
+                rows = con.execute(f"""
+                    WITH ranked AS (
+                        SELECT *,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY city, event_date, question
+                                   ORDER BY scanned_at DESC
+                               ) AS rn
+                        FROM scans
+                        WHERE scanned_at > (CURRENT_TIMESTAMP - INTERVAL '{window_min} minutes')
+                    )
+                    SELECT scanned_at, city, icao, event_date,
+                           question, token_id,
+                           resolution_dt, hours_to_res, lead_bucket,
+                           unit, threshold, threshold_hi, direction,
+                           openmeteo_high, noaa_high, taf_high,
+                           metar_current, metar_max_so_far,
+                           source_used, bias_used, calibrated_mu, calibrated_sigma,
+                           no_bid, no_ask, yes_bid, yes_ask,
+                           fair_no_prob, edge_bps
+                    FROM ranked
+                    WHERE rn = 1
+                      AND (resolution_dt IS NULL OR resolution_dt > CURRENT_TIMESTAMP)
+                    ORDER BY ABS(COALESCE(edge_bps, 0)) DESC
+                """).fetchall()
+            finally:
+                con.close()
+            keys = [
+                "scanned_at", "city", "icao", "event_date",
+                "question", "token_id",
+                "resolution_dt", "hours_to_res", "lead_bucket",
+                "unit", "threshold", "threshold_hi", "direction",
+                "openmeteo_high", "noaa_high", "taf_high",
+                "metar_current", "metar_max_so_far",
+                "source_used", "bias_used", "calibrated_mu", "calibrated_sigma",
+                "no_bid", "no_ask", "yes_bid", "yes_ask",
+                "fair_no_prob", "edge_bps",
+            ]
+            out = []
+            for r in rows:
+                d = dict(zip(keys, r))
+                for k in ("scanned_at", "resolution_dt"):
+                    if d[k] is not None:
+                        d[k] = d[k].isoformat()
+                out.append(d)
+            return jsonify({"markets": out, "window_min": window_min})
+        except Exception as exc:
+            return jsonify({"markets": [], "error": str(exc)}), 500
+
     @app.route("/api/health")
     def api_health():
         return jsonify(db.query_health(_db()))

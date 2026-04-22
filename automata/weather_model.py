@@ -110,6 +110,7 @@ def init_db() -> None:
                 direction         VARCHAR,
                 openmeteo_high    DOUBLE,
                 noaa_high         DOUBLE,
+                taf_high          DOUBLE,
                 metar_current     DOUBLE,
                 metar_max_so_far  DOUBLE,
                 no_bid            DOUBLE,
@@ -124,6 +125,15 @@ def init_db() -> None:
                 source_used       VARCHAR
             )
         """)
+        # Migration for DBs created before taf_high existed. DuckDB >= 0.9
+        # supports IF NOT EXISTS on ADD COLUMN.
+        try:
+            con.execute("ALTER TABLE scans ADD COLUMN IF NOT EXISTS taf_high DOUBLE")
+        except Exception:
+            # Very old DuckDB falls back to a probe-then-add.
+            cols = {r[1] for r in con.execute("PRAGMA table_info('scans')").fetchall()}
+            if "taf_high" not in cols:
+                con.execute("ALTER TABLE scans ADD COLUMN taf_high DOUBLE")
         con.execute("CREATE SEQUENCE IF NOT EXISTS seq_scan START 1")
         con.execute("""
             CREATE TABLE IF NOT EXISTS outcomes (
@@ -254,12 +264,33 @@ class ScanRecord:
     direction: str | None
     openmeteo_high: float | None
     noaa_high: float | None
+    taf_high: float | None
     metar_current: float | None
     metar_max_so_far: float | None
     no_bid: float | None
     no_ask: float | None
     yes_bid: float | None
     yes_ask: float | None
+
+
+# Forecast-source priority when computing `source_used`. NOAA NWS is the gold
+# standard for US stations (dedicated human-edited forecasts); TAF is an
+# airport-issued, station-specific forecast available globally but typically
+# only for ~30h-period international TAFs; Open-Meteo is the global gridded
+# fallback that always works.
+_SOURCE_PRIORITY: tuple[tuple[str, str], ...] = (
+    ("noaa", "noaa_high"),
+    ("taf", "taf_high"),
+    ("openmeteo", "openmeteo_high"),
+)
+
+
+def _pick_forecast(rec: "ScanRecord") -> tuple[str | None, float | None]:
+    for src, attr in _SOURCE_PRIORITY:
+        v = getattr(rec, attr, None)
+        if v is not None:
+            return src, v
+    return None, None
 
 
 def record_scan(rec: ScanRecord) -> dict[str, Any]:
@@ -276,16 +307,7 @@ def record_scan(rec: ScanRecord) -> dict[str, Any]:
 
     con = _connect()
     try:
-        # Prefer NOAA when it's available (US stations) — it's usually better
-        # than Open-Meteo for US. Otherwise fall back to Open-Meteo (global).
-        source_used = None
-        forecast = None
-        if rec.noaa_high is not None:
-            source_used = "noaa"
-            forecast = rec.noaa_high
-        elif rec.openmeteo_high is not None:
-            source_used = "openmeteo"
-            forecast = rec.openmeteo_high
+        source_used, forecast = _pick_forecast(rec)
 
         bias = 0.0
         sigma = None
@@ -310,9 +332,18 @@ def record_scan(rec: ScanRecord) -> dict[str, Any]:
 
         con.execute(
             """
-            INSERT INTO scans VALUES (
-                nextval('seq_scan'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            INSERT INTO scans (
+                id, scanned_at, city, icao, event_date, event_slug,
+                question, token_id, yes_token_id, resolution_dt, hours_to_res,
+                lead_bucket, unit, threshold, threshold_hi, direction,
+                openmeteo_high, noaa_high, taf_high,
+                metar_current, metar_max_so_far,
+                no_bid, no_ask, yes_bid, yes_ask,
+                calibrated_mu, calibrated_sigma, fair_no_prob, edge_bps,
+                bias_used, source_used
+            ) VALUES (
+                nextval('seq_scan'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             """,
             [
@@ -320,7 +351,7 @@ def record_scan(rec: ScanRecord) -> dict[str, Any]:
                 rec.question, rec.token_id, rec.yes_token_id,
                 rec.resolution_dt, hours_to_res, bucket,
                 rec.unit, rec.threshold, rec.threshold_hi, rec.direction,
-                rec.openmeteo_high, rec.noaa_high,
+                rec.openmeteo_high, rec.noaa_high, rec.taf_high,
                 rec.metar_current, rec.metar_max_so_far,
                 rec.no_bid, rec.no_ask, rec.yes_bid, rec.yes_ask,
                 calibrated_mu, sigma, fair_p, edge_bps,
@@ -358,14 +389,7 @@ def record_scan_batch(recs: Iterable[ScanRecord]) -> list[dict[str, Any]]:
                 hours_to_res = (rec.resolution_dt - now).total_seconds() / 3600.0
             bucket = lead_bucket(hours_to_res)
 
-            source_used = None
-            forecast = None
-            if rec.noaa_high is not None:
-                source_used = "noaa"
-                forecast = rec.noaa_high
-            elif rec.openmeteo_high is not None:
-                source_used = "openmeteo"
-                forecast = rec.openmeteo_high
+            source_used, forecast = _pick_forecast(rec)
 
             bias = 0.0
             sigma = None
@@ -393,7 +417,7 @@ def record_scan_batch(recs: Iterable[ScanRecord]) -> list[dict[str, Any]]:
                 rec.question, rec.token_id, rec.yes_token_id,
                 rec.resolution_dt, hours_to_res, bucket,
                 rec.unit, rec.threshold, rec.threshold_hi, rec.direction,
-                rec.openmeteo_high, rec.noaa_high,
+                rec.openmeteo_high, rec.noaa_high, rec.taf_high,
                 rec.metar_current, rec.metar_max_so_far,
                 rec.no_bid, rec.no_ask, rec.yes_bid, rec.yes_ask,
                 calibrated_mu, sigma, fair_p, edge_bps,
@@ -413,9 +437,18 @@ def record_scan_batch(recs: Iterable[ScanRecord]) -> list[dict[str, Any]]:
         if rows_to_insert:
             con.executemany(
                 """
-                INSERT INTO scans VALUES (
-                    nextval('seq_scan'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                INSERT INTO scans (
+                    id, scanned_at, city, icao, event_date, event_slug,
+                    question, token_id, yes_token_id, resolution_dt, hours_to_res,
+                    lead_bucket, unit, threshold, threshold_hi, direction,
+                    openmeteo_high, noaa_high, taf_high,
+                    metar_current, metar_max_so_far,
+                    no_bid, no_ask, yes_bid, yes_ask,
+                    calibrated_mu, calibrated_sigma, fair_no_prob, edge_bps,
+                    bias_used, source_used
+                ) VALUES (
+                    nextval('seq_scan'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 rows_to_insert,
@@ -492,7 +525,11 @@ def update_from_outcome(icao: str, event_date: str, actual_high: float) -> dict[
         # Pick one scan per source — the one with the longest hours_to_res that
         # still has the forecast value for that source. That way sigma is
         # trained against lead-time the market actually cared about.
-        for source, col in (("openmeteo", "openmeteo_high"), ("noaa", "noaa_high")):
+        for source, col in (
+            ("openmeteo", "openmeteo_high"),
+            ("noaa", "noaa_high"),
+            ("taf", "taf_high"),
+        ):
             row = con.execute(
                 f"""
                 SELECT {col}, hours_to_res, lead_bucket
@@ -587,7 +624,7 @@ def list_scans(city: str | None = None, limit: int = 500) -> list[dict[str, Any]
             rows = con.execute("""
                 SELECT scanned_at, city, icao, event_date, question, unit,
                        threshold, threshold_hi, direction,
-                       openmeteo_high, noaa_high,
+                       openmeteo_high, noaa_high, taf_high,
                        metar_current, metar_max_so_far,
                        no_bid, no_ask, yes_bid, yes_ask,
                        calibrated_mu, calibrated_sigma, fair_no_prob, edge_bps,
@@ -601,7 +638,7 @@ def list_scans(city: str | None = None, limit: int = 500) -> list[dict[str, Any]
             rows = con.execute("""
                 SELECT scanned_at, city, icao, event_date, question, unit,
                        threshold, threshold_hi, direction,
-                       openmeteo_high, noaa_high,
+                       openmeteo_high, noaa_high, taf_high,
                        metar_current, metar_max_so_far,
                        no_bid, no_ask, yes_bid, yes_ask,
                        calibrated_mu, calibrated_sigma, fair_no_prob, edge_bps,
@@ -614,7 +651,7 @@ def list_scans(city: str | None = None, limit: int = 500) -> list[dict[str, Any]
         con.close()
     keys = ["scanned_at", "city", "icao", "event_date", "question", "unit",
             "threshold", "threshold_hi", "direction",
-            "openmeteo_high", "noaa_high",
+            "openmeteo_high", "noaa_high", "taf_high",
             "metar_current", "metar_max_so_far",
             "no_bid", "no_ask", "yes_bid", "yes_ask",
             "calibrated_mu", "calibrated_sigma", "fair_no_prob", "edge_bps",
@@ -775,6 +812,14 @@ def _parse_bucket_range(question: str) -> tuple[float | None, float | None, str 
     if m:
         t = float(m.group(1))
         return t - 5.0, t, m.group(2).upper()
+    # "X°U" bare — single-degree bucket, interpret as [X-0.5, X+0.5).
+    # This is the Polymarket default shape (e.g. "14°C") and covers ~65% of
+    # closed weather events, so keep it last so the broader patterns above
+    # get a chance first.
+    m = _re.fullmatch(r"\s*(-?\d+(?:\.\d+)?)\s*°?\s*([CF])\s*", s, _re.IGNORECASE)
+    if m:
+        t = float(m.group(1))
+        return t - 0.5, t + 0.5, m.group(2).upper()
     return None, None, None
 
 

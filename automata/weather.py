@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -372,13 +373,86 @@ def fetch_noaa_forecast_high(lat: float, lon: float, date_str: str) -> float | N
     return None
 
 
+# TX{M?}{nn}/{DDHH}Z — TAF maximum-temp forecast, °C. M prefix = negative.
+_TAF_TX_RE = re.compile(r"\bTX(M?)(\d{2})/(\d{2})(\d{2})Z", re.IGNORECASE)
+
+
+def fetch_taf_forecast_high(icao: str, date_str: str, unit: str = "C") -> float | None:
+    """
+    TAF max-temp forecast from aviationweather.gov, parsed from rawTAF.
+
+    TAF TX entries are airport-issued forecasts of the form
+    ``TX{temp}/{DDHH}Z`` — max temp °C at day-of-month DD, hour HH UTC. Only
+    long-period (~30h) TAFs reliably include them (most major international
+    hubs do; short-period US TAFs and some Asian stations don't), so this
+    returns None for airports whose TAF doesn't cover ``date_str``.
+
+    Returned value is in market `unit` — TAF temps are always °C so we convert
+    to °F when the market asks for it.
+    """
+    try:
+        resp = requests.get(
+            "https://aviationweather.gov/api/data/taf",
+            params={"ids": icao, "format": "json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception:
+        return None
+    if not data or not isinstance(data, list):
+        return None
+    raw = data[0].get("rawTAF") or ""
+    valid_from = data[0].get("validTimeFrom")
+    if not raw or valid_from is None:
+        return None
+
+    try:
+        anchor = datetime.fromtimestamp(int(valid_from), tz=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+    highs_c: list[float] = []
+    for m in _TAF_TX_RE.finditer(raw):
+        neg, tt, dd, hh = m.groups()
+        try:
+            t = int(tt)
+            d = int(dd)
+            h = int(hh)
+        except ValueError:
+            continue
+        if neg:
+            t = -t
+        # Resolve DD → absolute UTC date by probing the next ~3 days from
+        # the TAF anchor (TAFs span ≤30h, so the day-of-month in TX matches
+        # anchor+{0,1,2}).
+        candidate = None
+        for delta in range(0, 3):
+            probe = anchor + timedelta(days=delta)
+            if probe.day == d:
+                candidate = probe.replace(hour=min(h, 23), minute=0,
+                                          second=0, microsecond=0)
+                break
+        if candidate is None:
+            continue
+        if candidate.strftime("%Y-%m-%d") != date_str:
+            continue
+        highs_c.append(float(t))
+
+    if not highs_c:
+        return None
+    high_c = max(highs_c)
+    return high_c * 9.0 / 5.0 + 32.0 if unit.upper() == "F" else high_c
+
+
 def fetch_forecasts_for_events(
     event_list: list[dict],  # each: {"icao": str, "date": str, "unit": str}
     coords: dict[str, tuple[float, float] | None],
 ) -> dict[tuple[str, str], dict[str, float | None]]:
     """
-    Fetch Open-Meteo and NOAA forecast highs for each (icao, date) pair in parallel.
-    Returns {(icao, date): {"open_meteo": float|None, "noaa": float|None}}
+    Fetch Open-Meteo + NOAA + TAF forecast highs for each (icao, date) pair in
+    parallel.
+    Returns {(icao, date): {"open_meteo": float|None, "noaa": float|None, "taf": float|None}}
     """
     # Deduplicate
     tasks: set[tuple[str, str, str]] = set()
@@ -392,7 +466,8 @@ def fetch_forecasts_for_events(
         lat, lon = coords[icao]
         open_meteo = fetch_open_meteo_high(lat, lon, date, unit)
         noaa = fetch_noaa_forecast_high(lat, lon, date)
-        return (icao, date), {"open_meteo": open_meteo, "noaa": noaa}
+        taf = fetch_taf_forecast_high(icao, date, unit)
+        return (icao, date), {"open_meteo": open_meteo, "noaa": noaa, "taf": taf}
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = [executor.submit(_fetch, icao, date, unit) for icao, date, unit in tasks]
