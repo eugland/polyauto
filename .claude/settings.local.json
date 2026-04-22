@@ -18,7 +18,9 @@
       "Bash(.venv/bin/python *)",
       "Bash(pkill -f 'stock.*8081')",
       "Bash(curl -s 'http://localhost:8081/api/weather-model/live?window_min=30')",
-      "Bash(curl -s -i 'http://localhost:8081/api/weather-model/live?window_min=30')"
+      "Bash(curl -s -i 'http://localhost:8081/api/weather-model/live?window_min=30')",
+      "Bash(curl -s \"http://localhost:8081/api/weather-model/calibration\")",
+      "Bash(curl -s \"http://localhost:8081/weather-model\")"
     ]
   }
 }

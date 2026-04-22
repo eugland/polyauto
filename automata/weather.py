@@ -786,7 +786,6 @@ def run_weather_daemon(
 
         if bet:
             _scan_positions(dry_run=False)
-            bet_shares = _config.get_float("BET_SIZE_SHARES", "weather", "bet_size_shares", 20.0)
             try:
                 from automata.client import build_client, get_usdc_balance
 
@@ -819,19 +818,23 @@ def run_weather_daemon(
                 continue
 
             capped_balance = min(balance, max_balance_usdc) if max_balance_usdc is not None else balance
-            if capped_balance < 10.0:
-                log.warning("[weather] Balance $%.2f < $10.00 minimum — skipping cycle", capped_balance)
+            bet_this_cycle = capped_balance >= 10.0
+            if not bet_this_cycle:
+                log.warning(
+                    "[weather] Balance $%.2f < $10.00 minimum — running shadow-mode scan (no orders)",
+                    capped_balance,
+                )
                 if once:
                     log.info("[weather] --once set, exiting after insufficient balance")
                     break
-                time.sleep(interval_seconds)
-                continue
+        else:
+            bet_this_cycle = False
 
         try:
             run(
-                dry_run=not bet,
-                max_spend_usdc=max_balance_usdc if bet else None,
-                max_orders=1 if (bet and once) else None,
+                dry_run=not bet_this_cycle,
+                max_spend_usdc=max_balance_usdc if bet_this_cycle else None,
+                max_orders=1 if (bet_this_cycle and once) else None,
             )
         except Exception as exc:
             log.warning("[weather] Cycle failed: %s: %s — continuing", type(exc).__name__, exc)

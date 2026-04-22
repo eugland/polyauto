@@ -23,7 +23,7 @@ max_no_price = 0.997
 # BET_THRESHOLD — auto-bet above this price
 bet_threshold = 0.95
 # BET_SIZE_SHARES — USDC notional used to compute bet shares (run-time scales)
-bet_size_shares = 10.0
+bet_size_shares = 64.0
 # TAKE_PROFIT_PRICE — price at which to place the resting sell on held positions
 take_profit_price = 0.999
 

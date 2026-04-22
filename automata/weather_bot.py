@@ -227,7 +227,7 @@ def run(
     min_no_price  = config.get_float("MIN_NO_PRICE", "weather", "min_no_price", 0.97)
     max_no_price  = config.get_float("MAX_NO_PRICE", "weather", "max_no_price", 0.997)
     bet_threshold = config.get_float("BET_THRESHOLD", "weather", "bet_threshold", 0.95)   # auto-bet above this
-    bet_shares    = 22.0   # first-fill target per city
+    bet_shares    = config.get_float("BET_SIZE_SHARES", "weather", "bet_size_shares", 22.0)   # first-fill target per city
     max_shares    = 80.0   # top-up ceiling per city
     # Model edge threshold: log (but don't block) candidates where market NO
     # ask is more than this many bps above the model's fair NO prob.

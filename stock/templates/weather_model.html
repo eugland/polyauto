@@ -459,8 +459,12 @@ let residualChart = null;
 async function loadCity(city) {
   document.getElementById('page-title').innerHTML = `Weather Model · <span class="num">${city}</span>`;
   document.getElementById('city-title-name').textContent = city;
-  const res = await fetch(`api/weather-model/scans?city=${encodeURIComponent(city)}&limit=2000`)
-    .then(r => r.json()).catch(() => ({scans: [], outcomes: []}));
+  // Timeline chart uses a Chart.js time axis — needs luxon adapter loaded first.
+  const [res] = await Promise.all([
+    fetch(`api/weather-model/scans?city=${encodeURIComponent(city)}&limit=2000`)
+      .then(r => r.json()).catch(() => ({scans: [], outcomes: []})),
+    whenLuxonReady(),
+  ]);
   const scans = res.scans || [];
   const outcomes = res.outcomes || [];
   document.getElementById('page-meta').textContent =
@@ -516,6 +520,25 @@ function renderCityScans(scans) {
       ${edgeHtml}
     </tr>`;
   }).join('');
+}
+
+let _luxonReady = null;
+function whenLuxonReady() {
+  if (_luxonReady) return _luxonReady;
+  _luxonReady = new Promise((resolve) => {
+    const s1 = document.createElement('script');
+    s1.src = 'https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js';
+    s1.onload = () => {
+      const s2 = document.createElement('script');
+      s2.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js';
+      s2.onload = () => resolve(true);
+      s2.onerror = () => resolve(false);
+      document.head.appendChild(s2);
+    };
+    s1.onerror = () => resolve(false);
+    document.head.appendChild(s1);
+  });
+  return _luxonReady;
 }
 
 function renderCityTimeline(scans, outcomes) {
@@ -598,18 +621,6 @@ function renderCityTimeline(scans, outcomes) {
     `${eventKeys.length} event(s) plotted · solid=Open-Meteo, dashed=calibrated μ̂, ▲=METAR max, ◆=actual`;
 }
 
-// chartjs-adapter-date-fns substitute — Chart.js needs a time-axis adapter. Use luxon (lightweight).
-(function loadLuxonAdapter(){
-  const s1 = document.createElement('script');
-  s1.src = 'https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js';
-  s1.onload = () => {
-    const s2 = document.createElement('script');
-    s2.src = 'https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1/dist/chartjs-adapter-luxon.umd.min.js';
-    s2.onload = boot;
-    document.head.appendChild(s2);
-  };
-  document.head.appendChild(s1);
-})();
 
 function renderResiduals(scans, outcomes) {
   // Join scans to outcomes on (icao, event_date); residual = actual - forecast
@@ -677,6 +688,12 @@ function boot() {
 }
 
 function refreshAll() {
+  boot();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot);
+} else {
   boot();
 }
 </script>
