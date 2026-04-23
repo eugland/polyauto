@@ -46,6 +46,8 @@ city_blacklist = [
     "Denver",
     "Jakarta",
     "Chongqing",
+    "Hong Kong",
+    "Shenzhen",
 ]
 
 # ── Temperature safety margins ────────────────────────────────────────────
