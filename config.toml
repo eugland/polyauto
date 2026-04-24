@@ -116,7 +116,7 @@ backoff_base = 1.5
 # same UPPERCASE name.
 
 # TWITCH_CHANNEL — which Twitch channel to watch.
-twitch_channel = "hasanabi_waiting_room_"
+twitch_channel = "hasanabi"
 
 # YOUTUBE_BROADCAST_PRIVACY — public | unlisted | private
 youtube_broadcast_privacy = "public"
