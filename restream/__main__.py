@@ -1,14 +1,12 @@
-"""Twitch -> YouTube restreamer with concurrent topic-segmented uploads.
+"""Twitch -> YouTube restreamer.
 
 Setup:
     sudo apt install -y streamlink ffmpeg            # Ubuntu
     # On Windows install streamlink + ffmpeg and ensure both are on PATH.
     pip install -r requirements.txt
 
-Configure restream/.env (copy from restream/.env.example). The minimum:
+Configure restream/.env (copy from restream/.env.example). Required:
     TWITCH_CHANNEL=...
-    YOUTUBE_STREAM_KEY=...                           # static fallback key
-    # Recommended for title-sync + dynamic broadcast:
     TWITCH_CLIENT_ID=...
     TWITCH_CLIENT_SECRET=...
 
@@ -18,27 +16,40 @@ YouTube Data API one-time bootstrap (opens browser):
 Run the daemon:
     python -m restream
 
-What happens per cycle:
-  - If TWITCH_CLIENT_ID/SECRET present: poll Helix /streams; skip if offline.
-  - Otherwise: fall back to streamlink probe (legacy path).
-  - If RESTREAM_USE_DYNAMIC_BROADCAST=1 and YouTube creds are set up: mint
-    a fresh liveBroadcast + liveStream titled after the live Twitch stream
-    and use that stream key for ffmpeg's RTMP output.
-  - If RESTREAM_RECORD_ENABLED=1: ffmpeg also writes 30s MP4 chunks to
-    restream/recordings/<session_id>/, fed into a concurrent pipeline:
-        SegmentWatcher -> Transcriber (faster-whisper) ->
-        TopicDetector (MiniLM cosine) -> Cutter (ffmpeg concat) ->
-        Uploader (videos.insert).
-  - Each detected topic boundary triggers a cut + upload while the live
-    stream is still going.
-  - On clean ffmpeg exit (channel ended): pipeline drains, broadcast is
-    transitioned to 'complete', stream resource is deleted.
+Check current YouTube-side health of the persisted broadcast:
+    python -m restream --status
 
-Smoke tests:
-    python -m restream.transcriber path/to/seg.mp4
-    python -m restream.topic_detector path/to/sentences.json
-    python -m restream.post_processor --replay path/to/recordings/<session_id>
-    RESTREAM_UPLOAD_ENABLED=0 python -m restream    # full dry-run
+End the persisted broadcast (if Ctrl-C'd earlier):
+    python -m restream --shutdown
+
+Run without re-encoding (zero CPU, but beep artifacts at Twitch ad breaks):
+    python -m restream --passthrough
+
+Force full re-encode (libx264 + AAC, max CPU, max stability at ad breaks):
+    python -m restream --full-reencode
+
+(The default is video -c:v copy + audio AAC re-encode — saves ~1 CPU core
+while still killing ad-break beeps. Adjust reencode_video in config.toml's
+[restream] section to change the default.)
+
+State machine:
+  - OFFLINE: poll Twitch Helix /streams every RESTREAM_RETRY_SECONDS. When
+    it goes live, mint a fresh YouTube liveBroadcast + liveStream titled
+    after the Twitch stream and persist its identifiers to
+    restream/.session.json.
+  - LIVE: pipe streamlink -> ffmpeg -> YouTube RTMP. If ffmpeg exits
+    while Twitch is still live (network drop, RTMP hiccup), sleep
+    RESTREAM_RECONNECT_SECONDS and reconnect RTMP to the *same* stream
+    key — YouTube resumes the broadcast at the same watch URL.
+    Exponential backoff kicks in when ffmpeg dies in < 30s repeatedly.
+  - RESTART: on Ctrl-C the broadcast is preserved (not transitioned
+    to complete). The next `python -m restream` invocation reads the
+    session file, confirms the broadcast is still reusable on YouTube's
+    side, and reconnects to it. If YouTube has force-ended it, a fresh
+    broadcast is minted.
+  - TEARDOWN: broadcast is transitioned to `complete` and the stream
+    resource deleted only when (a) Twitch goes offline, (b) YouTube
+    force-ended the broadcast, or (c) `--shutdown` is invoked.
 """
 from .restreamer import main
 

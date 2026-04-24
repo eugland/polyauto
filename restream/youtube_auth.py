@@ -26,11 +26,18 @@ _DEFAULT_TOKEN_FILE = "restream/youtube_token.json"
 
 
 def _client_secret_path() -> Path:
-    return Path(os.environ.get("YOUTUBE_OAUTH_CLIENT_FILE", _DEFAULT_CLIENT_FILE))
+    from . import config
+    return Path(config.get_str(
+        "YOUTUBE_OAUTH_CLIENT_FILE", "youtube_oauth_client_file",
+        _DEFAULT_CLIENT_FILE,
+    ))
 
 
 def _token_path() -> Path:
-    return Path(os.environ.get("YOUTUBE_TOKEN_FILE", _DEFAULT_TOKEN_FILE))
+    from . import config
+    return Path(config.get_str(
+        "YOUTUBE_TOKEN_FILE", "youtube_token_file", _DEFAULT_TOKEN_FILE,
+    ))
 
 
 def _load_credentials():

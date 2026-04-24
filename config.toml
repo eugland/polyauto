@@ -107,3 +107,48 @@ connect_timeout = 10
 read_timeout = 30
 max_attempts = 4
 backoff_base = 1.5
+
+
+[restream]
+# Twitch -> YouTube restream daemon (restream/ package).
+# Secrets (TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET) stay in restream/.env.
+# Every value below is also overridable via an environment variable of the
+# same UPPERCASE name.
+
+# TWITCH_CHANNEL — which Twitch channel to watch.
+twitch_channel = "hasanabi_waiting_room_"
+
+# YOUTUBE_BROADCAST_PRIVACY — public | unlisted | private
+youtube_broadcast_privacy = "public"
+# YOUTUBE_LATENCY — viewer-side buffering. Bigger = smoother.
+#   normal   ~10-15s buffer, most forgiving (recommended)
+#   low      ~5s buffer
+#   ultraLow ~2s buffer, most "live" but most prone to stalls
+youtube_latency = "normal"
+# Paths to the OAuth client secret + cached user token (files themselves
+# are gitignored — these are just pointers).
+youtube_oauth_client_file = "restream/youtube_oauth_client.json"
+youtube_token_file = "restream/youtube_token.json"
+
+# RESTREAM_QUALITY — streamlink quality token: best, 1080p60, 720p, ...
+quality = "best"
+# RESTREAM_RETRY_SECONDS — Helix poll interval when Twitch is offline
+retry_seconds = 30
+# RESTREAM_RECONNECT_SECONDS — delay before reconnecting to the same
+# broadcast after a pipe drop (ffmpeg / streamlink exit)
+reconnect_seconds = 5
+# RESTREAM_HLS_LIVE_EDGE — # segments behind Twitch's live edge. Each segment
+# is ~2s, so 15 ≈ 30s of buffer against HLS hiccups.
+hls_live_edge = 15
+# RESTREAM_BUFFER_MB — streamlink in-memory ring buffer
+buffer_mb = 64
+# RESTREAM_REENCODE_AUDIO / RESTREAM_REENCODE_VIDEO
+# Audio re-encode kills ad-break beeps (~5% CPU). Video re-encode smooths
+# PTS across ad boundaries (~1 CPU core) and is off by default — the
+# audio re-encode alone resolves 95% of the observable weirdness. Flip
+# reencode_video back to true, or pass --full-reencode, if you see
+# visible glitches at Twitch ad breaks. --passthrough disables both.
+reencode_audio = true
+reencode_video = false
+# RESTREAM_VIDEO_BITRATE_KBPS — only used when reencode_video = true
+video_bitrate_kbps = 6000
