@@ -184,11 +184,11 @@ def _stage_for(gap: int, minutes_to_resolution: float | None, min_gap: int, clos
 #   gap 1-2  → $0.001 (adjacent buckets, short closure window, low confidence)
 #   gap 3-4  → $0.003 (mid buckets, peak retail-nibble price band)
 #   gap 5+   → $0.002 (far edge, fewer nibblers but longer rest time)
-WINNER_SELL_PRICE = 0.99        # used for peak + placeholder; 0.99 is the
-                                # universal-safe max (some Polymarket markets
-                                # cap at 0.99, others at 0.999 — 0.99 always
-                                # lands and aapang's actual fills cluster
-                                # $0.994-$0.997 anyway)
+WINNER_SELL_PRICE = 0.999       # used for peak + placeholder. Some markets
+                                # cap at 0.99 and reject 0.999 — those orders
+                                # fail at place_sell, log, and the rest of
+                                # the buckets in that event still post fine.
+                                # Slippage matters at scale; 0.999 is right.
 WINNER_BID_GUARD = 0.50         # yes_bid >= this → never fade, post winner-sell instead
 DUST_BID_THRESHOLD = 0.02       # yes_bid <= this → dust, fade at sliding price
 DUST_ASK_THRESHOLD = 0.05       # if no bid AND ask <= this → also dust

@@ -431,14 +431,13 @@ def action_convert_neg_risk(market_id: str, index_set: int, amount_usdc: float, 
     return {"ok": tx_hash is not None, "tx_hash": tx_hash, "params": params}
 
 
-# ───────────── Winner-sell — post a CLOB limit sell on the favorite ─────────
-# Polymarket's CLOB enforces a per-market max price that is sometimes 0.99 and
-# sometimes 0.999. Using 0.99 is the universal-safe default — every market we
-# checked accepts it, and the slippage vs the theoretical $1.00 redemption is
-# 1% (worse than 0.999's 0.1%) but the order actually lands. Aapang's own fill
-# data clusters at $0.994-$0.997, so 0.99 sits comfortably below where actual
-# market-takers paid him.
-WINNER_SELL_PRICE = 0.99
+# ───────────── Winner-sell — post a CLOB limit sell at $0.999 on the favorite ─
+# Some Polymarket markets cap at 0.99 and reject 0.999 (saw HK Apr 27 do this).
+# We keep the default at 0.999 anyway — slippage matters at scale, and markets
+# that allow 0.999 give us +0.9% per share. If the order fails on a 0.99-capped
+# market the seller_bot logs and moves on; the dust-fade and placeholder orders
+# still post. Auto-redeem still recovers the position at $1.00 at resolution.
+WINNER_SELL_PRICE = 0.999
 
 
 def action_winner_sell(
