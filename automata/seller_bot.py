@@ -169,8 +169,8 @@ def _stage_for(gap: int, minutes_to_resolution: float | None, min_gap: int, clos
 # ───────────── Three-tier classification ──────────────────────────────────────
 # Updated rules (per user spec):
 #   * peak bucket OR yes_bid >= WINNER_BID_GUARD  → WINNER-SELL @ $0.999
-#   * non-peak, yes_bid <= DUST_BID_THRESHOLD     → DUST-FADE   @ sliding price
-#     (also: no bid AND yes_ask is also cheap → treat as dust)
+#   * non-peak, yes_ask <= DUST_ASK_THRESHOLD     → DUST-FADE   @ sliding price
+#     (ask is the gate — higher of bid/ask — so wide spreads stay placeholder)
 #   * non-peak, yes_bid in (DUST..WINNER_GUARD)   → PLACEHOLDER @ $0.999
 #                                                     (insurance: fills only if
 #                                                      bucket pops to favorite)
@@ -179,20 +179,20 @@ def _stage_for(gap: int, minutes_to_resolution: float | None, min_gap: int, clos
 #   * gap == min_gap-1 (adjacent)          → eligible only in closure window
 #   * gap < min_gap-1                      → skip
 #
-# Sliding dust-fade price by gap-from-peak — matches aapang's actual fill data
-# (median fade prices observed in experiment/aapang_dump.json):
-#   gap 1-2  → $0.001 (adjacent buckets, short closure window, low confidence)
-#   gap 3-4  → $0.003 (mid buckets, peak retail-nibble price band)
-#   gap 5+   → $0.002 (far edge, fewer nibblers but longer rest time)
+# Dust-fade pricing: walk to the current bid so the sell CROSSES immediately
+# instead of resting one tick above the spread. The gap-based prices below are
+# only used as a floor when there's no real bid to walk to (bid is 0 or
+# sub-tick). Empirical floor calibrated from experiment/aapang_dump.json.
 WINNER_SELL_PRICE = 0.999       # used for peak + placeholder. Some markets
                                 # cap at 0.99 and reject 0.999 — those orders
                                 # fail at place_sell, log, and the rest of
                                 # the buckets in that event still post fine.
                                 # Slippage matters at scale; 0.999 is right.
 WINNER_BID_GUARD = 0.50         # yes_bid >= this → never fade, post winner-sell instead
-DUST_BID_THRESHOLD = 0.02       # yes_bid <= this → dust, fade at sliding price
-DUST_ASK_THRESHOLD = 0.05       # if no bid AND ask <= this → also dust
-# Sliding fade prices (USDC per share)
+DUST_ASK_THRESHOLD = 0.01       # ask <= this → dust (use ask, the higher of bid/ask, as
+                                # the sole gate). Anything with ask above 1¢ rests at
+                                # placeholder $0.999 instead of fading down to the bid.
+# No-bid fallback floor (USDC per share) — only used when bid is sub-tick.
 DUST_FADE_PRICE_NEAR = 0.001    # gap 1-2 (adjacent / borderline)
 DUST_FADE_PRICE_MID  = 0.003    # gap 3-4 (sweet-spot for retail nibbles)
 DUST_FADE_PRICE_FAR  = 0.002    # gap 5+ (far edge)
@@ -209,17 +209,24 @@ MODEL_WINNER_YES_PROB = 0.70      # fair_yes_prob >= 70% → treat as winner-sid
 
 
 def _dust_fade_price_for_gap(gap: int) -> float:
-    """
-    Return the empirically-best fade price for a bucket at this distance from
-    peak. Calibrated on aapang's actual fill data: gap 3-4 buckets clear the
-    most volume at $0.003, gap 5+ clear at $0.002, and adjacent (gap 1-2)
-    only fill at $0.001 in the closure window.
-    """
+    """No-bid fallback floor (only used when the book has no real bid)."""
     if gap >= 5:
         return DUST_FADE_PRICE_FAR
     if gap >= 3:
         return DUST_FADE_PRICE_MID
     return DUST_FADE_PRICE_NEAR
+
+
+def _dust_fade_price(gap: int, yes_bid: float | None) -> float:
+    """
+    Walk the fade price down to the current bid so the sell crosses and fills
+    instead of resting one tick above the spread. Falls back to the gap-based
+    floor only when the bid is sub-tick (effectively no bid).
+    """
+    bid = yes_bid or 0.0
+    if bid >= 0.001:
+        return round(bid, 4)
+    return _dust_fade_price_for_gap(gap)
 
 
 def _classify_bucket(
@@ -282,19 +289,20 @@ def _classify_bucket(
     # Fade immediately at the gap-appropriate price even if yes_bid hasn't
     # dropped yet. This is the aapang "fade before market consensus" edge.
     if model_trustworthy and fair_yes_prob <= MODEL_FADE_YES_PROB:
-        return ("dust-fade", _dust_fade_price_for_gap(gap),
+        return ("dust-fade", _dust_fade_price(gap, yes_bid),
                 f"model-fade fair_yes={fair_yes_prob:.3f}")
 
-    # Tier 3 — price-driven dust detection (the original heuristic)
-    no_bid_flag = yes_bid is None or bid <= 0.0001
-    cheap_ask = yes_ask is None or ask <= DUST_ASK_THRESHOLD
-    is_dust = (bid <= DUST_BID_THRESHOLD) or (no_bid_flag and cheap_ask)
+    # Tier 3 — price-driven dust detection. Use the ASK (the higher of bid/ask)
+    # as the sole gate: a book is "dust" only if ask <= DUST_ASK_THRESHOLD.
+    # Wide spreads (e.g. bid=0.001 ask=0.03) fall through to placeholder and
+    # rest high, since the ask shows buyer interest above the bid.
+    is_dust = ask <= DUST_ASK_THRESHOLD
 
     if is_dust:
-        return ("dust-fade", _dust_fade_price_for_gap(gap),
-                f"price-dust bid={bid:.4f}")
+        return ("dust-fade", _dust_fade_price(gap, yes_bid),
+                f"price-dust bid={bid:.4f} ask={ask:.4f}")
     return ("placeholder", WINNER_SELL_PRICE,
-            f"price-mid bid={bid:.4f}")
+            f"price-mid bid={bid:.4f} ask={ask:.4f}")
 
 
 def scan(
