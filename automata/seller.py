@@ -4,23 +4,25 @@ Polymarket weather "aapang-style" seller — STAGE 1: filter + log only.
 Scans every open temperature event and identifies events that have at least
 N qualifying markets. A market qualifies when:
 
-  1. Its NO bid >= MIN_NO_PRICE (default 0.97), AND
-  2. Its bucket is >= MIN_GAP positions away from the highest-YES bucket
+  1. It has both a YES bid and a YES ask (otherwise we can't sell into it), AND
+  2. Its YES bid < MAX_YES_BID (default 0.03 = 3¢), AND
+  3. Its bucket is >= MIN_GAP positions away from the highest-YES bucket
      in the same event (i.e. it sits well outside the market's "favourite").
 
 The intent (future stages, not yet implemented) is the aapang playbook:
-buy NOs of the long-tail buckets at >= 0.97, SPLIT the matching set,
+buy YES of the long-tail buckets at <= 0.03, SPLIT the matching set,
 dump the faded YES legs, hold the surviving leg to redemption.
 
 Usage:
   python -m automata.seller
-  python -m automata.seller --min-no-price 0.97 --min-qualifying 2 --min-gap 2
+  python -m automata.seller --max-yes-bid 0.03 --min-qualifying 2 --min-gap 2
   python -m automata.seller --loop --interval 60
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +74,7 @@ def _format_bucket(c: dict[str, Any]) -> str:
 
 
 def scan(
-    min_no_price: float = 0.97,
+    max_yes_bid: float = 0.03,
     min_qualifying: int = 2,
     min_gap: int = 2,
 ) -> list[dict[str, Any]]:
@@ -83,8 +85,8 @@ def scan(
         "event_title": str,
         "city": str,
         "peak_question": str,
-        "peak_yes_price": float,
-        "qualifying": [ {question, bucket, no_bid, no_ask, yes_ask, gap, ...}, ... ],
+        "peak_yes_ask": float,
+        "qualifying": [ {question, bucket, yes_bid, yes_ask, gap, ...}, ... ],
       }
     """
     log = logging.getLogger("automata.seller")
@@ -185,19 +187,36 @@ def scan(
 
         peak = peers_sorted[peak_idx]
         qualifying: list[dict[str, Any]] = []
+        all_buckets: list[dict[str, Any]] = []
         for i, p in enumerate(peers_sorted):
             total_candidates += 1
             gap = abs(i - peak_idx)
-            no_bid = p["no_bid"]
+            yes_bid = p["yes_bid"]
+            yes_ask = p["yes_ask"]
+            bid_missing = yes_bid is None or (isinstance(yes_bid, float) and math.isnan(yes_bid))
+            ask_missing = yes_ask is None or (isinstance(yes_ask, float) and math.isnan(yes_ask))
+
+            reasons: list[str] = []
             if gap < min_gap:
-                continue
-            if no_bid is None or no_bid < min_no_price:
-                continue
-            qualifying.append({
+                reasons.append(f"gap<{min_gap}")
+            if not bid_missing and yes_bid >= max_yes_bid:
+                reasons.append(f"bid>={max_yes_bid:.2f}")
+            if ask_missing:
+                reasons.append("no_yes_ask")
+
+            counts = (not reasons) and (not bid_missing)
+            entry = {
                 **p,
                 "gap": gap,
-            })
-            total_qualifying += 1
+                "skip_reasons": reasons,
+                "is_peak": i == peak_idx,
+                "bid_missing": bid_missing,
+                "counts": counts,
+            }
+            all_buckets.append(entry)
+            if counts:
+                qualifying.append({**p, "gap": gap})
+                total_qualifying += 1
 
         if len(qualifying) >= min_qualifying:
             qualifying_events.append({
@@ -210,6 +229,7 @@ def scan(
                 "peak_bucket": _format_bucket(peak),
                 "n_buckets": len(peers_sorted),
                 "qualifying": qualifying,
+                "all_buckets": all_buckets,
             })
 
     log.info(
@@ -225,19 +245,35 @@ def scan(
             qe["event_title"], qe["peak_bucket"], qe["peak_yes_ask"] * 100,
             len(qe["qualifying"]), qe["n_buckets"],
         )
-        for q in qe["qualifying"]:
-            no_bid_pct = q["no_bid"] * 100 if q["no_bid"] is not None else float("nan")
-            no_ask_pct = q["no_ask"] * 100 if q["no_ask"] is not None else float("nan")
+        for b in qe["all_buckets"]:
+            yes_bid = b["yes_bid"]
+            yes_ask = b["yes_ask"]
+            yes_bid_pct = yes_bid * 100 if yes_bid is not None else float("nan")
+            yes_ask_pct = yes_ask * 100 if yes_ask is not None else float("nan")
+            sum_pct = (
+                (yes_bid + yes_ask) * 100
+                if yes_bid is not None and yes_ask is not None
+                else float("nan")
+            )
+            if b["is_peak"]:
+                marker = "PEAK"
+            elif b["counts"] or (b["bid_missing"] and not b["skip_reasons"]):
+                marker = " OK "
+            else:
+                marker = "skip"
+            note = ",".join(b["skip_reasons"]) if b["skip_reasons"] else ""
+            if b["bid_missing"] and "no_bid" not in note:
+                note = (note + ",no_bid") if note else "no_bid"
             log.info(
-                "    %-10s gap=%d  NO bid=%.2f¢ ask=%.2f¢",
-                _format_bucket(q), q["gap"], no_bid_pct, no_ask_pct,
+                "    [%s] %-10s gap=%d  YES bid=%5.2f¢ ask=%5.2f¢ sum=%6.2f¢  %s",
+                marker, _format_bucket(b), b["gap"], yes_bid_pct, yes_ask_pct, sum_pct, note,
             )
 
     return qualifying_events
 
 
 def run(
-    min_no_price: float | None = None,
+    max_yes_bid: float | None = None,
     min_qualifying: int | None = None,
     min_gap: int | None = None,
     loop: bool = False,
@@ -245,8 +281,8 @@ def run(
 ) -> None:
     log = _setup_logging()
 
-    mnp = min_no_price if min_no_price is not None else config.get_float(
-        "MIN_NO_PRICE", "weather", "min_no_price", 0.97,
+    myb = max_yes_bid if max_yes_bid is not None else config.get_float(
+        "SELLER_MAX_YES_BID", "seller", "max_yes_bid", 0.03,
     )
     mq = min_qualifying if min_qualifying is not None else config.get_int(
         "SELLER_MIN_QUALIFYING", "seller", "min_qualifying", 2,
@@ -256,8 +292,8 @@ def run(
     )
 
     log.info(
-        "Seller scan: min_no_price=%.3f  min_qualifying=%d  min_gap=%d  loop=%s",
-        mnp, mq, mg, loop,
+        "Seller scan: max_yes_bid=%.3f  min_qualifying=%d  min_gap=%d  loop=%s",
+        myb, mq, mg, loop,
     )
 
     iteration = 0
@@ -265,7 +301,7 @@ def run(
         iteration += 1
         log.info("── Iteration %d ──", iteration)
         try:
-            scan(min_no_price=mnp, min_qualifying=mq, min_gap=mg)
+            scan(max_yes_bid=myb, min_qualifying=mq, min_gap=mg)
         except Exception as exc:
             log.warning("scan failed: %s: %s", type(exc).__name__, exc)
         if not loop:
@@ -278,7 +314,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Aapang-style weather seller — stage 1: filter + log")
-    parser.add_argument("--min-no-price", type=float, default=None, help="Minimum NO bid (default 0.97 from config.weather.min_no_price)")
+    parser.add_argument("--max-yes-bid", type=float, default=None, help="Maximum YES bid to qualify (default 0.03 from config.seller.max_yes_bid)")
     parser.add_argument("--min-qualifying", type=int, default=None, help="Minimum qualifying markets per event (default 2)")
     parser.add_argument("--min-gap", type=int, default=None, help="Minimum bucket-index distance from peak-YES bucket (default 2 = at least 1 bucket of gap between)")
     parser.add_argument("--loop", action="store_true", help="Loop forever instead of running one cycle")
@@ -286,7 +322,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run(
-        min_no_price=args.min_no_price,
+        max_yes_bid=args.max_yes_bid,
         min_qualifying=args.min_qualifying,
         min_gap=args.min_gap,
         loop=args.loop,

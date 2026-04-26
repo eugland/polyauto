@@ -77,9 +77,16 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(), _file_handler],
 )
-# basicConfig is a no-op if root logger already has handlers — force-attach file handler
+# basicConfig is a no-op if root logger already has handlers — force-attach file
+# handler. Dedupe by baseFilename so other modules that already attached an
+# `automata.log` handler don't get a second copy (would cause every line to
+# appear twice in the file).
 _root = logging.getLogger()
-if _file_handler not in _root.handlers:
+if not any(
+    isinstance(h, logging.FileHandler)
+    and getattr(h, "baseFilename", "") == str(_LOG_FILE)
+    for h in _root.handlers
+):
     _root.addHandler(_file_handler)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("automata")
