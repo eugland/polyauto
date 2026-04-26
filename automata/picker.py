@@ -156,40 +156,89 @@ def get_held_event_slugs(raw_markets: list[dict] | None = None) -> set[str]:
     If `raw_markets` is provided, uses it (avoids a duplicate Gamma fetch when
     the caller already has the payload).
     """
+    return set(get_event_committed_usdc(raw_markets).keys())
+
+
+def get_event_committed_usdc(
+    raw_markets: list[dict] | None = None,
+) -> dict[str, float]:
+    """
+    Return {event_slug: committed_face_value_usdc} for every event we hold any
+    position in. Face value = held YES shares of any single bucket post-CONVERT
+    (all buckets in an event have the same share count after a clean
+    SPLIT+CONVERT, so any single bucket reads it). For NO-only positions
+    (where we never converted), uses the held NO share count as a proxy —
+    same face value semantics: 1 NO of bucket K = $1 paid out if any of the
+    OTHER buckets wins.
+
+    Used by the picker to decide if an event is eligible for a top-up
+    (commit < target) and by the runner's budget gate.
+    """
     import os
+    out: dict[str, float] = {}
     funder = (os.getenv("POLYMARKET_FUNDER") or "").strip()
     if not funder:
-        return set()
+        return out
 
     from automata.client import get_positions
     held = get_positions(funder)
-    held_tokens = {p["token_id"] for p in held if p.get("size", 0) > 0.01}
-    if not held_tokens:
-        return set()
+    if not held:
+        return out
+    held_size_by_token: dict[str, float] = {
+        str(p["token_id"]): float(p.get("size", 0) or 0)
+        for p in held if float(p.get("size", 0) or 0) > 0.01
+    }
+    if not held_size_by_token:
+        return out
 
     from automata.parser import _extract_yes_token_id, _extract_no_token_id
     if raw_markets is None:
         from automata.polymarket import fetch_temperature_markets_payload
         raw_markets = fetch_temperature_markets_payload()["markets"]
 
-    held_slugs: set[str] = set()
+    # Walk every market, sum the held shares per (event, side). Face value
+    # of an event = max(held YES across any bucket, held NO across any bucket).
+    # Both sides legitimately represent face value; we pick the larger so a
+    # mid-flow state (SPLIT done, CONVERT not yet) still reports the SPLIT
+    # amount.
+    yes_max: dict[str, float] = {}
+    no_max: dict[str, float] = {}
     for raw in raw_markets:
+        slug = str(raw.get("event_slug") or "")
+        if not slug:
+            continue
         yes_tok = _extract_yes_token_id(raw)
         no_tok = _extract_no_token_id(raw)
-        if (yes_tok and yes_tok in held_tokens) or (no_tok and no_tok in held_tokens):
-            held_slugs.add(str(raw.get("event_slug") or ""))
-    return held_slugs
+        if yes_tok and yes_tok in held_size_by_token:
+            yes_max[slug] = max(yes_max.get(slug, 0.0), held_size_by_token[yes_tok])
+        if no_tok and no_tok in held_size_by_token:
+            no_max[slug] = max(no_max.get(slug, 0.0), held_size_by_token[no_tok])
+
+    for slug in set(yes_max) | set(no_max):
+        out[slug] = round(max(yes_max.get(slug, 0.0), no_max.get(slug, 0.0)), 4)
+    return out
 
 
-def list_scored_events(exclude_held: bool = True) -> list[dict[str, Any]]:
+def list_scored_events(
+    exclude_held: bool = True,
+    topup_target_usdc: float | None = None,
+    topup_min_delta_usdc: float = 5.0,
+) -> list[dict[str, Any]]:
     """
     Build the candidate event list with everything needed for scoring + downstream
     SPLIT/CONVERT (negRiskMarketID, on-chain question_indices, conditionIds).
     Returns events sorted by score desc.
 
-    If `exclude_held=True` (default), events where we already hold any YES/NO
-    are dropped — prevents the picker from re-picking the same event between
-    auto-cycles. State of "what's already split" comes from on-chain positions.
+    Holding behavior:
+      * `exclude_held=True` (default), `topup_target_usdc=None`: events where we
+        already hold any YES/NO are dropped.
+      * `topup_target_usdc=X`: held events become eligible IFF their committed
+        face value < X AND (X - committed) >= `topup_min_delta_usdc` (default
+        $5, matches Polymarket's order-size minimum). Events not currently held
+        are still eligible (full SPLIT for X). Each event's `committed_usdc`
+        and `topup_delta_usdc` are populated for the caller to use.
+      * `exclude_held=False` and `topup_target_usdc=None`: include everything
+        regardless of holding (debug only).
     """
     log = logging.getLogger("automata.picker")
 
@@ -209,12 +258,32 @@ def list_scored_events(exclude_held: bool = True) -> list[dict[str, Any]]:
     raw_markets = payload["markets"]
     log.info("  %d raw markets", len(raw_markets))
 
-    held_slugs: set[str] = set()
-    if exclude_held:
-        held_slugs = get_held_event_slugs(raw_markets)
-        if held_slugs:
-            log.info("  %d events excluded (already holding positions): %s",
-                     len(held_slugs), ", ".join(sorted(held_slugs))[:200])
+    # Compute committed face value per event ONCE (positions + raw_markets walk)
+    committed_by_slug = get_event_committed_usdc(raw_markets)
+
+    held_slugs: set[str] = set(committed_by_slug.keys())
+    if topup_target_usdc is not None:
+        topup_eligible = {
+            slug for slug, c in committed_by_slug.items()
+            if c < topup_target_usdc - 1e-9
+            and (topup_target_usdc - c) >= topup_min_delta_usdc
+        }
+        # Drop only held events that aren't topup-eligible
+        excluded = held_slugs - topup_eligible
+        if excluded:
+            log.info("  %d events excluded (held + above target): %s",
+                     len(excluded), ", ".join(sorted(excluded))[:200])
+        if topup_eligible:
+            log.info("  %d held events eligible for top-up: %s",
+                     len(topup_eligible),
+                     ", ".join(f"{s}(${committed_by_slug[s]:.2f}/${topup_target_usdc:.2f})"
+                              for s in sorted(topup_eligible))[:300])
+        held_slugs = excluded  # only exclude these now
+    elif exclude_held and held_slugs:
+        log.info("  %d events excluded (already holding positions): %s",
+                 len(held_slugs), ", ".join(sorted(held_slugs))[:200])
+    elif not exclude_held:
+        held_slugs = set()
 
     # Group by event
     events: dict[str, dict[str, Any]] = {}
@@ -294,6 +363,14 @@ def list_scored_events(exclude_held: bool = True) -> list[dict[str, Any]]:
         ev["liquidity_yes_bid_sum"] = round(liq_sum, 4)
         ev["n_buckets"] = len(ev["buckets"])
 
+        # Top-up bookkeeping — populated regardless of mode so callers can read it
+        committed = round(committed_by_slug.get(ev["slug"], 0.0), 4)
+        ev["committed_usdc"] = committed
+        if topup_target_usdc is not None:
+            ev["topup_delta_usdc"] = round(max(0.0, topup_target_usdc - committed), 4)
+        else:
+            ev["topup_delta_usdc"] = None
+
         # Resolution time
         res_dt = _compute_resolution_dt(ev["city"], ev["title_date"], ev["end_date"])
         ev["resolution_dt"] = res_dt
@@ -311,17 +388,29 @@ def list_scored_events(exclude_held: bool = True) -> list[dict[str, Any]]:
     return scored
 
 
-def pick_best_event(min_score: float = 30.0, exclude_held: bool = True) -> dict[str, Any] | None:
+def pick_best_event(
+    min_score: float = 30.0,
+    exclude_held: bool = True,
+    topup_target_usdc: float | None = None,
+) -> dict[str, Any] | None:
     """
     Return the single highest-scoring event, with on-chain question_indices
     probed and the favorite bucket marked. None if no event scores above
     `min_score` (or if probing fails).
 
-    `exclude_held=True` (default) skips events where we already hold positions —
-    prevents double-trading the same event when called in a loop.
+    `topup_target_usdc=X` enables top-up mode: held events become eligible IFF
+    their committed face value < X AND (X - committed) >= 5. The returned
+    event's `topup_delta_usdc` is the SPLIT/CONVERT amount the auto-chain
+    should use (X for fresh events, X - committed for top-ups).
+
+    `exclude_held=True` (default, ignored when topup_target_usdc is set) skips
+    held events entirely.
     """
     log = logging.getLogger("automata.picker")
-    scored = list_scored_events(exclude_held=exclude_held)
+    scored = list_scored_events(
+        exclude_held=exclude_held,
+        topup_target_usdc=topup_target_usdc,
+    )
     if not scored:
         log.warning("No candidate events found")
         return None

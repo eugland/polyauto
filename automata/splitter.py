@@ -507,24 +507,34 @@ def action_auto(
     log: logging.Logger,
     min_score: float = 30.0,
     settle_seconds: int = 18,
+    allow_topup: bool = False,
 ) -> dict:
     """
     End-to-end aapang trip:
       1. picker.pick_best_event()         — choose top-scoring event
-      2. action_split_neg_risk(favorite)  — SPLIT $X on the favorite bucket
+      2. action_split_neg_risk(favorite)  — SPLIT on the favorite bucket
       3. wait for tx                       — relayer takes ~10–15s on Polygon
-      4. action_convert_neg_risk(idx)     — CONVERT $X with favorite's question_index
+      4. action_convert_neg_risk(idx)     — CONVERT with favorite's question_index
       5. wait for tx
       6. action_winner_sell(favorite)     — post limit sell @ $0.999 on favorite YES
+
+    Top-up mode (`allow_topup=True`):
+      `amount_usdc` is interpreted as the TARGET stake per event. If the picker
+      returns an event we already partially hold, the SPLIT/CONVERT/winner-sell
+      amount is the DELTA (`amount_usdc - committed`), not the full target.
+      Top-ups < 5 USDC are skipped (Polymarket order minimum). Useful for
+      raising your per-event lot size mid-flight without abandoning open
+      positions.
 
     All four sub-actions inherit `dry_run`. In dry-run nothing is broadcast.
     """
     from automata.picker import pick_best_event
 
-    _validate_amount(amount_usdc)  # raises if > MAX_USDC_HARD
-
     log.info("──────── AUTO-CHAIN — picking best event ────────")
-    ev = pick_best_event(min_score=min_score)
+    ev = pick_best_event(
+        min_score=min_score,
+        topup_target_usdc=amount_usdc if allow_topup else None,
+    )
     if ev is None:
         return {"ok": False, "error": "no event meets min_score"}
 
@@ -535,6 +545,16 @@ def action_auto(
     if fav_qidx is None:
         return {"ok": False, "error": "favorite bucket has no on-chain question_index"}
 
+    # Determine actual SPLIT amount: full target for fresh events, delta for top-ups.
+    committed = float(ev.get("committed_usdc") or 0.0)
+    is_topup = allow_topup and committed > 0.0
+    deploy_usdc = (amount_usdc - committed) if is_topup else amount_usdc
+    deploy_usdc = round(deploy_usdc, 6)
+    _validate_amount(deploy_usdc)  # raises if > MAX_USDC_HARD or <= 0
+
+    if is_topup:
+        log.info("TOP-UP mode: target=$%.4f committed=$%.4f → SPLIT delta=$%.4f",
+                 amount_usdc, committed, deploy_usdc)
     log.info("Picked event: %s (score=%.1f)", ev.get("title"), ev.get("score"))
     log.info("  favorite bucket: %s  yes_bid=%.4f  question_index=%d",
              fav_bucket["question"], fav_bucket.get("yes_bid") or 0.0, fav_qidx)
@@ -544,6 +564,9 @@ def action_auto(
     results: dict[str, Any] = {"event": {
         "title": ev.get("title"), "slug": ev.get("slug"),
         "score": ev.get("score"),
+        "is_topup": is_topup,
+        "committed_before": committed,
+        "deploy_usdc": deploy_usdc,
         "favorite": {
             "question": fav_bucket["question"],
             "conditionId": fav_cid,
@@ -555,8 +578,8 @@ def action_auto(
     }}
 
     log.info("")
-    log.info("──────── STEP 1/3 — SPLIT $%.4f on favorite bucket ────────", amount_usdc)
-    split_res = action_split_neg_risk(fav_cid, amount_usdc, dry_run, log)
+    log.info("──────── STEP 1/3 — SPLIT $%.4f on favorite bucket ────────", deploy_usdc)
+    split_res = action_split_neg_risk(fav_cid, deploy_usdc, dry_run, log)
     results["split"] = split_res
     if not split_res.get("ok"):
         log.error("SPLIT failed — aborting chain")
@@ -568,9 +591,9 @@ def action_auto(
 
     log.info("")
     log.info("──────── STEP 2/3 — CONVERT $%.4f (indexSet=1<<%d=%d) ────────",
-             amount_usdc, fav_qidx, 1 << fav_qidx)
+             deploy_usdc, fav_qidx, 1 << fav_qidx)
     convert_res = action_convert_neg_risk(
-        ev["negRiskMarketID"], 1 << fav_qidx, amount_usdc, dry_run, log,
+        ev["negRiskMarketID"], 1 << fav_qidx, deploy_usdc, dry_run, log,
     )
     results["convert"] = convert_res
     if not convert_res.get("ok"):
@@ -584,8 +607,13 @@ def action_auto(
         time.sleep(settle_seconds)
 
     log.info("")
-    log.info("──────── STEP 3/3 — Post winner-sell @ $%.4f ────────", WINNER_SELL_PRICE)
-    sell_res = action_winner_sell(fav_token, amount_usdc, dry_run, log)
+    # Winner-sell post-condition: total holding of the favorite is now
+    # `committed + deploy_usdc` shares (since SPLIT+CONVERT minted `deploy`
+    # YES on every bucket including the favorite, on top of any prior holding).
+    final_shares = committed + deploy_usdc
+    log.info("──────── STEP 3/3 — Post winner-sell @ $%.4f for %.4f sh ────────",
+             WINNER_SELL_PRICE, final_shares)
+    sell_res = action_winner_sell(fav_token, final_shares, dry_run, log)
     results["winner_sell"] = sell_res
     if not sell_res.get("ok"):
         log.warning("WINNER-SELL didn't land. Position is still good — manual fallback: "
@@ -764,6 +792,9 @@ def main() -> int:
                    help=f"Limit sell price for winner-sell (default {WINNER_SELL_PRICE})")
     p.add_argument("--min-score", type=float, default=30.0,
                    help="Minimum picker score to take an event (auto action only). Default 30.")
+    p.add_argument("--allow-topup", action="store_true",
+                   help="auto action: treat --usdc as TARGET stake per event. "
+                        "Top up held events with committed < target (delta-sized SPLIT).")
     p.add_argument("--usdc", type=float, help=f"USDC amount (HARD CAP ${MAX_USDC_HARD:.2f})")
     p.add_argument("--live", action="store_true", help="Broadcast for real. Default: dry-run.")
     args = p.parse_args()
@@ -819,7 +850,9 @@ def main() -> int:
     elif args.action == "auto":
         if args.usdc is None:
             log.error("--usdc required for auto"); return 2
-        result = action_auto(args.usdc, dry_run, log, min_score=args.min_score)
+        result = action_auto(args.usdc, dry_run, log,
+                             min_score=args.min_score,
+                             allow_topup=args.allow_topup)
     else:
         log.error("unknown action"); return 2
 

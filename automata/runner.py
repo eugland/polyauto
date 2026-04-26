@@ -120,6 +120,16 @@ def _held_event_slugs() -> set[str]:
     return get_held_event_slugs()
 
 
+def _committed_per_event() -> dict[str, float]:
+    """
+    {event_slug: committed_face_value_usdc} — exact face value, not the rough
+    `len(held) × usdc_per_trade` heuristic. Used for accurate budget gating
+    when top-up mode is enabled (events held at varying stake sizes).
+    """
+    from automata.picker import get_event_committed_usdc
+    return get_event_committed_usdc()
+
+
 # ───────────── Resolution + auto-redeem ───────────────────────────────────────
 _PAYOUT_ABI = [
     {"inputs": [{"name": "", "type": "bytes32"}],
@@ -312,6 +322,7 @@ def runner(
     min_gap: int,
     cancel_on_exit: bool = False,
     summary_interval: int = 3600,
+    allow_topup: bool = False,
 ) -> None:
     log = _setup_logging()
     funder = os.getenv("POLYMARKET_FUNDER") or ""
@@ -380,26 +391,54 @@ def runner(
             # ─── PICK: open a new position if budget allows ───────────────────
             if now - last_pick_at >= pick_interval:
                 try:
-                    held_slugs = _held_event_slugs()
-                    committed_est = len(held_slugs) * usdc_per_trade
+                    committed_map = _committed_per_event()
+                    held_slugs = set(committed_map.keys())
+                    committed_total = round(sum(committed_map.values()), 4)
+                    # In top-up mode, the next deploy is at most (target - max_committed_event_below_target).
+                    # In normal mode, the next deploy is `usdc_per_trade` (a brand-new event).
+                    if allow_topup:
+                        topup_eligible = [
+                            (s, usdc_per_trade - c) for s, c in committed_map.items()
+                            if c < usdc_per_trade and (usdc_per_trade - c) >= 5.0
+                        ]
+                        next_deploy = (
+                            max(d for _, d in topup_eligible) if topup_eligible
+                            else usdc_per_trade
+                        )
+                    else:
+                        next_deploy = usdc_per_trade
                     free = _free_usdc(funder)
-                    log.info("[budget] held_events=%d  committed≈$%.2f / $%.2f  free_usdc=$%.2f",
-                             len(held_slugs), committed_est, budget, free)
+                    log.info(
+                        "[budget] held_events=%d  committed=$%.2f / $%.2f  free_usdc=$%.2f%s",
+                        len(held_slugs), committed_total, budget, free,
+                        f"  topup_eligible={len(topup_eligible)}" if allow_topup else "",
+                    )
 
-                    if len(held_slugs) >= max_events:
+                    # Concurrent-event cap: only counts NEW events. Top-ups don't add a slot.
+                    can_add_new_event = (
+                        not allow_topup or not topup_eligible
+                    )
+                    if can_add_new_event and len(held_slugs) >= max_events:
                         log.info("[pick] at max-events (%d) — skipping", max_events)
-                    elif committed_est + usdc_per_trade > budget:
+                    elif committed_total + next_deploy > budget + 1e-6:
                         log.info("[pick] would exceed budget ($%.2f + $%.2f > $%.2f) — skipping",
-                                 committed_est, usdc_per_trade, budget)
-                    elif free < usdc_per_trade + free_usdc_buffer:
+                                 committed_total, next_deploy, budget)
+                    elif free < next_deploy + free_usdc_buffer:
                         log.info("[pick] insufficient free USDC ($%.2f < $%.2f + buffer $%.2f) — skipping",
-                                 free, usdc_per_trade, free_usdc_buffer)
+                                 free, next_deploy, free_usdc_buffer)
                     else:
                         from automata.splitter import action_auto
-                        log.info("[pick] running auto chain ($%.2f)", usdc_per_trade)
-                        res = action_auto(usdc_per_trade, dry_run, log, min_score=min_score)
+                        log.info("[pick] running auto chain (%s $%.2f)",
+                                 "TOPUP target" if allow_topup else "deploy",
+                                 usdc_per_trade)
+                        res = action_auto(
+                            usdc_per_trade, dry_run, log,
+                            min_score=min_score,
+                            allow_topup=allow_topup,
+                        )
                         if res.get("ok"):
-                            log.info("[pick] auto chain OK")
+                            log.info("[pick] auto chain OK%s",
+                                     "  (TOP-UP)" if res.get("event", {}).get("is_topup") else "")
                             picks_done += 1
                         else:
                             log.warning("[pick] auto chain ended at stage=%s ok=%s",
@@ -472,6 +511,11 @@ def main() -> int:
     p.add_argument("--summary-interval", type=int, default=3600,
                    help="Seconds between [summary] log lines (default 3600 = 1h). "
                         "These show in the stock UI weather-log viewer.")
+    p.add_argument("--allow-topup", action="store_true",
+                   help="Treat --usdc as the TARGET stake per event. Held events "
+                        "with committed < target get topped up by SPLIT(target - "
+                        "committed) instead of being skipped. Top-ups < $5 are "
+                        "skipped (Polymarket order minimum).")
     p.add_argument("--live", action="store_true",
                    help="Broadcast for real. Default: dry-run.")
     args = p.parse_args()
@@ -491,6 +535,7 @@ def main() -> int:
         min_gap=args.min_gap,
         cancel_on_exit=args.cancel_on_exit,
         summary_interval=max(60, args.summary_interval),
+        allow_topup=args.allow_topup,
     )
     return 0
 
