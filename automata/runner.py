@@ -313,6 +313,7 @@ def runner(
     pick_interval: int,
     maintenance_interval: int,
     redeem_interval: int,
+    redeem_enabled: bool,
     free_usdc_buffer: float,
     once: bool,
     min_shares: float,
@@ -329,8 +330,10 @@ def runner(
     log.info("──────── RUNNER START ────────")
     log.info("  dry_run=%s  per-trade=$%.2f  budget=$%.2f  max-events=%d  min-score=%.0f",
              dry_run, usdc_per_trade, budget, max_events, min_score)
-    log.info("  intervals: pick=%ds  maintain=%ds  redeem=%ds  summary=%ds",
-             pick_interval, maintenance_interval, redeem_interval, summary_interval)
+    log.info("  intervals: pick=%ds  maintain=%ds  redeem=%s  summary=%ds",
+             pick_interval, maintenance_interval,
+             f"{redeem_interval}s" if redeem_enabled else "disabled",
+             summary_interval)
     log.info("  cancel_on_exit=%s  funder=%s", cancel_on_exit, funder)
     log.info("──────────────────────────────")
 
@@ -375,7 +378,7 @@ def runner(
                 last_maintenance_at = now
 
             # ─── REDEEM: cash out resolved events ─────────────────────────────
-            if now - last_redeem_at >= redeem_interval:
+            if redeem_enabled and now - last_redeem_at >= redeem_interval:
                 try:
                     stats = _redeem_resolved_held_events(dry_run, log)
                     log.info("[redeem] checked=%d redeemed=%d",
@@ -457,7 +460,10 @@ def runner(
                 return
 
             # Sleep until the next loop event (smallest interval). Catches signals.
-            sleep_for = min(maintenance_interval, redeem_interval, pick_interval, 60)
+            intervals = [maintenance_interval, pick_interval, 60]
+            if redeem_enabled:
+                intervals.append(redeem_interval)
+            sleep_for = min(intervals)
             time.sleep(sleep_for)
     except KeyboardInterrupt:
         log.info("──── RUNNER STOPPING (KeyboardInterrupt) ────")
@@ -494,6 +500,10 @@ def main() -> int:
                    help="Seconds between seller_bot scans. Default 60.")
     p.add_argument("--redeem-interval", type=int, default=300,
                    help="Seconds between redeem scans. Default 300 (5min).")
+    p.add_argument("--redeem", dest="redeem", action="store_true", default=False,
+                   help="Enable the auto-redeem loop. Default: disabled.")
+    p.add_argument("--no-redeem", dest="redeem", action="store_false",
+                   help="Disable the auto-redeem loop (default).")
     p.add_argument("--free-usdc-buffer", type=float, default=1.0,
                    help="Reserve this much extra USDC above per-trade for slack. Default $1.")
     p.add_argument("--min-gap", type=int, default=2,
@@ -526,6 +536,7 @@ def main() -> int:
         pick_interval=max(60, args.pick_interval),
         maintenance_interval=max(15, args.maintenance_interval),
         redeem_interval=max(60, args.redeem_interval),
+        redeem_enabled=args.redeem,
         free_usdc_buffer=args.free_usdc_buffer,
         once=args.once,
         min_shares=args.min_shares,

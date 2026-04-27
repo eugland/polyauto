@@ -220,6 +220,12 @@ def _classify_bucket(
 
     action ∈ {'dust-fade'}.
     """
+    # No book at all on the CLOB — neither a bid nor an ask quote was returned.
+    # Don't try to fade into a non-existent orderbook (the place_sell_order call
+    # would 400 with "the orderbook ... does not exist"). The redeem loop
+    # handles these once they resolve on-chain.
+    if yes_bid is None and yes_ask is None:
+        return None
     bid = yes_bid or 0.0
     ask = yes_ask or 0.0
 
@@ -316,6 +322,13 @@ def scan(
             "threshold_hi": threshold_hi,
             "unit": unit,
             "direction": direction,
+            "closed": bool(raw.get("closed")),
+            "enable_order_book": (
+                False if raw.get("enableOrderBook") is False else True
+            ),
+            "active": (
+                False if raw.get("active") is False else True
+            ),
         })
 
     # 3) For each event, fetch live YES books, sort by threshold, mark peak idx
@@ -424,6 +437,22 @@ def scan(
                 continue
             yes_bid = peer_books[i]["yes_bid"]
             yes_ask = peer_books[i]["yes_ask"]
+            # Skip buckets the CLOB can't take a sell on (closed market,
+            # orderbook disabled, or no book entry at all). The redeem loop
+            # will collect these once they resolve on-chain.
+            if b.get("closed") or not b.get("enable_order_book") or not b.get("active"):
+                log.info(
+                    "[SKIP no-book ] %s %s | %s | held=%.2f | closed=%s enable_ob=%s active=%s",
+                    ev["city"], ev["title_date"], b["question"], held_size,
+                    b.get("closed"), b.get("enable_order_book"), b.get("active"),
+                )
+                continue
+            if yes_bid is None and yes_ask is None:
+                log.info(
+                    "[SKIP no-book ] %s %s | %s | held=%.2f | book missing on CLOB",
+                    ev["city"], ev["title_date"], b["question"], held_size,
+                )
+                continue
             gap = abs(i - peak_idx) if peak_idx is not None else 999
             is_above_peak = peak_idx is not None and i > peak_idx
 
