@@ -115,7 +115,8 @@ def get_best_books_bulk(host: str, token_ids: list[str], chunk_size: int = 200) 
 def get_positions(funder: str) -> list[dict]:
     """
     Return open positions for the proxy wallet using Polymarket's data API.
-    Returns list of {token_id, size}.
+    Returns list of dicts with {token_id, size, conditionId, outcome,
+    negativeRisk, redeemable} when the upstream provides them.
     """
     import requests
     try:
@@ -125,11 +126,19 @@ def get_positions(funder: str) -> list[dict]:
             timeout=10,
         )
         r.raise_for_status()
-        return [
-            {"token_id": str(p["asset"]), "size": float(p["size"])}
-            for p in r.json()
-            if float(p.get("size", 0)) > 0
-        ]
+        out = []
+        for p in r.json():
+            if float(p.get("size", 0)) <= 0:
+                continue
+            out.append({
+                "token_id":     str(p["asset"]),
+                "size":         float(p["size"]),
+                "conditionId":  str(p.get("conditionId") or ""),
+                "outcome":      str(p.get("outcome") or ""),
+                "negativeRisk": bool(p.get("negativeRisk", False)),
+                "redeemable":   bool(p.get("redeemable", False)),
+            })
+        return out
     except Exception as exc:
         import logging
         logging.getLogger("automata").warning("get_positions failed: %s", exc)
