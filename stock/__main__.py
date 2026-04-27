@@ -11,8 +11,19 @@ from __future__ import annotations
 import argparse
 import logging
 import socket
+import sys
 import threading
 from pathlib import Path
+
+# Windows console defaults to cp1252, which can't encode '→' / '↗' / '°' that
+# appear in log messages (e.g. stock.pro_collector "activity upsert: %s → %d").
+# Force UTF-8 on stdout/stderr so log handlers don't blow up on these chars.
+for _stream in (sys.stdout, sys.stderr):
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 DB_DEFAULT = str(_REPO_ROOT / "db" / "stock.db")
@@ -34,7 +45,7 @@ def main() -> None:
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     Path(args.log).parent.mkdir(parents=True, exist_ok=True)
 
-    handlers = [logging.StreamHandler(), logging.FileHandler(args.log)]
+    handlers = [logging.StreamHandler(), logging.FileHandler(args.log, encoding="utf-8")]
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
                         handlers=handlers)
