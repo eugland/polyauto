@@ -79,6 +79,55 @@ bet_passes = 3
 bet_pass_wait_seconds = 10
 
 
+[lowbuy]
+# Safe-NO buyer for the LOWEST temperature brackets of the closest-resolving
+# "Highest Temperature in <city>" markets. Bets NO at near-1 prices on a
+# bracket only when today's observed METAR max-so-far has ALREADY climbed
+# above the bracket's upper bound by `safety_margin`, guaranteeing the
+# bracket is mathematically locked out of winning YES.
+
+# ── Price gates ───────────────────────────────────────────────────────────
+min_no_price = 0.97
+max_no_price = 0.997
+
+# ── Safety margin (degrees) between max-so-far-today and bracket upper ────
+# Only bet NO when max_so_far >= bracket_upper + safety_margin.
+safety_margin_c = 3.0
+safety_margin_f = 6.0
+
+# ── Resolution window ─────────────────────────────────────────────────────
+# Only consider events resolving in this window from now (hours).
+# max_hours bounds how far ahead to look; min_hours filters out
+# already-resolved-but-still-open events.
+min_hours_to_resolution = 0.0
+max_hours_to_resolution = 24.0
+
+# ── Selection ─────────────────────────────────────────────────────────────
+# Number of closest-resolving events to scan, and max safe brackets per event.
+target_events = 50
+max_brackets_per_event = 3
+
+# ── Forecast cross-check ──────────────────────────────────────────────────
+# Disabled: lowbuy uses METAR max-so-far only (no Open-Meteo forecast cross-check).
+require_forecast_confirm = false
+
+# ── Bet sizing ────────────────────────────────────────────────────────────
+bet_size_shares = 22.0
+
+# ── Market-maker pricing (mirrors [weather]) ──────────────────────────────
+mm_tick_size = 0.001
+mm_join_bid_ticks = 1
+mm_reprice_cents = 0.10
+
+# ── City filter ───────────────────────────────────────────────────────────
+city_blacklist = []
+
+# ── Order retries ─────────────────────────────────────────────────────────
+stale_order_minutes = 1.0
+bet_passes = 2
+bet_pass_wait_seconds = 10
+
+
 [eth_1h]
 # SELL_TARGET — take-profit price (ignored when redeem_only_mode = true)
 sell_target = 0.99
