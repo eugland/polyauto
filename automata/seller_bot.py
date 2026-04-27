@@ -189,8 +189,8 @@ WINNER_SELL_PRICE = 0.999       # used for peak + placeholder. Some markets
                                 # the buckets in that event still post fine.
                                 # Slippage matters at scale; 0.999 is right.
 WINNER_BID_GUARD = 0.50         # yes_bid >= this → never fade, post winner-sell instead
-DUST_ASK_THRESHOLD = 0.01       # ask <= this → dust (use ask, the higher of bid/ask, as
-                                # the sole gate). Anything with ask above 1¢ rests at
+DUST_ASK_THRESHOLD = 0.02       # ask <= this → dust (use ask, the higher of bid/ask, as
+                                # the sole gate). Anything with ask above 2¢ rests at
                                 # placeholder $0.999 instead of fading down to the bid.
 # No-bid fallback floor (USDC per share) — only used when bid is sub-tick.
 DUST_FADE_PRICE_NEAR = 0.001    # gap 1-2 (adjacent / borderline)
@@ -199,13 +199,14 @@ DUST_FADE_PRICE_FAR  = 0.002    # gap 5+ (far edge)
 # Backward-compat alias for old call sites that pass it through unchanged.
 DUST_FADE_PRICE = DUST_FADE_PRICE_NEAR
 
-# Forward-signal thresholds — the model-driven fade trigger.
-# When the calibrated weather model says fair_yes_prob is this low, fade the
-# bucket NOW regardless of yes_bid level (don't wait for the market to drop).
-# This is the aapang-style "act on forecast, not on consensus" edge.
-MODEL_FADE_YES_PROB = 0.05        # fair_yes_prob <= 5% → fade immediately
+# Forward-signal thresholds. The model has exactly ONE job: veto a price-driven
+# dust-fade when it disagrees with the market. It never initiates an action of
+# its own — no model-driven fades, no model-driven winner-sells. If the price
+# gate would fade a bucket but the model says fair_yes_prob > MODEL_VETO_YES_PROB
+# (with ≥ MODEL_BIAS_MIN_SAMPLES residuals), the fade is downgraded to
+# placeholder instead.
 MODEL_BIAS_MIN_SAMPLES = 5        # only trust the model if station has ≥ N residuals seen
-MODEL_WINNER_YES_PROB = 0.70      # fair_yes_prob >= 70% → treat as winner-side
+MODEL_VETO_YES_PROB = 0.05        # fair_yes > 5% → veto a price-driven dust-fade
 
 
 def _dust_fade_price_for_gap(gap: int) -> float:
@@ -244,18 +245,13 @@ def _classify_bucket(
     Return (action, target_price, reason) or None to skip this bucket.
 
     action ∈ {'winner-sell', 'dust-fade', 'placeholder'}.
-    `reason` describes which trigger fired: 'peak', 'bid-winner', 'model-winner',
-    'gap-skip', 'model-fade', 'price-dust', 'price-mid', etc.
+    `reason` describes which trigger fired: 'peak', 'bid-winner', 'gap-skip',
+    'price-dust', 'price-mid', 'model-veto', etc.
 
-    Model-driven trigger:
-      * If `fair_yes_prob` is provided and model has ≥ MODEL_BIAS_MIN_SAMPLES
-        residuals for the station, the model can override the price-driven
-        path:
-          - fair_yes_prob >= MODEL_WINNER_YES_PROB → winner-sell (even if
-            no peak detected from books — useful when books are thin)
-          - fair_yes_prob <= MODEL_FADE_YES_PROB  → dust-fade NOW, even if
-            yes_bid hasn't dropped to 2¢ yet. This is the aapang-style
-            forecast-driven fade.
+    The model has exactly one role: veto a price-driven dust-fade when it
+    meaningfully disagrees with the market. It never initiates an action.
+    If the ask would qualify as dust but the trustworthy model says
+    fair_yes_prob > MODEL_VETO_YES_PROB, the fade is downgraded to placeholder.
     """
     bid = yes_bid or 0.0
     ask = yes_ask or 0.0
@@ -263,11 +259,6 @@ def _classify_bucket(
         fair_yes_prob is not None
         and model_n >= MODEL_BIAS_MIN_SAMPLES
     )
-
-    # Tier 0 (override) — model says this bucket is a near-certain WINNER
-    if model_trustworthy and fair_yes_prob >= MODEL_WINNER_YES_PROB:
-        return ("winner-sell", WINNER_SELL_PRICE,
-                f"model-winner fair_yes={fair_yes_prob:.2f}")
 
     # Tier 1 — winner-sell on the peak OR any bucket with yes_bid >= 0.50
     if is_peak:
@@ -285,20 +276,18 @@ def _classify_bucket(
         if not (in_closure and gap == max(1, min_gap - 1)):
             return None
 
-    # Tier 2 (override) — model says this bucket is a near-certain LOSER.
-    # Fade immediately at the gap-appropriate price even if yes_bid hasn't
-    # dropped yet. This is the aapang "fade before market consensus" edge.
-    if model_trustworthy and fair_yes_prob <= MODEL_FADE_YES_PROB:
-        return ("dust-fade", _dust_fade_price(gap, yes_bid),
-                f"model-fade fair_yes={fair_yes_prob:.3f}")
-
-    # Tier 3 — price-driven dust detection. Use the ASK (the higher of bid/ask)
+    # Tier 2 — price-driven dust detection. Use the ASK (the higher of bid/ask)
     # as the sole gate: a book is "dust" only if ask <= DUST_ASK_THRESHOLD.
     # Wide spreads (e.g. bid=0.001 ask=0.03) fall through to placeholder and
     # rest high, since the ask shows buyer interest above the bid.
     is_dust = ask <= DUST_ASK_THRESHOLD
 
     if is_dust:
+        # Model veto: if a trustworthy model says fair_yes is meaningfully
+        # above dust, refuse to fade and rest at placeholder instead.
+        if model_trustworthy and fair_yes_prob > MODEL_VETO_YES_PROB:
+            return ("placeholder", WINNER_SELL_PRICE,
+                    f"model-veto fair_yes={fair_yes_prob:.3f} ask={ask:.4f}")
         return ("dust-fade", _dust_fade_price(gap, yes_bid),
                 f"price-dust bid={bid:.4f} ask={ask:.4f}")
     return ("placeholder", WINNER_SELL_PRICE,
