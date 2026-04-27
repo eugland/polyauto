@@ -14,13 +14,84 @@ import json
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
 import requests
 
-from experiment.temp_market_collector import _extract_icao, _resolve_coords_and_tz
+# Hardcoded city slug → IANA timezone. Polymarket only runs daily-temperature
+# markets in this fixed set of cities, so we don't need METAR / geocoding /
+# timezonefinder lookups (each of which costs an HTTP round-trip per event).
+_CITY_TZ: dict[str, str] = {
+    # Europe
+    "london": "Europe/London",
+    "paris": "Europe/Paris",
+    "munich": "Europe/Berlin",
+    "milan": "Europe/Rome",
+    "madrid": "Europe/Madrid",
+    "warsaw": "Europe/Warsaw",
+    "amsterdam": "Europe/Amsterdam",
+    "moscow": "Europe/Moscow",
+    "helsinki": "Europe/Helsinki",
+    "istanbul": "Europe/Istanbul",
+    "ankara": "Europe/Istanbul",
+    # Africa / Middle East
+    "cape-town": "Africa/Johannesburg",
+    "lagos": "Africa/Lagos",
+    "tel-aviv": "Asia/Jerusalem",
+    "jeddah": "Asia/Riyadh",
+    # South + East Asia
+    "karachi": "Asia/Karachi",
+    "lucknow": "Asia/Kolkata",
+    "seoul": "Asia/Seoul",
+    "busan": "Asia/Seoul",
+    "tokyo": "Asia/Tokyo",
+    "hong-kong": "Asia/Hong_Kong",
+    "shanghai": "Asia/Shanghai",
+    "beijing": "Asia/Shanghai",
+    "wuhan": "Asia/Shanghai",
+    "chongqing": "Asia/Shanghai",
+    "chengdu": "Asia/Shanghai",
+    "shenzhen": "Asia/Shanghai",
+    "guangzhou": "Asia/Shanghai",
+    "taipei": "Asia/Taipei",
+    "singapore": "Asia/Singapore",
+    "kuala-lumpur": "Asia/Kuala_Lumpur",
+    "manila": "Asia/Manila",
+    "jakarta": "Asia/Jakarta",
+    # Oceania
+    "wellington": "Pacific/Auckland",
+    "sydney": "Australia/Sydney",
+    "melbourne": "Australia/Melbourne",
+    # Americas
+    "sao-paulo": "America/Sao_Paulo",
+    "buenos-aires": "America/Argentina/Buenos_Aires",
+    "panama-city": "America/Panama",
+    "mexico-city": "America/Mexico_City",
+    "toronto": "America/Toronto",
+    "nyc": "America/New_York",
+    "new-york": "America/New_York",
+    "new-york-city": "America/New_York",
+    "atlanta": "America/New_York",
+    "miami": "America/New_York",
+    "chicago": "America/Chicago",
+    "austin": "America/Chicago",
+    "dallas": "America/Chicago",
+    "houston": "America/Chicago",
+    "denver": "America/Denver",
+    "los-angeles": "America/Los_Angeles",
+    "san-francisco": "America/Los_Angeles",
+    "seattle": "America/Los_Angeles",
+}
+
+
+def _tz_for_slug(slug: str) -> str | None:
+    m = _SLUG_RE.match(slug or "")
+    if not m:
+        return None
+    return _CITY_TZ.get(m.group(1).lower())
 
 _BUCKET_NUM_RE = re.compile(r"(-?\d+(?:\.\d+)?)")
 # Matches "be 21°C", "be between 62-63°F", "be 25°C or higher" etc. Anchored on
@@ -85,23 +156,11 @@ def _city_date_from_slug(slug: str) -> tuple[str | None, datetime | None, str | 
     return city, dt, date_str
 
 
-_tz_cache: dict[tuple[str | None, str | None], str | None] = {}
-
-
-def _cached_tz(icao: str | None, city: str | None) -> str | None:
-    key = (icao, city)
-    if key not in _tz_cache:
-        _, _, tz = _resolve_coords_and_tz(icao, city)
-        _tz_cache[key] = tz
-    return _tz_cache[key]
-
-
 def _resolution_dt(event: dict, city: str | None, event_date: datetime | None) -> datetime | None:
     """Resolution = local 3pm at event's location, returned as a tz-aware datetime."""
     if not event_date:
         return None
-    icao = _extract_icao(event.get("description") or "")
-    tz_name = _cached_tz(icao, city)
+    tz_name = _tz_for_slug(event.get("slug") or "")
     if not tz_name:
         return None
     try:
@@ -162,39 +221,49 @@ def fetch_event(slug: str) -> dict | None:
     return None
 
 
+_PAGE_LIMIT = 20
+_MAX_PAGES = 10  # 200 events per tag is well above the live universe
+
+
+def _fetch_one_page(tag: str, page: int, end_max: str) -> list[dict]:
+    resp = requests.get(
+        GAMMA_EVENTS_URL,
+        params={
+            "tag_slug": tag,
+            "closed": "false",
+            "limit": _PAGE_LIMIT,
+            "offset": page * _PAGE_LIMIT,
+            "end_date_max": end_max,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body if isinstance(body, list) else []
+
+
 def fetch_temperature_events(window_hours: int = 48) -> list[dict]:
-    """Page through Gamma weather/highest-temperature events ending within the window."""
+    """Speculatively fetch all (tag × page) combinations in parallel and trim.
+    Pagination is otherwise sequential because we stop on the first short page."""
     end_max = (datetime.now(timezone.utc) + timedelta(hours=window_hours)).isoformat()
+    tags = ("highest-temperature", "weather")
+    jobs = [(tag, page) for tag in tags for page in range(_MAX_PAGES)]
+
+    with ThreadPoolExecutor(max_workers=min(16, len(jobs))) as pool:
+        results = list(pool.map(lambda j: _fetch_one_page(j[0], j[1], end_max), jobs))
+
     out: list[dict] = []
     seen: set[str] = set()
-    for tag in ("highest-temperature", "weather"):
-        for page in range(30):
-            resp = requests.get(
-                GAMMA_EVENTS_URL,
-                params={
-                    "tag_slug": tag,
-                    "closed": "false",
-                    "limit": 20,
-                    "offset": page * 20,
-                    "end_date_max": end_max,
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            events = resp.json()
-            if not isinstance(events, list) or not events:
-                break
-            for ev in events:
-                slug = str(ev.get("slug") or "")
-                if not _SLUG_RE.match(slug):
-                    continue
-                eid = str(ev.get("id") or slug)
-                if eid in seen:
-                    continue
-                seen.add(eid)
-                out.append(ev)
-            if len(events) < 20:
-                break
+    for events in results:
+        for ev in events:
+            slug = str(ev.get("slug") or "")
+            if not _SLUG_RE.match(slug):
+                continue
+            eid = str(ev.get("id") or slug)
+            if eid in seen:
+                continue
+            seen.add(eid)
+            out.append(ev)
     return out
 
 
@@ -202,8 +271,10 @@ def fetch_events_resolving_within(hours: int) -> list[dict]:
     """Return events whose local-3pm resolution falls in [now, now+hours]."""
     now_utc = datetime.now(timezone.utc)
     cutoff = now_utc + timedelta(hours=hours)
+    events = fetch_temperature_events(window_hours=max(hours + 24, 48))
+
     keep: list[tuple[datetime, dict]] = []
-    for ev in fetch_temperature_events(window_hours=max(hours + 24, 48)):
+    for ev in events:
         slug = ev.get("slug") or ""
         city, ed, _ = _city_date_from_slug(slug)
         rdt = _resolution_dt(ev, city, ed)
@@ -273,15 +344,16 @@ def _fmt(p: float | None) -> str:
     return f"{p:>5.3f}" if p is not None else "  -  "
 
 
-def render(
+def summarize_event(
     event: dict,
     *,
     live: bool = False,
     max_no: float = 1.0,
     min_no_bid: float | None = None,
     min_delta: float = 0,
-) -> str | None:
-    """Return one-line summary, or None if no bucket passes the filters."""
+) -> dict | None:
+    """Pick the lowest-temp tradable bucket for this event and return a dict
+    of the fields the CLI/API both need. Returns None if nothing passes."""
     slug = event.get("slug") or ""
     url = f"https://polymarket.com/event/{slug}" if slug else ""
     city, event_date, _date_str = _city_date_from_slug(slug)
@@ -290,18 +362,13 @@ def render(
     markets = _parse_json_list(event.get("markets")) or []
     rows = [market_row(m, live=live) for m in markets if isinstance(m, dict)]
     if not rows:
-        return f"{city or slug} | (no markets)"
+        return None
 
     fav = max(
         (r for r in rows if r["yes_bid"] is not None),
         key=lambda r: r["yes_bid"],
         default=None,
     )
-    fav_str = (
-        f"exp: {_bucket_label(fav['question'])} ({int(round(fav['yes_bid'] * 100))}c)"
-        if fav else "exp: -"
-    )
-    resolves = _resolution_local(event, slug, city, event_date) or ""
     fav_temp = _bucket_sort_key(fav["question"]) if fav else None
 
     def _passes(r: dict) -> bool:
@@ -309,10 +376,13 @@ def render(
             return False
         if min_no_bid is not None and (r["no_bid"] is None or r["no_bid"] < min_no_bid):
             return False
+        bucket_temp = _bucket_sort_key(r["question"])
+        if fav_temp is not None and bucket_temp >= fav_temp:
+            return False  # only consider buckets strictly below the favorite
         if min_delta > 0:
             if fav_temp is None:
                 return False
-            if abs(_bucket_sort_key(r["question"]) - fav_temp) < min_delta:
+            if abs(bucket_temp - fav_temp) < min_delta:
                 return False
         return True
 
@@ -320,17 +390,54 @@ def render(
     if not tradable:
         return None
     tradable.sort(key=lambda r: (r["closed"], _bucket_sort_key(r["question"])))
-
     r = tradable[0]
-    ask_str = f"{r['no_ask'] * 100:>5.1f}c"
-    bucket = f"{_bucket_label(r['question']):>5}  {ask_str}"
-    if fav:
-        delta = abs(_bucket_sort_key(r["question"]) - fav_temp)
-        delta_s = f"{delta:.0f}" if delta == int(delta) else f"{delta:g}"
-        exp_str = f"{fav_str} Δ: {delta_s}"
+
+    rdt = _resolution_dt(event, city, event_date)
+    delta = abs(_bucket_sort_key(r["question"]) - fav_temp) if fav else None
+    return {
+        "city": city or "",
+        "date": date_short,
+        "bucket_label": _bucket_label(r["question"]),
+        "no_ask": r["no_ask"],
+        "no_bid": r["no_bid"],
+        "fav_label": _bucket_label(fav["question"]) if fav else None,
+        "fav_yes_bid": fav["yes_bid"] if fav else None,
+        "delta": delta,
+        "resolves_local": rdt.astimezone().strftime("%m-%d  %H:%M") if rdt else "",
+        "resolves_utc": rdt.astimezone(timezone.utc).isoformat() if rdt else None,
+        "url": url,
+        "slug": slug,
+    }
+
+
+def summarize_events_within(
+    hours: int,
+    *,
+    max_no: float = 1.0,
+    min_no_bid: float = 0.95,
+    min_delta: float = 2,
+) -> list[dict]:
+    out: list[dict] = []
+    for ev in fetch_events_resolving_within(hours):
+        s = summarize_event(ev, max_no=max_no, min_no_bid=min_no_bid, min_delta=min_delta)
+        if s:
+            out.append(s)
+    return out
+
+
+def render(event: dict, **kwargs: Any) -> str | None:
+    """One-line CLI representation built from summarize_event()."""
+    s = summarize_event(event, **kwargs)
+    if s is None:
+        return None
+    bucket = f"{s['bucket_label']:>5}  {s['no_ask'] * 100:>5.1f}c"
+    if s["fav_label"]:
+        d = s["delta"]
+        delta_s = f"{d:.0f}" if d == int(d) else f"{d:g}"
+        exp_str = f"exp: {s['fav_label']} ({int(round(s['fav_yes_bid'] * 100))}c) Δ: {delta_s}"
     else:
-        exp_str = fav_str
-    parts = [city or "", date_short, bucket, exp_str, resolves, url]
+        exp_str = "exp: -"
+    parts = [s["city"], s["date"], bucket, exp_str, s["resolves_local"], s["url"]]
     return " | ".join(p for p in parts if p)
 
 
@@ -343,8 +450,8 @@ def main() -> int:
                     help="Hit CLOB /price for fresher YES bid/ask (slower, one extra request per market)")
     ap.add_argument("--max-no", type=float, default=1.0,
                     help="Only show buckets with NO ask < this (default 1.0 = drop only fully-dead rows)")
-    ap.add_argument("--within", type=int, default=24,
-                    help="When no slug is given, list events resolving within this many hours (default 24)")
+    ap.add_argument("--within", type=int, default=12,
+                    help="When no slug is given, list events resolving within this many hours (default 12)")
     ap.add_argument("--min-no-bid", type=float, default=0.95,
                     help="Bulk list only: drop buckets whose NO bid < this (default 0.95)")
     ap.add_argument("--min-delta", type=float, default=2,

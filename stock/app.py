@@ -334,6 +334,28 @@ def create_app(db_path: str) -> Flask:
     def weather_model_index():
         return render_template("weather_model.html")
 
+    @app.route("/polymarket-temps")
+    def polymarket_temps():
+        return render_template("polymarket_temps.html")
+
+    @app.route("/api/polymarket-temps")
+    def api_polymarket_temps():
+        try:
+            from experiment.view import summarize_events_within
+            within = int(request.args.get("within", "12"))
+            min_no_bid = float(request.args.get("min_no_bid", "0.95"))
+            min_delta = float(request.args.get("min_delta", "2"))
+            max_no = float(request.args.get("max_no", "1.0"))
+            rows = summarize_events_within(
+                within, max_no=max_no, min_no_bid=min_no_bid, min_delta=min_delta,
+            )
+            return jsonify({
+                "rows": rows, "within": within,
+                "filters": {"min_no_bid": min_no_bid, "min_delta": min_delta, "max_no": max_no},
+            })
+        except Exception as exc:
+            return jsonify({"rows": [], "error": str(exc)}), 500
+
     @app.route("/api/weather-model/cities")
     def api_weather_model_cities():
         try:
