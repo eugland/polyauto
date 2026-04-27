@@ -96,7 +96,6 @@ def run(
     )
     from automata.parser import (
         _extract_no_token_id,
-        _extract_yes_token_id,
         _parse_threshold,
     )
     from automata.polymarket import fetch_temperature_markets_payload
@@ -204,92 +203,176 @@ def run(
                 except Exception:
                     metar_stats[futs[fut]] = (None, None)
 
-    # ── Forecast cross-check disabled (observed-only mode) ───────────────
-    # Previously cross-checked Open-Meteo forecast against bracket upper bound.
-    # Kept commented for reference; current logic uses METAR max_so_far only.
-    # forecasts: dict[tuple[str, str], dict[str, float | None]] = {}
-    # from automata.weather import fetch_coords_for_stations, fetch_forecasts_for_events
-    # icao_set = {ev["icao"] for _, ev in selected if ev["icao"]}
-    # coords = fetch_coords_for_stations(list(icao_set)) if icao_set else {}
-    # ev_list = [{"icao": ev["icao"], "date": ev["date"], "unit": ev["unit"]}
-    #            for _, ev in selected if ev["icao"] and ev["date"]]
-    # if ev_list:
-    #     forecasts = fetch_forecasts_for_events(ev_list, coords)
-
-    # ── Build per-event candidate brackets ───────────────────────────────
-    candidates: list[dict[str, Any]] = []
+    # ── Pre-parse brackets for every event + collect NO token ids ────────
+    parsed_by_slug: dict[str, list[tuple[dict, tuple[float, float | None, str, str]]]] = {}
+    all_no_token_ids: list[str] = []
     for slug, ev in selected:
-        unit = ev["unit"] or "C"
-        margin = _safety_margin(unit)
-        metar_key = (ev["icao"] or "", ev["date"])
-        cur_temp, max_so_far = metar_stats.get(metar_key, (None, None))
-
-        # Pre-parse all brackets in this event so we can locate the highest one.
         parsed_markets: list[tuple[dict, tuple[float, float | None, str, str]]] = []
         for raw in ev["markets"]:
             if raw.get("closed") or raw.get("active") is False:
                 continue
             question = str(raw.get("groupItemTitle") or raw.get("question") or "-")
             parsed = _parse_threshold(question)
-            if parsed:
-                parsed_markets.append((raw, parsed))
+            if not parsed:
+                continue
+            parsed_markets.append((raw, parsed))
+            no_token = _extract_no_token_id(raw)
+            if no_token:
+                all_no_token_ids.append(no_token)
+        parsed_by_slug[slug] = parsed_markets
 
-        # Highest bracket = the one with the largest lower-bound (typically
-        # "Above X°"). Falls back to the bracket with the largest upper.
-        highest_bracket: dict[str, Any] | None = None
-        best_lower = -float("inf")
-        best_upper = -float("inf")
-        for raw, (threshold, threshold_hi, parsed_unit, direction) in parsed_markets:
-            lower = _bracket_lower(direction, threshold, threshold_hi)
-            upper = _bracket_upper(direction, threshold, threshold_hi)
-            if lower is not None and lower > best_lower:
-                best_lower = lower
-                highest_bracket = {
+    # ── Bulk-fetch NO books for every parsed bracket (used by both the
+    #    per-event log line and the candidate-gate further down) ─────────
+    log.info("  fetching books for %d brackets across %d events...", len(all_no_token_ids), len(selected))
+    no_books: dict[str, dict] = get_best_books_bulk(host, all_no_token_ids) if all_no_token_ids else {}
+
+    # ── Open-Meteo daily-max forecast per event (parallel) ───────────────
+    from automata.weather import fetch_coords_for_stations, fetch_open_meteo_high
+    icao_set = {ev["icao"] for _, ev in selected if ev["icao"]}
+    station_coords = fetch_coords_for_stations(list(icao_set)) if icao_set else {}
+    forecast_highs: dict[tuple[str, str], float | None] = {}
+    forecast_tasks: list[tuple[str, str, str, tuple[float, float]]] = []
+    for _, ev in selected:
+        if not ev["icao"] or not ev["date"]:
+            continue
+        coords = station_coords.get(ev["icao"])
+        if not coords:
+            continue
+        forecast_tasks.append((ev["icao"], ev["date"], ev["unit"] or "C", coords))
+    if forecast_tasks:
+        with ThreadPoolExecutor(max_workers=min(10, len(forecast_tasks))) as ex:
+            futs = {
+                ex.submit(fetch_open_meteo_high, lat, lon, date, unit): (icao, date)
+                for (icao, date, unit, (lat, lon)) in forecast_tasks
+            }
+            for fut in as_completed(futs):
+                key = futs[fut]
+                try:
+                    forecast_highs[key] = fut.result()
+                except Exception:
+                    forecast_highs[key] = None
+
+    def _bracket_sort_key(parsed_t: tuple[float, float | None, str, str]) -> tuple[float, float]:
+        # Below-X → (-inf, X);  range A-B → (A, B);  Above-X → (X, +inf)
+        threshold, threshold_hi, _u, direction = parsed_t
+        lo = _bracket_lower(direction, threshold, threshold_hi)
+        up = _bracket_upper(direction, threshold, threshold_hi)
+        return (lo if lo is not None else -float("inf"), up if up is not None else float("inf"))
+
+    # ── Build per-event candidate brackets ───────────────────────────────
+    candidates: list[dict[str, Any]] = []
+    scan_fmt = "  %-14s  %6s  %6s  %6s  %6s  %-7s  %-13s  %-5s  %4s  %7s"
+    log.info(
+        scan_fmt,
+        "city", "t_res", "cur", "max", "fc",
+        "low", "no(bid/ask)", "exp", "yes%", "dist",
+    )
+    log.info(
+        scan_fmt,
+        "-" * 14, "-" * 6, "-" * 6, "-" * 6, "-" * 6,
+        "-" * 7, "-" * 13, "-" * 5, "-" * 4, "-" * 7,
+    )
+    for slug, ev in selected:
+        unit = ev["unit"] or "C"
+        margin = _safety_margin(unit)
+        metar_key = (ev["icao"] or "", ev["date"])
+        cur_temp, max_so_far = metar_stats.get(metar_key, (None, None))
+        parsed_markets = parsed_by_slug[slug]
+
+        # Expected = bracket the market thinks is most likely (highest implied
+        # YES, i.e., lowest NO bid). Computed first so it can anchor the
+        # "lowest_bet" filter below. Pick a representative °temp: midpoint for
+        # ranges, threshold for higher/below/exact.
+        expected: dict[str, Any] | None = None
+        expected_no_bid = float("inf")
+        for raw, parsed in parsed_markets:
+            no_tok = _extract_no_token_id(raw)
+            if not no_tok:
+                continue
+            bid = no_books.get(no_tok, {}).get("bid")
+            if bid is None:
+                continue
+            if bid < expected_no_bid:
+                expected_no_bid = bid
+                threshold, threshold_hi, parsed_unit, direction = parsed
+                if direction == "range" and threshold_hi is not None:
+                    exp_temp = (threshold + threshold_hi) / 2
+                else:
+                    exp_temp = threshold
+                expected = {
                     "question": str(raw.get("groupItemTitle") or raw.get("question") or "-"),
-                    "lower": lower,
-                    "direction": direction,
+                    "yes_implied": 1.0 - bid,
+                    "temp": exp_temp,
                     "unit": parsed_unit or unit,
                 }
-            elif lower is None and upper is not None and best_lower == -float("inf") and upper > best_upper:
-                best_upper = upper
-                highest_bracket = {
+
+        # Lowest bettable LOW bracket: lowest "Below/range/exact" whose upper
+        # bound is strictly below the market-expected high AND whose NO bid
+        # falls in the display window (96¢, 99.90¢). The window drops books
+        # locked at near-1 (no upside) and below 96¢ (too uncertain).
+        display_min_no = 0.96
+        display_max_no = 0.999
+        lowest_bet: dict[str, Any] | None = None
+        if expected is not None:
+            for raw, parsed in sorted(parsed_markets, key=lambda rp: _bracket_sort_key(rp[1])):
+                threshold, threshold_hi, parsed_unit, direction = parsed
+                upper = _bracket_upper(direction, threshold, threshold_hi)
+                if upper is None or upper >= expected["temp"]:
+                    continue
+                no_tok = _extract_no_token_id(raw)
+                if not no_tok:
+                    continue
+                book = no_books.get(no_tok, {})
+                bid = book.get("bid")
+                ask = book.get("ask")
+                if bid is None or bid <= display_min_no or bid >= display_max_no:
+                    continue
+                lowest_bet = {
                     "question": str(raw.get("groupItemTitle") or raw.get("question") or "-"),
-                    "lower": upper,  # use upper as fallback reference
-                    "direction": direction,
+                    "no_bid": bid,
+                    "no_ask": ask,
+                    "temp": upper,
                     "unit": parsed_unit or unit,
                 }
+                break
 
-        # Time to resolution via 3pm-local method (resolution_dt already computed).
+        forecast_high = forecast_highs.get((ev["icao"] or "", ev["date"]))
         hours_to_res = (ev["resolution_dt"] - now_utc).total_seconds() / 3600.0
 
-        if highest_bracket is not None and max_so_far is not None:
-            distance_to_top = highest_bracket["lower"] - max_so_far
-            log.info(
-                "  %s: current=%s°%s max_so_far=%.1f°%s  highest_bracket='%s' (lower=%.1f°%s) "
-                "distance=%+.1f°  t_to_res=%.2fh",
-                ev["city"],
-                f"{cur_temp:.1f}" if cur_temp is not None else "n/a", unit,
-                max_so_far, unit,
-                highest_bracket["question"], highest_bracket["lower"], highest_bracket["unit"],
-                distance_to_top, hours_to_res,
-            )
-        elif highest_bracket is not None:
-            log.info(
-                "  %s: current=%s°%s max_so_far=n/a  highest_bracket='%s' (lower=%.1f°%s) "
-                "t_to_res=%.2fh",
-                ev["city"],
-                f"{cur_temp:.1f}" if cur_temp is not None else "n/a", unit,
-                highest_bracket["question"], highest_bracket["lower"], highest_bracket["unit"],
-                hours_to_res,
-            )
+        cur_str = f"{cur_temp:.1f}°{unit}" if cur_temp is not None else "n/a"
+        max_str = f"{max_so_far:.1f}°{unit}" if max_so_far is not None else "n/a"
+        fc_str = f"{forecast_high:.1f}°{unit}" if forecast_high is not None else "n/a"
+        t_res_str = f"{hours_to_res:.2f}h"
+
+        if lowest_bet is not None:
+            low_str = f"≤{lowest_bet['temp']:.0f}°{lowest_bet['unit']}"
+            bid_str = f"{lowest_bet['no_bid']*100:.2f}¢"
+            ask = lowest_bet.get("no_ask")
+            ask_cell = f"{ask*100:.2f}¢" if ask is not None else "—"
+            no_str = f"{bid_str}/{ask_cell}"
         else:
-            log.info(
-                "  %s: current=%s°%s max_so_far=%s  highest_bracket=n/a  t_to_res=%.2fh",
-                ev["city"],
-                f"{cur_temp:.1f}" if cur_temp is not None else "n/a", unit,
-                f"{max_so_far:.1f}°{unit}" if max_so_far is not None else "n/a",
-                hours_to_res,
-            )
+            low_str = "n/a"
+            no_str = "n/a"
+
+        if expected is not None:
+            exp_str = f"{expected['temp']:.0f}°{expected['unit']}"
+            yes_pct_str = f"{expected['yes_implied']*100:.0f}%"
+        else:
+            exp_str = "n/a"
+            yes_pct_str = "n/a"
+
+        if lowest_bet is not None and expected is not None:
+            distance = expected["temp"] - lowest_bet["temp"]
+            sign = "+" if distance >= 0 else ""
+            dist_str = f"{sign}{distance:.1f}°{unit}"
+        else:
+            dist_str = "n/a"
+
+        log.info(
+            scan_fmt,
+            ev["city"], t_res_str, cur_str, max_str, fc_str,
+            low_str, no_str, exp_str, yes_pct_str, dist_str,
+        )
 
         if max_so_far is None:
             continue
@@ -307,7 +390,6 @@ def run(
                 continue
             question = str(raw.get("groupItemTitle") or raw.get("question") or "-")
             no_token = _extract_no_token_id(raw)
-            yes_token = _extract_yes_token_id(raw)
             if not no_token:
                 continue
             event_brackets.append({
@@ -318,7 +400,6 @@ def run(
                 "unit": parsed_unit or unit,
                 "question": question,
                 "token_id": no_token,
-                "yes_token_id": yes_token,
                 "end_date": _fmt_end_date(raw.get("endDateIso") or raw.get("endDate")),
                 "resolution_dt": ev["resolution_dt"],
                 "threshold": threshold,
@@ -340,19 +421,15 @@ def run(
         log.info("  no safe low brackets across selected events — nothing to do")
         return
 
-    # ── Fetch order books for all candidates, gate on bid/ask ────────────
-    no_ids = [c["token_id"] for c in candidates]
-    yes_ids = [c["yes_token_id"] for c in candidates if c["yes_token_id"]]
-    log.info("  fetching order books for %d candidate brackets...", len(candidates))
-    books = get_best_books_bulk(host, no_ids + yes_ids)
+    # ── Gate on bid/ask using the already-fetched NO books. The bot is
+    #    NO-only, so no YES fetch is needed.
     bettable: list[dict[str, Any]] = []
     for c in candidates:
-        b = books.get(c["token_id"], {})
+        b = no_books.get(c["token_id"], {})
         ask = b.get("ask")
         bid = b.get("bid")
         c["bid"] = bid
         c["ask"] = ask
-        c["yes_price"] = books.get(c["yes_token_id"], {}).get("ask") if c["yes_token_id"] else None
         if ask is None:
             c["skip_reason"] = "no asks in book"
         elif ask > max_no_price:
@@ -383,26 +460,27 @@ def run(
     # Sort: closest resolution first, then largest slack
     bettable.sort(key=lambda c: (c["resolution_dt"] or _FAR_FUTURE, -c["slack"]))
 
-    # ── Dry run: print and exit ───────────────────────────────────────────
+    # ── Always print the table of valid candidates (both modes) ──────────
+    user_tz = ZoneInfo(config.get_str("USER_TZ", "weather", "user_tz", "America/Los_Angeles"))
+    label = "[DRY RUN]" if dry_run else "[LIVE]"
+    print(f"  {label} {len(bettable)} VALID candidates (both bid+ask, NO ≥{min_no_price*100:.0f}¢, sorted by closest-resolution then largest-slack):")
+    print(f"    {'No':>7}  {'shares':>6}  {'cost':>6}  {'resolves (PT)':<16}  {'city':<15}  {'bracket up':>10}  {'evidence':>10}  {'slack':>6}  question")
+    print(f"    {'-'*7}  {'-'*7}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*10}  {'-'*6}  {'-'*22}")
+    for c in bettable:
+        cost = round(bet_shares * c["ask"], 2)
+        res_local = c["resolution_dt"].astimezone(user_tz).strftime("%b %d %H:%M") if c["resolution_dt"] else "?"
+        print(
+            f"    {c['ask']*100:6.2f}¢  "
+            f"{bet_shares:>6.0f}sh  ${cost:>5.2f}  "
+            f"{res_local:<16}  {c['city']:<15}  "
+            f"{c['bracket_upper']:>7.1f}°{c['unit']}  "
+            f"{c['max_so_far']:>7.1f}°{c['unit']}  "
+            f"{c['slack']:>5.1f}°  "
+            f"{c['question']}"
+        )
+    print()
+
     if dry_run:
-        user_tz = ZoneInfo(config.get_str("USER_TZ", "weather", "user_tz", "America/Los_Angeles"))
-        print(f"  [DRY RUN] {len(bettable)} safe low-bracket NO bets:")
-        print(f"    {'No':>7}  {'Yes':>7}  {'shares':>6}  {'cost':>6}  {'resolves (PT)':<16}  {'city':<15}  {'bracket up':>10}  {'evidence':>10}  {'slack':>6}  question")
-        print(f"    {'-'*7}  {'-'*7}  {'-'*7}  {'-'*6}  {'-'*16}  {'-'*15}  {'-'*10}  {'-'*10}  {'-'*6}  {'-'*22}")
-        for c in bettable:
-            cost = round(bet_shares * c["ask"], 2)
-            res_local = c["resolution_dt"].astimezone(user_tz).strftime("%b %d %H:%M") if c["resolution_dt"] else "?"
-            print(
-                f"    {c['ask']*100:6.2f}¢  "
-                f"{(c['yes_price']*100 if c['yes_price'] is not None else 0):6.2f}¢  "
-                f"{bet_shares:>6.0f}sh  ${cost:>5.2f}  "
-                f"{res_local:<16}  {c['city']:<15}  "
-                f"{c['bracket_upper']:>7.1f}°{c['unit']}  "
-                f"{c['max_so_far']:>7.1f}°{c['unit']}  "
-                f"{c['slack']:>5.1f}°  "
-                f"{c['question']}"
-            )
-        print()
         return
 
     # ── Live: place orders ────────────────────────────────────────────────
@@ -544,7 +622,7 @@ def run(
                 order_id=order_id,
                 shares=shares_needed,
                 no_price=quote_price,
-                yes_price=c.get("yes_price"),
+                yes_price=None,
                 cost_usdc=cost,
                 unit=c.get("unit"),
                 threshold=c.get("threshold"),

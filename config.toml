@@ -106,8 +106,8 @@ max_hours_to_resolution = 24.0
 
 # ── Selection ─────────────────────────────────────────────────────────────
 # Number of closest-resolving events to scan, and max safe brackets per event.
-target_events = 50
-max_brackets_per_event = 3
+target_events = 500
+max_brackets_per_event = 20
 
 # ── Forecast cross-check ──────────────────────────────────────────────────
 # Disabled: lowbuy uses METAR max-so-far only (no Open-Meteo forecast cross-check).
