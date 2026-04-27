@@ -77,9 +77,16 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[logging.StreamHandler(), _file_handler],
 )
-# basicConfig is a no-op if root logger already has handlers — force-attach file handler
+# basicConfig is a no-op if root logger already has handlers — force-attach file
+# handler. Dedupe by baseFilename so other modules that already attached an
+# `automata.log` handler don't get a second copy (would cause every line to
+# appear twice in the file).
 _root = logging.getLogger()
-if _file_handler not in _root.handlers:
+if not any(
+    isinstance(h, logging.FileHandler)
+    and getattr(h, "baseFilename", "") == str(_LOG_FILE)
+    for h in _root.handlers
+):
     _root.addHandler(_file_handler)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("automata")
@@ -386,6 +393,48 @@ def run(
             elif live_bid < min_no_price:
                 c["skip_reason"] = f"bid {live_bid*100:.2f}¢ < min {min_no_price*100:.2f}¢"
 
+        # Mutex guard: within each event, block NO bets on buckets adjacent
+        # (by threshold order) to the peer with the highest YES ask. Protects
+        # against single-bucket forecast errors flipping the outcome.
+        by_event: dict[str, list[dict[str, Any]]] = {}
+        for c in batch_candidates:
+            by_event.setdefault(c["event_slug"], []).append(c)
+        for peers in by_event.values():
+            if len(peers) < 2:
+                continue
+            peers_sorted = sorted(
+                peers,
+                key=lambda p: (p["threshold"], p.get("threshold_hi") or p["threshold"]),
+            )
+            peak_idx = None
+            peak_yes = -1.0
+            for i, p in enumerate(peers_sorted):
+                yp = p.get("yes_price")
+                if yp is None:
+                    continue
+                if yp > peak_yes:
+                    peak_yes = yp
+                    peak_idx = i
+            # Attach position + peak index so downstream selection can prefer
+            # the bucket farthest (by threshold order) from the peak-YES one.
+            for i, p in enumerate(peers_sorted):
+                p["_bucket_idx"] = i
+                p["_peak_idx"] = peak_idx
+            if peak_idx is None:
+                continue
+            peak = peers_sorted[peak_idx]
+            for i, p in enumerate(peers_sorted):
+                if p.get("skip_reason"):
+                    continue
+                if abs(i - peak_idx) == 1:
+                    p["skip_reason"] = (
+                        f"adjacent to highest-YES bucket ({peak['question']} YES={peak_yes*100:.1f}¢)"
+                    )
+                    log.info(
+                        "  [mutex-guard] %s %s blocked — adjacent to favorite %s (YES=%.1f¢)",
+                        p["city"], p["question"], peak["question"], peak_yes * 100,
+                    )
+
         viable = [c for c in batch_candidates if not c["skip_reason"] and c["city"] not in city_blacklist]
         if not viable:
             log.info("  batch %d: 0 viable (price/blacklist) — next batch", batch_num)
@@ -517,11 +566,22 @@ def run(
     # ── Ranked candidates per city, capped to 3 closest-resolving markets ───
     bettable = [c for c in all_candidates if not c["skip_reason"] and c["city"] not in city_blacklist]
 
+    def _dist_from_peak(c: dict[str, Any]) -> int:
+        bi, pi = c.get("_bucket_idx"), c.get("_peak_idx")
+        if bi is None or pi is None:
+            return 0
+        return abs(bi - pi)
+
     ranked_per_city: dict[str, list[dict]] = {}
     for c in bettable:
         ranked_per_city.setdefault(c["city"], []).append(c)
+    # Primary: earliest-resolving event first. Secondary: within the same event
+    # (= tied resolution_dt), prefer the qualifying bucket farthest from the
+    # peak-YES bucket, so we don't sit one bucket away from the market favorite.
     for city in ranked_per_city:
-        ranked_per_city[city].sort(key=lambda c: c.get("resolution_dt") or _FAR_FUTURE)
+        ranked_per_city[city].sort(
+            key=lambda c: (c.get("resolution_dt") or _FAR_FUTURE, -_dist_from_peak(c)),
+        )
 
     # Pick the best candidate per city, then take the 10 soonest globally
     top_n = sorted(
@@ -530,6 +590,11 @@ def run(
     )[:10]
     ranked_per_city = {c["city"]: [c] for c in top_n}
     log.info("  %d qualifying market(s) selected (top 10 by resolution)", len(ranked_per_city))
+    for c in top_n:
+        log.info(
+            "    - %s %s  (dist %d from peak-YES bucket)",
+            c["city"], c["question"], _dist_from_peak(c),
+        )
 
     # ── Dry run: show only autobet (★) items per city ───────────────────────────
     if dry_run:
@@ -626,13 +691,12 @@ def run(
         log.info("Balance cap enabled: available $%.2f, capped spend $%.2f", balance, capped_balance)
         balance = capped_balance
 
-    if balance < bet_shares:
-        bet_shares = round(0.9 * balance / max_no_price, 2)
-        log.info("Balance-adjusted bet_shares: %.2f (90%% of $%.2f)", bet_shares, balance)
-    else:
-        n_bets = math.ceil(balance / bet_shares)
-        bet_shares = round((balance - 0.10) / n_bets / max_no_price, 2)
-        log.info("Balance-adjusted bet_shares: %.2f (split $%.2f across %d bets, 0.10 margin)", bet_shares, balance, n_bets)
+    bet_shares = 30.0
+    min_cost = bet_shares * max_no_price
+    if balance < min_cost:
+        log.info("Balance $%.2f < $%.2f required for %.0f shares @ %.2f¢ — skipping", balance, min_cost, bet_shares, max_no_price * 100)
+        return
+    log.info("Fixed bet_shares: %.0f (balance $%.2f)", bet_shares, balance)
 
     # Build token_id → (city, date) lookup from all candidates
     token_to_city_date: dict[str, tuple[str, str]] = {

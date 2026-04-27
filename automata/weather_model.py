@@ -232,6 +232,81 @@ def get_bias(con: duckdb.DuckDBPyConnection, icao: str, source: str) -> tuple[fl
     return float(row[0] or 0.0), int(row[1] or 0)
 
 
+def score_bucket_readonly(
+    *,
+    icao: str | None,
+    forecast_high: float | None,
+    threshold: float | None,
+    threshold_hi: float | None,
+    direction: str | None,
+    hours_to_resolution: float | None,
+    source_used: str | None = None,
+) -> dict[str, float | int | str | None]:
+    """
+    Read-only model query — returns calibrated mu/sigma + fair_no_prob for a
+    single bucket without inserting into the scans table.
+
+    Used by seller_bot to make fade decisions without polluting the scan
+    history. If `source_used` is None, callers should set it to whichever
+    forecast they're passing (default 'openmeteo').
+
+    Returns dict with keys: forecast, bias, sigma, mu, fair_no_prob,
+    fair_yes_prob, lead_bucket, bias_n, sigma_n, source_used. Values may be
+    None when inputs are insufficient (no forecast, no station).
+    """
+    bucket = lead_bucket(hours_to_resolution)
+    out: dict[str, float | int | str | None] = {
+        "forecast": forecast_high,
+        "bias": None,
+        "sigma": None,
+        "mu": None,
+        "fair_no_prob": None,
+        "fair_yes_prob": None,
+        "lead_bucket": bucket,
+        "bias_n": 0,
+        "sigma_n": 0,
+        "source_used": source_used or ("openmeteo" if forecast_high is not None else None),
+    }
+    if forecast_high is None or threshold is None or not icao:
+        return out
+
+    src = out["source_used"]
+    # If the model DB hasn't been created yet (no weather_bot scans ever ran),
+    # fall back to default priors instead of crashing. Same behavior as a
+    # cold-start station with no observations.
+    try:
+        con = _connect(read_only=True)
+    except Exception:
+        bias, bn = DEFAULT_BIAS, 0
+        sigma, sn = DEFAULT_SIGMA_BY_LEAD.get(bucket, 2.5), 0
+    else:
+        try:
+            bias, bn = get_bias(con, icao, src)
+            sigma, sn = get_sigma(con, icao, bucket)
+        finally:
+            con.close()
+
+    mu = forecast_high + bias
+    fp = fair_no_prob(
+        forecast_high=forecast_high,
+        bias=bias,
+        sigma=sigma,
+        threshold=threshold,
+        direction=direction,
+        threshold_hi=threshold_hi,
+    )
+    out.update({
+        "bias": bias,
+        "sigma": sigma,
+        "mu": mu,
+        "fair_no_prob": fp,
+        "fair_yes_prob": (1.0 - fp) if fp is not None else None,
+        "bias_n": bn,
+        "sigma_n": sn,
+    })
+    return out
+
+
 def get_sigma(con: duckdb.DuckDBPyConnection, icao: str, bucket: str) -> tuple[float, int]:
     row = con.execute(
         "SELECT mse, n FROM sigma WHERE icao = ? AND lead_bucket = ?",

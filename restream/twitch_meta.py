@@ -18,6 +18,7 @@ log = logging.getLogger("restream.twitch_meta")
 
 _TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 _HELIX_STREAMS = "https://api.twitch.tv/helix/streams"
+_HELIX_USERS = "https://api.twitch.tv/helix/users"
 
 _lock = threading.Lock()
 _token_cache: dict = {"access_token": None, "expires_at": 0.0}
@@ -109,3 +110,31 @@ def get_live_stream(channel: str) -> Optional[dict]:
     if (s.get("type") or "").lower() != "live":
         return None
     return s
+
+
+def get_channel_description(channel: str) -> Optional[str]:
+    """Return the Twitch channel's About / bio text, or None if creds are
+    missing / the call fails / the channel has no description set."""
+    cid, _ = _creds()
+    tok = get_app_token()
+    if not (cid and tok):
+        return None
+    headers = {"Client-Id": cid, "Authorization": f"Bearer {tok}"}
+    try:
+        r = requests.get(_HELIX_USERS, params={"login": channel},
+                         headers=headers, timeout=10)
+        if r.status_code == 401:
+            tok = get_app_token(force_refresh=True)
+            if not tok:
+                return None
+            headers["Authorization"] = f"Bearer {tok}"
+            r = requests.get(_HELIX_USERS, params={"login": channel},
+                             headers=headers, timeout=10)
+        r.raise_for_status()
+    except requests.RequestException as e:
+        log.warning("Helix /users failed for %s: %s", channel, e)
+        return None
+    data = (r.json() or {}).get("data") or []
+    if not data:
+        return None
+    return (data[0].get("description") or "").strip() or None

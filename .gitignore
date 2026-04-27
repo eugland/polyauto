@@ -64,6 +64,7 @@ ENV/
 .env
 .env.*
 restream/.env
+restream/.session.json
 restream/recordings/
 restream/cuts/
 restream/youtube_token.json

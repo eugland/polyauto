@@ -71,7 +71,7 @@
   <div class="sidebar">
     <div class="text-muted mb-2" style="font-size:0.72rem;text-transform:uppercase;letter-spacing:.05em">Traders</div>
 
-    <div class="user-card card mb-2 p-2" id="card-auniwarper" onclick="selectUser('auniwarper')">
+    <div class="user-card card mb-2 p-2 active" id="card-auniwarper" onclick="selectUser('auniwarper')">
       <div class="name">@auniwarper</div>
       <div class="meta" id="meta-auniwarper">—</div>
       <div class="mt-1">
@@ -79,7 +79,7 @@
       </div>
     </div>
 
-    <div class="user-card active" id="card-haerder" onclick="selectUser('haerder')">
+    <div class="user-card" id="card-haerder" onclick="selectUser('haerder')">
       <div class="name">@haerder</div>
       <div class="meta" id="meta-haerder">—</div>
       <div class="mt-1">
@@ -154,7 +154,7 @@
 
 <script>
 let allData = { positions: {}, activity: {} };
-let selectedUser = 'haerder';
+let selectedUser = 'auniwarper';
 
 const USERS = {
   haerder:    { label: '@haerder'    },
