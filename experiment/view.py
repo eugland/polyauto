@@ -267,9 +267,13 @@ def fetch_temperature_events(window_hours: int = 48) -> list[dict]:
     return out
 
 
-def fetch_events_resolving_within(hours: int) -> list[dict]:
-    """Return events whose local-3pm resolution falls in [now, now+hours]."""
+def fetch_events_resolving_within(hours: int, *, min_hours: float = 0.0) -> list[dict]:
+    """Return events whose local-3pm resolution falls in
+    [now+min_hours, now+hours]. Events too close to resolution
+    (< min_hours away) are excluded — useful for skipping markets that
+    are about to resolve and don't leave room to react."""
     now_utc = datetime.now(timezone.utc)
+    floor = now_utc + timedelta(hours=min_hours)
     cutoff = now_utc + timedelta(hours=hours)
     events = fetch_temperature_events(window_hours=max(hours + 24, 48))
 
@@ -278,7 +282,7 @@ def fetch_events_resolving_within(hours: int) -> list[dict]:
         slug = ev.get("slug") or ""
         city, ed, _ = _city_date_from_slug(slug)
         rdt = _resolution_dt(ev, city, ed)
-        if rdt and now_utc <= rdt.astimezone(timezone.utc) <= cutoff:
+        if rdt and floor <= rdt.astimezone(timezone.utc) <= cutoff:
             keep.append((rdt, ev))
     keep.sort(key=lambda x: x[0])
     return [ev for _, ev in keep]
@@ -452,6 +456,8 @@ def main() -> int:
                     help="Only show buckets with NO ask < this (default 1.0 = drop only fully-dead rows)")
     ap.add_argument("--within", type=int, default=12,
                     help="When no slug is given, list events resolving within this many hours (default 12)")
+    ap.add_argument("--min-hours", type=float, default=0.0,
+                    help="Drop events resolving sooner than this many hours from now (default 0 = no floor)")
     ap.add_argument("--min-no-bid", type=float, default=0.95,
                     help="Bulk list only: drop buckets whose NO bid < this (default 0.95)")
     ap.add_argument("--min-delta", type=float, default=2,
@@ -479,7 +485,7 @@ def main() -> int:
                 print(f"(no tradable buckets for {slug})")
         else:
             try:
-                events = fetch_events_resolving_within(args.within)
+                events = fetch_events_resolving_within(args.within, min_hours=args.min_hours)
             except Exception as exc:
                 print(f"Error fetching events: {exc}", file=sys.stderr)
                 return 1
