@@ -2,15 +2,16 @@
 Auto NO-buyer for top-of-list Polymarket "Highest Temperature" markets.
 
 For every temperature event resolving in the next N hours, pick the
-lowest-temp bucket (= highest gap to the YES-favorite) whose NO ask is
-in the configured band. The cap defaults to 99.8¢ so the saturated
-top-of-stack 99.9¢ bucket is skipped in favor of the next bucket down,
-which has more upside per share.
+lowest-temp bucket (= farthest below the YES-favorite on the bucket
+ladder) whose NO ask is in the configured band. The cap defaults to
+99.8¢ so the saturated top-of-stack 99.9¢ bucket is skipped in favor
+of the next bucket down, which has more upside per share.
 
 Then, for the top eligible item that we don't already hold:
 
-    * NO ask ≥ TEMPBUY_MIN_NO_ASK         (default 0.97)
-    * gap to YES-favorite ≥ 2°C  /  ≥ 4°F (per-event unit)
+    * NO ask ≥ TEMPBUY_MIN_NO_ASK              (default 0.97)
+    * bucket distance to YES-favorite ≥ TEMPBUY_MIN_BUCKET_DISTANCE
+      (default 2; counts ladder steps below the favorite, unit-free)
     * city not in [weather].city_blacklist
     * no live position + no open buy + no DB row on (city, event_date)
 
@@ -84,17 +85,19 @@ def _setup_logging() -> logging.Logger:
 log = logging.getLogger("automata.temp_buyer")
 
 
-def _select_for_event(event: dict, *, min_no_ask: float, max_no_ask: float) -> dict | None:
+def _select_for_event(
+    event: dict, *, min_no_ask: float, max_no_ask: float, min_no_bid: float = 0.0,
+) -> dict | None:
     """
     Per-event picker: among buckets strictly below the YES-favorite whose
-    NO ask is in [min_no_ask, max_no_ask], return the one with the largest
-    gap to the favorite (= lowest temperature). The default cap is 0.998
+    NO ask is in [min_no_ask, max_no_ask], return the one farthest down
+    the bucket ladder (= lowest temperature). The default cap is 0.998
     so the saturated 99.9¢ top-of-stack bucket is skipped in favor of the
     next bucket down, which carries more upside per share.
 
-    Returns the NO token id, detected unit (C/F), and resolution time so
-    the caller can place an order. No min-delta filter here — caller
-    layers a unit-aware delta on top.
+    Returns the NO token id, detected unit (C/F), bucket distance to the
+    favorite, and resolution time so the caller can place an order. No
+    min-distance filter here — caller layers that on top.
     """
     from experiment.view import (
         _bucket_label,
@@ -129,11 +132,25 @@ def _select_for_event(event: dict, *, min_no_ask: float, max_no_ask: float) -> d
         return None
     fav_temp = _bucket_sort_key(fav_pair[1]["question"])
 
+    # Bucket ladder: unique sort_keys across all pairs (including closed
+    # ones) sorted ascending. Index in this list is the bucket's position
+    # on the ladder, and the difference of indices is the bucket distance.
+    ladder = sorted({_bucket_sort_key(r["question"]) for _, r in pairs})
+    try:
+        fav_index = ladder.index(fav_temp)
+    except ValueError:
+        return None
+
     qualifying: list[tuple[dict, dict]] = []
     for m, r in pairs:
         if r["closed"]:
             continue
         if r["no_ask"] is None or r["no_ask"] < min_no_ask or r["no_ask"] > max_no_ask:
+            continue
+        # Exit-liquidity guard: no_bid is derived as 1 - yes_ask. If yes_ask is
+        # None, no_bid is None — meaning no one is bidding to BUY our NO at any
+        # price, so we'd have no exit if forecast shifts. Reject the bucket.
+        if r["no_bid"] is None or r["no_bid"] < min_no_bid:
             continue
         if _bucket_sort_key(r["question"]) >= fav_temp:
             continue
@@ -149,7 +166,8 @@ def _select_for_event(event: dict, *, min_no_ask: float, max_no_ask: float) -> d
 
     bucket_label = _bucket_label(r["question"])
     unit = "F" if "°F" in bucket_label else "C"
-    delta = abs(_bucket_sort_key(r["question"]) - fav_temp)
+    cand_index = ladder.index(_bucket_sort_key(r["question"]))
+    bucket_distance = fav_index - cand_index
     rdt = _resolution_dt(event, city, event_date)
 
     # Collect every token_id (NO + YES) across every bucket of this event,
@@ -177,7 +195,7 @@ def _select_for_event(event: dict, *, min_no_ask: float, max_no_ask: float) -> d
         "no_bid": r["no_bid"],
         "fav_label": _bucket_label(fav_pair[1]["question"]),
         "fav_yes_bid": fav_pair[1]["yes_bid"],
-        "delta": delta,
+        "bucket_distance": bucket_distance,
         "resolution_dt": rdt,
     }
 
@@ -194,8 +212,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
     now = now or datetime.now(timezone.utc)
     rows: list[dict[str, str]] = []
     for c in candidates:
-        delta = c.get("delta") or 0
-        delta_s = f"{delta:.0f}" if delta == int(delta) else f"{delta:g}"
+        bd = c.get("bucket_distance") or 0
         rdt = c.get("resolution_dt")
         fav_yes = c.get("fav_yes_bid")
         hours_to_res = (rdt - now).total_seconds() / 3600 if rdt else None
@@ -206,7 +223,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
             "ask":   f"{c['no_ask'] * 100:.1f}c",
             "exp":   (c.get("fav_label") or "").strip(),
             "fav":   f"{int(round(fav_yes * 100))}c" if fav_yes is not None else "",
-            "delta": f"Δ{delta_s}",
+            "dist":  f"-{bd}b",
             "in":    f"{hours_to_res:.1f}h" if hours_to_res is not None else "",
             "res":   rdt.astimezone().strftime("%m-%d %H:%M") if rdt else "?",
         })
@@ -218,7 +235,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
         ("ask",   "no",       ">"),
         ("exp",   "exp",      "<"),
         ("fav",   "fav",      ">"),
-        ("delta", "Δ",        ">"),
+        ("dist",  "dist",     ">"),
         ("in",    "in",       ">"),
         ("res",   "resolves", "<"),
     ]
@@ -385,8 +402,10 @@ def run(
 
     min_no_ask  = config.get_float("TEMPBUY_MIN_NO_ASK", "temp_buyer", "min_no_ask", 0.97)
     max_no_ask  = config.get_float("TEMPBUY_MAX_NO_ASK", "temp_buyer", "max_no_ask", 0.998)
-    min_delta_c = config.get_float("TEMPBUY_MIN_DELTA_C", "temp_buyer", "min_delta_c", 2.0)
-    min_delta_f = config.get_float("TEMPBUY_MIN_DELTA_F", "temp_buyer", "min_delta_f", 4.0)
+    min_no_bid  = config.get_float("TEMPBUY_MIN_NO_BID", "temp_buyer", "min_no_bid", 0.0)
+    min_bucket_distance = config.get_int(
+        "TEMPBUY_MIN_BUCKET_DISTANCE", "temp_buyer", "min_bucket_distance", 2
+    )
     cfg_spend   = config.get_float("TEMPBUY_MAX_SPEND_USDC", "temp_buyer", "max_spend_usdc", 20.0)
     cfg_min_h   = config.get_float("TEMPBUY_MIN_HOURS", "temp_buyer", "min_hours", 4.0)
     cfg_max_h   = config.get_int("TEMPBUY_MAX_HOURS", "temp_buyer", "max_hours", 18)
@@ -407,24 +426,35 @@ def run(
 
     candidates: list[dict] = []
     for ev in events:
-        sel = _select_for_event(ev, min_no_ask=min_no_ask, max_no_ask=max_no_ask)
+        sel = _select_for_event(
+            ev, min_no_ask=min_no_ask, max_no_ask=max_no_ask, min_no_bid=min_no_bid,
+        )
         if sel is None:
             continue
         if sel["city"] in city_blacklist:
             log.info("  skip (blacklist) %s %s", sel["city"], sel["title_date"])
             continue
-        min_d = min_delta_f if sel["unit"] == "F" else min_delta_c
-        if (sel["delta"] or 0) < min_d:
+        if (sel["bucket_distance"] or 0) < min_bucket_distance:
             log.info(
-                "  skip (Δ %.1f < %.0f) %s %s",
-                sel["delta"] or 0, min_d, sel["city"], sel["bucket_label"],
+                "  skip (dist %d < %d) %s %s",
+                sel["bucket_distance"] or 0, min_bucket_distance,
+                sel["city"], sel["bucket_label"],
             )
             continue
         candidates.append(sel)
 
     if candidates:
-        candidates.sort(key=lambda c: c.get("resolution_dt") or _far_future())
-        log.info("  %d eligible candidate(s) (closest resolution first):", len(candidates))
+        # Rank: earliest resolution first (don't skip near-term events for a
+        # higher-distance pick later), then within the same resolution cluster
+        # prefer the bucket farthest below the favorite.
+        candidates.sort(key=lambda c: (
+            c.get("resolution_dt") or _far_future(),
+            -(c.get("bucket_distance") or 0),
+        ))
+        log.info(
+            "  %d eligible candidate(s) (earliest resolution, then highest distance):",
+            len(candidates),
+        )
         for line in _render_candidates_table(candidates):
             log.info("    %s", line)
     else:

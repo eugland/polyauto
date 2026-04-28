@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import time
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds, AssetType, BalanceAllowanceParams, OrderArgs, OrderType
-from py_clob_client.constants import POLYGON
-from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client_v2 import (
+    ApiCreds,
+    AssetType,
+    BalanceAllowanceParams,
+    ClobClient,
+    OpenOrderParams,
+    OrderArgs,
+    OrderPayload,
+    OrderType,
+)
+from py_clob_client_v2.constants import POLYGON
+from py_clob_client_v2.order_builder.constants import BUY, SELL
 
 
 def derive_api_credentials(host: str, private_key: str, funder: str | None = None, signature_type: int = 0) -> ApiCreds:
@@ -218,8 +226,7 @@ def get_positions_with_prices(funder: str, host: str = "https://clob.polymarket.
 def get_open_orders(client: ClobClient, token_id: str) -> list[dict]:
     """Return all open orders for a given token_id."""
     try:
-        from py_clob_client.clob_types import OpenOrderParams
-        raw = client.get_orders(OpenOrderParams(asset_id=token_id))
+        raw = client.get_open_orders(OpenOrderParams(asset_id=token_id))
         return raw if isinstance(raw, list) else []
     except Exception:
         return []
@@ -228,8 +235,7 @@ def get_open_orders(client: ClobClient, token_id: str) -> list[dict]:
 def get_all_open_orders(client: ClobClient) -> list[dict]:
     """Return all open orders across all markets."""
     try:
-        from py_clob_client.clob_types import OpenOrderParams
-        raw = client.get_orders(OpenOrderParams())
+        raw = client.get_open_orders(OpenOrderParams())
         return raw if isinstance(raw, list) else []
     except Exception:
         return []
@@ -237,7 +243,7 @@ def get_all_open_orders(client: ClobClient) -> list[dict]:
 
 def cancel_order(client: ClobClient, order_id: str) -> dict:
     """Cancel a single open order by id."""
-    return client.cancel(order_id)
+    return client.cancel_order(OrderPayload(orderID=order_id))
 
 
 def place_market_sell(
@@ -258,7 +264,6 @@ def place_market_sell(
         price=price,
         size=size_shares,
         side=SELL,
-        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
     return client.post_order(signed_order, OrderType.GTC)
@@ -281,7 +286,6 @@ def place_market_buy(
         price=price,
         size=size_shares,
         side=BUY,
-        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
     return client.post_order(signed_order, OrderType.GTC)
@@ -300,7 +304,6 @@ def place_sell_order(
         price=price,
         size=size_shares,
         side=SELL,
-        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
     return client.post_order(signed_order, OrderType.GTC)
@@ -325,7 +328,6 @@ def place_no_order(
         price=price,
         size=size_shares,
         side=BUY,
-        fee_rate_bps=max(0, int(fee_rate_bps or 0)),
     )
     signed_order = client.create_order(order_args)
     return client.post_order(signed_order, OrderType.GTC)
