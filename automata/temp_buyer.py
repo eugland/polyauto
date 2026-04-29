@@ -620,9 +620,17 @@ def run(
         shares = math.floor(target_shares * 100) / 100
         cost = round(shares * price, 2)
         if balance < cost:
-            log.info("  balance $%.2f < required $%.2f for %.2f sh @ %.3f — skipping",
-                     balance, cost, shares, price)
-            continue
+            if balance < 5.0:
+                log.info("  balance $%.2f < $5 floor — skipping %s %s",
+                         balance, c["city"], c["bucket_label"])
+                continue
+            affordable_shares = math.floor((balance / price) * 100) / 100
+            if affordable_shares <= 0:
+                continue
+            shares = affordable_shares
+            cost = round(shares * price, 2)
+            log.info("  partial size %.2f sh @ %.3f ($%.2f) — using available balance $%.2f",
+                     shares, price, cost, balance)
 
         try:
             resp = place_no_order(client, c["no_token_id"], price, shares, post_only=False)
