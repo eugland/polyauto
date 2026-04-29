@@ -169,7 +169,7 @@ stale_minutes = 10.0
 # TEMPBUY_MIN_BALANCE_USDC — hard floor for live runs. If free balance is
 # under this number, the bot does nothing this cycle (so we don't burn a
 # whole $9 on a single tiny order). Set 0 to disable the floor.
-min_balance_usdc = 10.0
+min_balance_usdc = 5.0
 
 # TEMPBUY_TAKE_PROFIT_PRICE — every live cycle, place a GTC limit SELL at
 # this price on each held NO token that doesn't already have an open sell
