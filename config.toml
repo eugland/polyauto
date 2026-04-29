@@ -148,9 +148,9 @@ max_no_ask = 0.998
 min_delta_c = 2.0
 min_delta_f = 4.0
 
-# TEMPBUY_MAX_SPEND_USDC — per-run spend cap. Falls back to the full
-# free balance when balance < this number.
-max_spend_usdc = 20.0
+# TEMPBUY_BET_SHARES — fixed share size per bet. Skipped if free USDC
+# balance can't cover shares * price.
+bet_shares = 20.0
 
 # TEMPBUY_MIN_HOURS / TEMPBUY_MAX_HOURS — only consider events whose
 # local-3pm resolution falls in [now+min_hours, now+max_hours]. The

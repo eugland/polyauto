@@ -15,8 +15,9 @@ Then, for the top eligible item that we don't already hold:
     * city not in [weather].city_blacklist
     * no live position + no open buy + no DB row on (city, event_date)
 
-…place one GTC limit buy on the NO token at the live ask, sized up to
-TEMPBUY_MAX_SPEND_USDC (default $40), capped by the free USDC balance.
+…place one GTC limit buy on the NO token at the live ask for
+TEMPBUY_BET_SHARES (default 20 sh). Skipped if free USDC balance is
+below the resulting cost.
 
 By default we only consider events resolving 4–18 hours from now —
 sub-4h events are skipped because they're too close to resolution to
@@ -31,7 +32,7 @@ Usage:
   python -m automata.temp_buyer --bet             # live: place the order
   python -m automata.temp_buyer --within 24       # 24h upper bound
   python -m automata.temp_buyer --min-hours 8     # require >=8h to resolution
-  python -m automata.temp_buyer --bet --max-spend 20
+  python -m automata.temp_buyer --bet --shares 20
 """
 from __future__ import annotations
 
@@ -342,43 +343,49 @@ def _place_take_profit_orders(
     *,
     sell_price: float,
 ) -> int:
-    """Place a GTC limit SELL at `sell_price` on every position that does
-    not already have an open SELL order on its token. Reuses caller-
-    provided position + order snapshots so no extra reads are issued
-    aside from the order placements themselves. Returns the count of
-    new sells placed."""
+    """Top up GTC limit SELLs at `sell_price` so every position is fully
+    covered. For each held token, sum the open SELL shares; if the gap
+    to the position size is at or above Polymarket's $1 minimum, place
+    one new SELL for that gap. Reuses caller-provided position + order
+    snapshots. Returns the count of new sells placed."""
     from automata.client import place_sell_order
 
     if not positions:
         return 0
 
-    existing_sell_tokens: set[str] = set()
+    existing_sell_shares: dict[str, float] = {}
     for o in open_orders:
         if str(o.get("side", "")).upper() != "SELL":
             continue
-        if _order_open_shares(o) <= 0:
+        open_sh = _order_open_shares(o)
+        if open_sh <= 0:
             continue
         tid = str(o.get("asset_id") or o.get("token_id") or "")
         if tid:
-            existing_sell_tokens.add(tid)
+            existing_sell_shares[tid] = existing_sell_shares.get(tid, 0.0) + open_sh
+
+    # Polymarket min order is $1 — gaps below that can't be placed.
+    min_gap_shares = max(1.01, 1.0 / max(sell_price, 0.01))
 
     placed = 0
     for p in positions:
         tid = p.get("token_id") or ""
         size = float(p.get("size") or 0)
-        if not tid or size < 0.01:
+        if not tid or size < 5:
             continue
-        if tid in existing_sell_tokens:
-            continue
-        sell_size = math.floor(size * 100) / 100
-        if sell_size < 0.01:
+        covered = existing_sell_shares.get(tid, 0.0)
+        gap = round(size - covered, 2)
+        sell_size = math.floor(gap * 100) / 100
+        if sell_size < min_gap_shares:
             continue
         try:
             resp = place_sell_order(client, tid, sell_price, sell_size)
             order_id = str(resp.get("orderID") or resp.get("id") or "?")
             log.info(
-                "[take-profit] SELL %.2f sh @ %.2fc  token=%s  → %s id=%s",
+                "[take-profit] SELL %.2f sh @ %.2fc  token=%s  "
+                "(pos=%.2f covered=%.2f gap=%.2f)  → %s id=%s",
                 sell_size, sell_price * 100, tid[:14],
+                size, covered, gap,
                 resp.get("status") or "submitted", order_id[:18],
             )
             placed += 1
@@ -395,7 +402,7 @@ def run(
     dry_run: bool = True,
     hours: int | None = None,
     min_hours: float | None = None,
-    max_spend_usdc: float | None = None,
+    bet_shares: float | None = None,
     max_orders: int = 1,
 ) -> None:
     from experiment.view import fetch_events_resolving_within
@@ -406,11 +413,11 @@ def run(
     min_bucket_distance = config.get_int(
         "TEMPBUY_MIN_BUCKET_DISTANCE", "temp_buyer", "min_bucket_distance", 2
     )
-    cfg_spend   = config.get_float("TEMPBUY_MAX_SPEND_USDC", "temp_buyer", "max_spend_usdc", 20.0)
+    cfg_shares  = config.get_float("TEMPBUY_BET_SHARES", "temp_buyer", "bet_shares", 20.0)
     cfg_min_h   = config.get_float("TEMPBUY_MIN_HOURS", "temp_buyer", "min_hours", 4.0)
     cfg_max_h   = config.get_int("TEMPBUY_MAX_HOURS", "temp_buyer", "max_hours", 18)
     cfg_min_bal = config.get_float("TEMPBUY_MIN_BALANCE_USDC", "temp_buyer", "min_balance_usdc", 10.0)
-    spend_cap_target = max_spend_usdc if max_spend_usdc is not None else cfg_spend
+    target_shares = bet_shares if bet_shares is not None else cfg_shares
     floor_hours = min_hours if min_hours is not None else cfg_min_h
     window_hours = hours if hours is not None else cfg_max_h
 
@@ -519,10 +526,8 @@ def run(
         log.error("Failed to fetch USDC balance: %s", exc)
         return
 
-    log.info("Balance $%.2f (target $%.2f, floor $%.2f)",
-             balance, spend_cap_target, cfg_min_bal)
-    spend_left = round(min(balance, spend_cap_target), 2)
-    log.info("  → spend cap $%.2f", spend_left)
+    log.info("Balance $%.2f (target %.2f sh, floor $%.2f)",
+             balance, target_shares, cfg_min_bal)
 
     # ── Stale-cancel pass: free USDC tied up in old unfilled BUY orders ───
     init_db()  # still record bets for analytics, even though dedup no longer reads it
@@ -535,9 +540,7 @@ def run(
     if cancelled_order_ids:
         try:
             balance = get_usdc_balance(client)
-            spend_left = round(min(balance, spend_cap_target), 2)
-            log.info("[stale-cancel] balance after cancels: $%.2f → spend cap $%.2f",
-                     balance, spend_left)
+            log.info("[stale-cancel] balance after cancels: $%.2f", balance)
         except Exception as exc:
             log.warning("[stale-cancel] post-cancel balance refresh failed: %s", exc)
 
@@ -593,9 +596,6 @@ def run(
     for c in candidates:
         if placed >= max_orders:
             break
-        if spend_left < 1.0:
-            log.info("Out of budget — stopping")
-            break
 
         # Event-level dedup: skip if we already hold (or have an open buy on)
         # ANY bucket of this event — NO or YES, not just the one we'd bet now.
@@ -617,14 +617,12 @@ def run(
             continue
         price = round(min(live_ask, max_no_ask), 4)
 
-        # Floor shares to 0.01 so cost stays at/under spend_left.
-        raw_shares = spend_left / price
-        shares = math.floor(raw_shares * 100) / 100
-        if shares * price < 1.0:
-            log.info("  budget %.2f at %.3f leaves <$1 order — skipping",
-                     spend_left, price)
-            continue
+        shares = math.floor(target_shares * 100) / 100
         cost = round(shares * price, 2)
+        if balance < cost:
+            log.info("  balance $%.2f < required $%.2f for %.2f sh @ %.3f — skipping",
+                     balance, cost, shares, price)
+            continue
 
         try:
             resp = place_no_order(client, c["no_token_id"], price, shares, post_only=False)
@@ -634,7 +632,7 @@ def run(
                 "[temp-buyer] %s %s  BUY No @ %.2fc  %.2f sh ($%.2f)  → %s id=%s",
                 c["city"], c["bucket_label"], price * 100, shares, cost, status, order_id[:18],
             )
-            spend_left = round(spend_left - cost, 2)
+            balance = round(balance - cost, 2)
             placed += 1
             # Mark the whole event as held so a --max-orders > 1 run doesn't
             # double-tap a sibling bucket we just bought into.
@@ -666,7 +664,7 @@ def run(
             log.error("[temp-buyer] order failed for %s %s: %s",
                       c["city"], c["bucket_label"], exc)
 
-    log.info("  done — %d order(s) placed, $%.2f budget remaining", placed, spend_left)
+    log.info("  done — %d order(s) placed, $%.2f balance remaining", placed, balance)
 
 
 def main() -> int:
@@ -682,8 +680,8 @@ def main() -> int:
     p.add_argument("--min-hours", type=float, default=None,
                    help="Drop events resolving sooner than this many hours from now "
                         "(default: [temp_buyer].min_hours = 4)")
-    p.add_argument("--max-spend", type=float, default=None,
-                   help="USDC cap for this run (default: [temp_buyer].max_spend_usdc = 20)")
+    p.add_argument("--shares", type=float, default=None,
+                   help="Shares per bet (default: [temp_buyer].bet_shares = 20)")
     p.add_argument("--max-orders", type=int, default=1,
                    help="How many bets to place this run (default 1, top-of-list)")
     p.add_argument("--stale-minutes", type=float, default=None,
@@ -706,7 +704,7 @@ def main() -> int:
             dry_run=not args.bet,
             hours=args.within,
             min_hours=args.min_hours,
-            max_spend_usdc=args.max_spend,
+            bet_shares=args.shares,
             max_orders=max(1, args.max_orders),
         )
 
