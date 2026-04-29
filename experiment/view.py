@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import re
 import sys
 import time
@@ -20,6 +21,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+
+log = logging.getLogger(__name__)
 
 # Hardcoded city slug → IANA timezone. Polymarket only runs daily-temperature
 # markets in this fixed set of cities, so we don't need METAR / geocoding /
@@ -178,6 +181,7 @@ def _resolution_local(event: dict, slug: str, city: str | None, event_date: date
     return dt.astimezone().strftime("%m-%d  %H:%M")
 
 GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
+GAMMA_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
 CLOB_PRICE_URL = "https://clob.polymarket.com/price"
 
 
@@ -225,26 +229,66 @@ _PAGE_LIMIT = 20
 _MAX_PAGES = 10  # 200 events per tag is well above the live universe
 
 
-def _fetch_one_page(tag: str, page: int, end_max: str) -> list[dict]:
-    resp = requests.get(
-        GAMMA_EVENTS_URL,
-        params={
-            "tag_slug": tag,
-            "closed": "false",
-            "limit": _PAGE_LIMIT,
-            "offset": page * _PAGE_LIMIT,
-            "end_date_max": end_max,
-        },
-        timeout=15,
-    )
-    resp.raise_for_status()
-    body = resp.json()
-    return body if isinstance(body, list) else []
+def _fetch_one_page(tag: str, page: int, end_max: str) -> tuple[list[dict], Exception | None]:
+    """Fetch one (tag, page) of /events. Returns (events, error). Errors are
+    captured rather than raised so one bad page doesn't sink the whole run —
+    Gamma frequently 500s on offset>=20 pages while offset=0 stays healthy."""
+    try:
+        resp = requests.get(
+            GAMMA_EVENTS_URL,
+            params={
+                "tag_slug": tag,
+                "closed": "false",
+                "limit": _PAGE_LIMIT,
+                "offset": page * _PAGE_LIMIT,
+                "end_date_max": end_max,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return (body if isinstance(body, list) else []), None
+    except Exception as exc:
+        return [], exc
+
+
+_SEARCH_PAGE_LIMIT = 50    # server hard-caps limit_per_type at 50
+_SEARCH_MAX_PAGES = 6      # 300 events ceiling — way past the live universe
+
+
+def _fetch_via_search() -> list[dict]:
+    """Backup discovery path when /events is degraded.
+
+    `public-search` paginates via `page=` (1-indexed) with a server-side
+    cap of 50 events per page. `events_status=active` filters closed and
+    archived. We walk pages until the API reports no more results."""
+    out: list[dict] = []
+    for page in range(1, _SEARCH_MAX_PAGES + 1):
+        resp = requests.get(
+            GAMMA_SEARCH_URL,
+            params={
+                "q": "highest temperature",
+                "events_status": "active",
+                "limit_per_type": _SEARCH_PAGE_LIMIT,
+                "page": page,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.json() or {}
+        events = body.get("events") or []
+        if not isinstance(events, list) or not events:
+            break
+        out.extend(events)
+        if not (body.get("pagination") or {}).get("hasMore"):
+            break
+    return out
 
 
 def fetch_temperature_events(window_hours: int = 48) -> list[dict]:
     """Speculatively fetch all (tag × page) combinations in parallel and trim.
-    Pagination is otherwise sequential because we stop on the first short page."""
+    Per-page failures are tolerated; if every page fails we fall back to
+    the public-search endpoint so the bot still has a market list."""
     end_max = (datetime.now(timezone.utc) + timedelta(hours=window_hours)).isoformat()
     tags = ("highest-temperature", "weather")
     jobs = [(tag, page) for tag in tags for page in range(_MAX_PAGES)]
@@ -254,7 +298,11 @@ def fetch_temperature_events(window_hours: int = 48) -> list[dict]:
 
     out: list[dict] = []
     seen: set[str] = set()
-    for events in results:
+    errors = 0
+    for events, err in results:
+        if err is not None:
+            errors += 1
+            continue
         for ev in events:
             slug = str(ev.get("slug") or "")
             if not _SLUG_RE.match(slug):
@@ -264,6 +312,32 @@ def fetch_temperature_events(window_hours: int = 48) -> list[dict]:
                 continue
             seen.add(eid)
             out.append(ev)
+
+    if errors:
+        log.warning("/events: %d/%d pages failed (offset≥20 is currently flaky)",
+                    errors, len(results))
+
+    # Any errors → primary is degraded; we have no way to know whether the
+    # missing pages held the events the bot needs. Always supplement with
+    # public-search and union — the search endpoint covers the same
+    # universe, ranked by relevance, with its own pagination.
+    if errors:
+        try:
+            primary_count = len(out)
+            for ev in _fetch_via_search():
+                slug = str(ev.get("slug") or "")
+                if not _SLUG_RE.match(slug):
+                    continue
+                eid = str(ev.get("id") or slug)
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                out.append(ev)
+            log.info("/events degraded — supplemented with public-search "
+                     "(%d → %d events)", primary_count, len(out))
+        except Exception as exc:
+            log.error("public-search fallback failed: %s", exc)
+
     return out
 
 
