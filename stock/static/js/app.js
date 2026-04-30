@@ -174,7 +174,7 @@ async function refreshAll() {
 
 async function refreshQuotes() {
   refreshMacro(); refreshBreadth(); refreshSectors();
-  refreshBubble(); refreshMovers(); refreshScreeners();
+  refreshBubble(); refreshMovers(); refreshMomentum(); refreshMomentumChart(); refreshScreeners();
   refreshVixTerm(); refreshFearGreed(); refreshSpyVolumeSignal();
   refreshOvernight(); refreshImpliedOpen();
   document.getElementById("last-refresh").textContent =
@@ -799,6 +799,96 @@ function renderMoverTable(id, rows) {
       <td class="text-end">${fmtNum(r.price)}</td>
       <td class="text-end">${fmtPct(r.pct)}</td>
     </tr>`).join("");
+}
+
+// ── momentum ──────────────────────────────────────────────────────────────
+async function refreshMomentum() {
+  const d = await fetchJSON("/api/momentum?side=up&limit=10");
+  if (!d) return;
+  const meta = document.getElementById("momentum-asof");
+  if (meta) meta.textContent = (d.as_of ? `as of ${d.as_of}` : "no data") + " · ⓘ";
+  renderMomentumTable("momentum-up", d.rows || []);
+}
+
+function renderMomentumTable(id, rows) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  if (!rows.length) {
+    el.innerHTML =
+      `<tr><td colspan="7" class="text-muted text-center py-3">no data — waiting for next snapshot</td></tr>`;
+    return;
+  }
+  const fmtScore = v => (v == null) ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(2);
+  el.innerHTML = rows.map(r => `
+    <tr>
+      <td><strong>${esc(r.symbol)}</strong></td>
+      <td><small style="color:${sectorColor(r.sector)}">${esc(r.sector || "")}</small></td>
+      <td class="text-end"><strong>${fmtScore(r.score)}</strong></td>
+      <td class="text-end">${fmtPct(r.ret_21d)}</td>
+      <td class="text-end">${fmtPct(r.ret_126_21)}</td>
+      <td class="text-end">${fmtPct(r.dist_sma200)}</td>
+      <td class="text-end">${r.rsi_14 == null ? "—" : Number(r.rsi_14).toFixed(0)}</td>
+    </tr>`).join("");
+}
+
+const MOMENTUM_PALETTE = [
+  '#2563eb', '#dc2626', '#16a34a', '#9333ea', '#d97706',
+  '#0891b2', '#db2777', '#65a30d', '#7c3aed', '#ea580c',
+];
+
+let _momentumChart = null;
+
+async function refreshMomentumChart() {
+  const d = await fetchJSON("/api/momentum/series?days=60&limit=10");
+  const canvas = document.getElementById('momentum-chart');
+  if (!canvas) return;
+  if (!d || !d.series || !d.series.length) {
+    if (_momentumChart) { _momentumChart.destroy(); _momentumChart = null; }
+    return;
+  }
+  const datasets = d.series.map((s, i) => ({
+    label: s.symbol,
+    data: s.points.map(p => ({ x: new Date(p.t).getTime(), y: p.v })),
+    borderColor: MOMENTUM_PALETTE[i % MOMENTUM_PALETTE.length],
+    backgroundColor: MOMENTUM_PALETTE[i % MOMENTUM_PALETTE.length] + '20',
+    tension: 0.15,
+    pointRadius: 0,
+    fill: false,
+    borderWidth: 1.6,
+  }));
+
+  if (_momentumChart) _momentumChart.destroy();
+  _momentumChart = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      parsing: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: {
+          type: 'linear',
+          ticks: {
+            callback: (v) => new Date(v).toISOString().slice(5, 10),
+            maxTicksLimit: 8,
+          },
+        },
+        y: {
+          title: { display: true, text: 'Indexed = 100 at start' },
+        },
+      },
+      plugins: {
+        legend: { position: 'top', labels: { boxWidth: 16, padding: 8 } },
+        tooltip: {
+          callbacks: {
+            title: (items) => new Date(items[0].parsed.x).toISOString().slice(0, 10),
+            label: (item) => `${item.dataset.label}: ${item.parsed.y.toFixed(1)}`,
+          },
+        },
+      },
+    },
+  });
 }
 
 // ── screeners ─────────────────────────────────────────────────────────────

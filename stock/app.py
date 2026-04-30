@@ -515,6 +515,28 @@ def create_app(db_path: str) -> Flask:
         limit = int(request.args.get("limit", "10"))
         return jsonify(db.query_movers(_db(), side, limit))
 
+    @app.route("/api/momentum")
+    def api_momentum():
+        side = request.args.get("side", "up")
+        try:
+            limit = int(request.args.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        return jsonify(db.query_top_momentum(_db(), side=side, limit=limit))
+
+    @app.route("/api/momentum/series")
+    def api_momentum_series():
+        side = request.args.get("side", "up")
+        try:
+            days = int(request.args.get("days", "60"))
+        except ValueError:
+            days = 60
+        try:
+            limit = int(request.args.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        return jsonify(db.query_momentum_series(_db(), days=days, limit=limit, side=side))
+
     @app.route("/api/macro")
     def api_macro():
         return jsonify(db.query_macro(_db()))
@@ -761,6 +783,35 @@ def create_app(db_path: str) -> Flask:
         return jsonify(results)
 
     # ── BTC pre-candle shadow forward-test ─────────────────────────────────────
+    def _btc_shadow_ro_connect():
+        # DuckDB takes an exclusive lock when opened RW, so a read-only
+        # connection from this UI fails while the daemon is running. Fall
+        # back to copying the file (1MB-ish) into a tempdir and reading
+        # the snapshot. Stale by at most one daemon poll cycle.
+        from automata import btc_pre_candle as bpc
+        import duckdb as _duck
+        db_path = bpc.DB_PATH
+        if not db_path.exists():
+            return None
+        try:
+            return _duck.connect(str(db_path), read_only=True)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "conflicting lock" not in msg and "could not set lock" not in msg:
+                raise
+            import shutil, tempfile
+            snap_dir = Path(tempfile.gettempdir()) / "polyauto_btc_pre_candle_ro"
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            snap = snap_dir / "btc_pre_candle.db"
+            snap_wal = snap.with_suffix(snap.suffix + ".wal")
+            if snap_wal.exists():
+                snap_wal.unlink()
+            shutil.copy2(db_path, snap)
+            wal = db_path.with_suffix(db_path.suffix + ".wal")
+            if wal.exists():
+                shutil.copy2(wal, snap_wal)
+            return _duck.connect(str(snap), read_only=True)
+
     @app.route("/btc-shadow")
     def btc_shadow():
         return render_template("btc_shadow.html")
@@ -774,12 +825,19 @@ def create_app(db_path: str) -> Flask:
         """
         try:
             from automata import btc_pre_candle as bpc
-            bpc.init_db()
             strategy = request.args.get("strategy") or None
             where_strat = "AND strategy = ?" if strategy else ""
             params_strat = [strategy] if strategy else []
-            import duckdb as _duck
-            con = _duck.connect(str(bpc.DB_PATH), read_only=True)
+            con = _btc_shadow_ro_connect()
+            if con is None:
+                return jsonify({
+                    "filter_strategy": strategy,
+                    "strategies_registered": [s.name for s in bpc.STRATEGIES_ALL],
+                    "n_total": 0, "n_settled": 0, "wins": 0, "hit_rate": None,
+                    "total_pnl": 0.0, "avg_entry": None,
+                    "monthly": [], "by_strategy": [],
+                    "fire_offset_window_min": [bpc.FIRE_MIN_OFFSET, bpc.FIRE_MAX_OFFSET],
+                })
             try:
                 head = con.execute(f"""
                     SELECT
@@ -860,8 +918,7 @@ def create_app(db_path: str) -> Flask:
     @app.route("/api/btc-shadow/fires")
     def api_btc_shadow_fires():
         try:
-            from automata import btc_pre_candle as bpc
-            bpc.init_db()
+            from automata import btc_pre_candle as bpc  # noqa: F401
             try:
                 limit = int(request.args.get("limit", "200"))
             except ValueError:
@@ -870,8 +927,9 @@ def create_app(db_path: str) -> Flask:
             where_strat = "WHERE strategy = ?" if strategy else ""
             params = [strategy] if strategy else []
             params.append(limit)
-            import duckdb as _duck
-            con = _duck.connect(str(bpc.DB_PATH), read_only=True)
+            con = _btc_shadow_ro_connect()
+            if con is None:
+                return jsonify({"fires": []})
             try:
                 rows = con.execute(f"""
                     SELECT id, recorded_at, target_hour_utc, end_utc, fire_offset_min,
@@ -908,10 +966,10 @@ def create_app(db_path: str) -> Flask:
     def api_btc_shadow_equity():
         """Per-strategy cumulative PnL series, for multi-line charting."""
         try:
-            from automata import btc_pre_candle as bpc
-            bpc.init_db()
-            import duckdb as _duck
-            con = _duck.connect(str(bpc.DB_PATH), read_only=True)
+            from automata import btc_pre_candle as bpc  # noqa: F401
+            con = _btc_shadow_ro_connect()
+            if con is None:
+                return jsonify({"series": []})
             try:
                 rows = con.execute("""
                     SELECT strategy, resolved_at, pnl_per_share
