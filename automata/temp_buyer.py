@@ -478,6 +478,7 @@ def _run_topup_pass(
     city_blacklist: set[str],
     min_topup_shares: float,
     balance: float,
+    min_balance: float,
     max_orders_remaining: int,
     record_bet_fn: Any,
     dry_run: bool = False,
@@ -486,9 +487,10 @@ def _run_topup_pass(
     window check (held positions were validated at original entry) but
     applies all other quality gates: ask band, bucket distance,
     blacklist, NO bid floor. Returns (orders_placed, updated_balance).
-    When dry_run=True, logs `WOULD BUY` lines and decrements `balance`
-    as if orders were placed, but never calls place_no_order or
-    record_bet_fn."""
+    Spending is capped at (balance - min_balance) so the configured
+    USDC reserve is never breached. When dry_run=True, logs `WOULD BUY`
+    lines and decrements `balance` as if orders were placed, but never
+    calls place_no_order or record_bet_fn."""
     from experiment.view import _parse_json_list, fetch_events_resolving_within
     from automata.client import get_best_bid_ask, place_no_order
     from automata.parser import _extract_no_token_id
@@ -496,8 +498,9 @@ def _run_topup_pass(
     if max_orders_remaining <= 0:
         log.info("[top-up] max_orders cap already consumed — skip")
         return 0, balance
-    if balance < 5.0:
-        log.info("[top-up] balance $%.2f < $5 floor — skip top-up pass", balance)
+    if balance <= min_balance:
+        log.info("[top-up] balance $%.2f ≤ reserve $%.2f — skip top-up pass",
+                 balance, min_balance)
         return 0, balance
 
     held_no = [
@@ -588,22 +591,25 @@ def _run_topup_pass(
 
         shares = math.floor(gap * 100) / 100
         cost = round(shares * price, 2)
-        if balance < cost:
-            if balance < 5.0:
-                log.info("[top-up] balance $%.2f < $5 — abort top-up pass", balance)
+        spendable = round(balance - min_balance, 2)
+        if cost > spendable:
+            if spendable <= 0:
+                log.info("[top-up] balance $%.2f at/below reserve $%.2f — abort top-up pass",
+                         balance, min_balance)
                 break
-            affordable = math.floor((balance / price) * 100) / 100
+            affordable = math.floor((spendable / price) * 100) / 100
             if affordable < min_topup_shares:
                 log.info(
-                    "[top-up] affordable %.2f sh < %.2f  %s — skip",
-                    affordable, min_topup_shares, sel["city"],
+                    "[top-up] affordable %.2f sh < %.2f (reserve $%.2f) %s — skip",
+                    affordable, min_topup_shares, min_balance, sel["city"],
                 )
                 continue
             shares = affordable
             cost = round(shares * price, 2)
             log.info(
-                "[top-up] partial %.2f sh @ %.3f ($%.2f) using $%.2f balance",
-                shares, price, cost, balance,
+                "[top-up] partial %.2f sh @ %.3f ($%.2f) — keeping $%.2f reserve "
+                "(balance $%.2f → $%.2f)",
+                shares, price, cost, min_balance, balance, round(balance - cost, 2),
             )
 
         log.info(
@@ -705,6 +711,15 @@ def run(
     log.info("Fetching events resolving in %.1f–%dh...", floor_hours, window_hours)
     events = fetch_events_resolving_within(window_hours, min_hours=floor_hours)
     log.info("  %d temperature events fetched", len(events))
+
+    # Shadow-record every fetched event into the weather_model DB so the
+    # bias/sigma EMAs stay warm and the /weather-model UI has data to plot
+    # — completely independent of temp_buyer's buy logic.
+    try:
+        from automata import weather_scan
+        weather_scan.scan_and_record_events(events, log_label="weather-model")
+    except Exception as exc:
+        log.warning("[weather-model] scan_and_record_events failed: %s", exc)
 
     candidates: list[dict] = []
     for ev in events:
@@ -877,13 +892,14 @@ def run(
         city_blacklist=city_blacklist,
         min_topup_shares=min_topup_shares,
         balance=balance,
+        min_balance=cfg_min_bal,
         max_orders_remaining=max_orders,
         record_bet_fn=record_bet,
         dry_run=dry_run,
     )
 
-    if balance < cfg_min_bal:
-        log.info("Balance $%.2f below $%.2f floor — skipping buy pass "
+    if balance <= cfg_min_bal:
+        log.info("Balance $%.2f at/below $%.2f reserve — skipping buy pass "
                  "(take-profit + top-up completed)", balance, cfg_min_bal)
         return
     if not candidates:
@@ -919,18 +935,20 @@ def run(
 
         shares = math.floor(target_shares * 100) / 100
         cost = round(shares * price, 2)
-        if balance < cost:
-            if balance < 5.0:
-                log.info("  balance $%.2f < $5 floor — skipping %s %s",
-                         balance, c["city"], c["bucket_label"])
-                continue
-            affordable_shares = math.floor((balance / price) * 100) / 100
-            if affordable_shares <= 0:
+        spendable = round(balance - cfg_min_bal, 2)
+        if cost > spendable:
+            affordable_shares = math.floor((spendable / price) * 100) / 100
+            if affordable_shares < min_topup_shares:
+                log.info("  affordable %.2f sh < %.2f floor (spendable $%.2f, reserve $%.2f) "
+                         "— skipping %s %s",
+                         affordable_shares, min_topup_shares, spendable, cfg_min_bal,
+                         c["city"], c["bucket_label"])
                 continue
             shares = affordable_shares
             cost = round(shares * price, 2)
-            log.info("  partial size %.2f sh @ %.3f ($%.2f) — using available balance $%.2f",
-                     shares, price, cost, balance)
+            log.info("  partial size %.2f sh @ %.3f ($%.2f) — keeping $%.2f reserve "
+                     "(balance $%.2f → $%.2f)",
+                     shares, price, cost, cfg_min_bal, balance, round(balance - cost, 2))
 
         if dry_run:
             log.info(
@@ -1040,6 +1058,15 @@ def main() -> int:
                 _cycle()
             except Exception as exc:
                 logger.exception("[temp-buyer] cycle %d failed: %s — continuing", iteration, exc)
+            # Backfill resolved-event outcomes every ~10 cycles so the
+            # weather_model bias/sigma EMAs absorb fresh data without
+            # spamming the Gamma API on every loop.
+            if iteration % 10 == 1:
+                try:
+                    from automata import weather_scan
+                    weather_scan.maybe_backfill_outcomes(log_label="weather-model")
+                except Exception:
+                    logger.exception("[weather-model] backfill failed")
             logger.info("[temp-buyer] sleeping %ds before next cycle", interval)
             _time.sleep(interval)
     except KeyboardInterrupt:
