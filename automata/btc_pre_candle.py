@@ -40,6 +40,7 @@ from zoneinfo import ZoneInfo
 
 import duckdb
 
+from automata import config
 from automata.crypto_common import _get, build_slug
 
 log = logging.getLogger("automata.btc_pre_candle")
@@ -54,6 +55,18 @@ GAMMA = "https://gamma-api.polymarket.com/events?slug={slug}"
 
 FIRE_MIN_OFFSET = -40
 FIRE_MAX_OFFSET = -10
+
+# ── Live-bet knobs (only consulted when --bet is on) ──────────────────────────
+BET_SHARES         = config.get_float("BTC_PRE_CANDLE_BET_SHARES",
+                                      "btc_pre_candle", "bet_shares", 5.0)
+MAX_ENTRY_ASK      = config.get_float("BTC_PRE_CANDLE_MAX_ENTRY_ASK",
+                                      "btc_pre_candle", "max_entry_ask", 0.65)
+DAILY_SPEND_CAP    = config.get_float("BTC_PRE_CANDLE_DAILY_SPEND_CAP_USDC",
+                                      "btc_pre_candle", "daily_spend_cap_usdc", 20.0)
+LIVE_STRATEGIES    = set(config.get_list_str(
+                            "BTC_PRE_CANDLE_LIVE_STRATEGIES",
+                            "btc_pre_candle", "live_strategies",
+                            ["P13_24h_extreme_0.2"]))
 
 # How many 1H klines to fetch per cycle. We need enough to compute MACD-hist
 # z-score (30-day rolling std of macd_hist) ≈ 720 hours plus warmup. Binance
@@ -446,8 +459,48 @@ def init_db() -> None:
                 cols = {r[1] for r in con.execute("PRAGMA table_info('fires')").fetchall()}
                 if col not in cols:
                     con.execute(f"ALTER TABLE fires ADD COLUMN {col} {ddl}")
+
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS live_trades (
+                id              BIGINT,
+                placed_at       TIMESTAMPTZ,
+                target_hour_utc TIMESTAMPTZ,
+                strategy        VARCHAR,
+                side            VARCHAR,
+                slug            VARCHAR,
+                condition_id    VARCHAR,
+                token_id        VARCHAR,
+                shares          DOUBLE,
+                entry_price     DOUBLE,
+                cost_usdc       DOUBLE,
+                order_id        VARCHAR,
+                fire_id         BIGINT,
+                resolved_at     TIMESTAMPTZ,
+                outcome         VARCHAR,
+                pnl_usdc        DOUBLE
+            )
+        """)
+        con.execute("CREATE SEQUENCE IF NOT EXISTS seq_btc_live_trades START 1")
     finally:
         con.close()
+
+
+def _live_dedup_hit(con: duckdb.DuckDBPyConnection, strategy: str,
+                    target_hour_utc: datetime) -> bool:
+    return con.execute(
+        "SELECT 1 FROM live_trades WHERE strategy = ? AND target_hour_utc = ? LIMIT 1",
+        [strategy, target_hour_utc],
+    ).fetchone() is not None
+
+
+def _live_spent_today(con: duckdb.DuckDBPyConnection, now_utc: datetime) -> float:
+    """Sum of cost_usdc for live trades placed in the current UTC day."""
+    day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    row = con.execute(
+        "SELECT COALESCE(SUM(cost_usdc), 0.0) FROM live_trades WHERE placed_at >= ?",
+        [day_start],
+    ).fetchone()
+    return float(row[0] or 0.0)
 
 
 def already_fired(con: duckdb.DuckDBPyConnection, target_hour_utc: datetime, strategy: str) -> bool:
@@ -563,6 +616,17 @@ def settle_resolved(con: duckdb.DuckDBPyConnection, now_utc: datetime) -> int:
                    winner = ?, won = ?, pnl_per_share = ?
              WHERE id = ?
         """, [now_utc, c_open, c_close, winner, won, pnl, fid])
+        # Mirror outcome onto any live_trade that opened on this fire. Actual
+        # USDC redeem is handled by automata/eth.py's _settle_resolved_trades
+        # (which scans positions by funder address); we just update bookkeeping.
+        con.execute("""
+            UPDATE live_trades
+               SET resolved_at = ?,
+                   outcome     = ?,
+                   pnl_usdc    = shares * ?
+             WHERE fire_id = ?
+               AND resolved_at IS NULL
+        """, [now_utc, ("win" if won else "loss"), pnl, fid])
         log.info("settled id=%s tgt=%s side=%s winner=%s pnl=%+.4f",
                  fid, tgt.isoformat(), side, winner, pnl)
         n += 1
@@ -584,11 +648,110 @@ def candidate_target_hours(now_utc: datetime) -> list[datetime]:
     return out
 
 
+def _build_clob_client():
+    """Build a Polymarket CLOB client from .env credentials. Returns None on failure.
+
+    CLOB_API_KEY/SECRET/PASS are derived on demand from POLYMARKET_PRIVATE_KEY,
+    mirroring automata/eth.py — only the private key + host need to be in .env.
+    """
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    host = os.getenv("POLYMARKET_HOST") or config.get_str(
+        "POLYMARKET_HOST", "polymarket", "host", "https://clob.polymarket.com")
+    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+    if not private_key:
+        log.error("[btc_pre_candle] cannot --bet: POLYMARKET_PRIVATE_KEY not set in .env")
+        return None
+
+    from automata.client import build_client, derive_api_credentials
+    sig_type = config.get_int("POLYMARKET_SIG_TYPE", "polymarket", "signature_type", 0)
+    funder = os.getenv("POLYMARKET_FUNDER") or None
+    try:
+        creds = derive_api_credentials(
+            host=host,
+            private_key=private_key,
+            funder=funder,
+            signature_type=sig_type,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error("[btc_pre_candle] cannot --bet: failed to derive CLOB creds: %s", exc)
+        return None
+
+    return build_client(
+        host=host,
+        private_key=private_key,
+        api_key=creds.api_key,
+        api_secret=creds.api_secret,
+        api_passphrase=creds.api_passphrase,
+        funder=funder,
+        signature_type=sig_type,
+    )
+
+
+def _try_place_live(con: duckdb.DuckDBPyConnection, client, *,
+                    fire_id: int, strategy: str, side: str,
+                    target_hour_utc: datetime, mkt: dict,
+                    chosen_ask: float, now_utc: datetime) -> str:
+    """
+    Attempt to place a real 5-share buy on the chosen-side token.
+    Returns one of: 'placed', 'not_allowed', 'ask_too_high', 'cap_hit',
+    'dedup', 'order_failed'.
+    """
+    if strategy not in LIVE_STRATEGIES:
+        return "not_allowed"
+    if chosen_ask > MAX_ENTRY_ASK:
+        log.info("[btc_pre_candle] LIVE skip strat=%s ask=%.4f > %.2f cap",
+                 strategy, chosen_ask, MAX_ENTRY_ASK)
+        return "ask_too_high"
+    if _live_dedup_hit(con, strategy, target_hour_utc):
+        return "dedup"
+    cost_estimate = float(BET_SHARES) * float(chosen_ask)
+    spent_today = _live_spent_today(con, now_utc)
+    if spent_today + cost_estimate > DAILY_SPEND_CAP:
+        log.warning("[btc_pre_candle] LIVE skip: daily cap hit "
+                    "(spent=$%.2f + this=$%.2f > $%.2f)",
+                    spent_today, cost_estimate, DAILY_SPEND_CAP)
+        return "cap_hit"
+
+    token = mkt["up_token"] if side == "up" else mkt["down_token"]
+    from automata.client import place_no_order
+    try:
+        resp = place_no_order(client, token, float(chosen_ask), float(BET_SHARES))
+        order_id = str(resp.get("orderID") or resp.get("id") or "?")
+    except Exception as exc:
+        log.error("[btc_pre_candle] LIVE order failed strat=%s slug=%s: %s",
+                  strategy, mkt["slug"], exc)
+        return "order_failed"
+
+    cost_actual = round(float(BET_SHARES) * float(chosen_ask), 4)
+    next_id = con.execute("SELECT nextval('seq_btc_live_trades')").fetchone()[0]
+    con.execute("""
+        INSERT INTO live_trades
+            (id, placed_at, target_hour_utc, strategy, side,
+             slug, condition_id, token_id, shares, entry_price, cost_usdc,
+             order_id, fire_id, resolved_at, outcome, pnl_usdc)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+    """, [
+        int(next_id), now_utc, target_hour_utc, strategy, side,
+        mkt["slug"], mkt["condition_id"], token,
+        float(BET_SHARES), float(chosen_ask), cost_actual,
+        order_id, int(fire_id),
+    ])
+    log.info("[btc_pre_candle] LIVE BUY strat=%s slug=%s side=%s ask=%.4f "
+             "shares=%.2f cost=$%.2f order_id=%s",
+             strategy, mkt["slug"], side, chosen_ask,
+             float(BET_SHARES), cost_actual, order_id)
+    return "placed"
+
+
 def run_once(con: duckdb.DuckDBPyConnection, now_utc: datetime,
-             strategies: list[Strategy]) -> dict:
+             strategies: list[Strategy], *, clob_client=None) -> dict:
     summary = {"fires_recorded": 0, "settled": 0,
                "skipped_already_fired": 0, "skipped_no_signal": 0,
-               "skipped_no_market": 0, "by_strategy": {}}
+               "skipped_no_market": 0, "by_strategy": {},
+               "live_placed": 0, "live_skipped": 0}
 
     targets = candidate_target_hours(now_utc)
     if targets:
@@ -681,24 +844,49 @@ def run_once(con: duckdb.DuckDBPyConnection, now_utc: datetime,
                 summary["fires_recorded"] += 1
                 summary["by_strategy"][strat.name] += 1
 
+                if clob_client is not None and strat.name in LIVE_STRATEGIES:
+                    outcome = _try_place_live(
+                        con, clob_client,
+                        fire_id=int(next_id), strategy=strat.name, side=side,
+                        target_hour_utc=tgt, mkt=mkt,
+                        chosen_ask=float(chosen_ask), now_utc=now_utc,
+                    )
+                    if outcome == "placed":
+                        summary["live_placed"] += 1
+                    else:
+                        summary["live_skipped"] += 1
+
     summary["settled"] = settle_resolved(con, now_utc)
     return summary
 
 
-def run_daemon(interval: int = 60, once: bool = False, strategies_csv: str | None = None) -> None:
+def run_daemon(interval: int = 60, once: bool = False, strategies_csv: str | None = None,
+               bet: bool = False) -> None:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s  %(levelname)-7s  %(message)s")
     init_db()
     strategies = select_strategies(strategies_csv)
-    log.info("btc_pre_candle daemon starting; db=%s, interval=%ds, %d strategies",
-             DB_PATH, interval, len(strategies))
+
+    clob_client = None
+    if bet:
+        clob_client = _build_clob_client()
+        if clob_client is None:
+            log.error("[btc_pre_candle] --bet requested but CLOB client failed; "
+                      "running in shadow-only mode this session.")
+        else:
+            log.info("[btc_pre_candle] LIVE betting ENABLED. allowlist=%s "
+                     "shares=%.2f max_ask=%.2f daily_cap=$%.2f",
+                     sorted(LIVE_STRATEGIES), BET_SHARES, MAX_ENTRY_ASK, DAILY_SPEND_CAP)
+
+    log.info("btc_pre_candle daemon starting; db=%s, interval=%ds, %d strategies, bet=%s",
+             DB_PATH, interval, len(strategies), bool(clob_client))
 
     while True:
         now_utc = datetime.now(timezone.utc)
         con = _connect()
         try:
-            summary = run_once(con, now_utc, strategies)
+            summary = run_once(con, now_utc, strategies, clob_client=clob_client)
             log.info("cycle %s", summary)
         except Exception:  # noqa: BLE001
             log.exception("cycle failed")
@@ -716,8 +904,13 @@ def main() -> None:
     ap.add_argument("--once", action="store_true")
     ap.add_argument("--strategies", default="all",
                     help='comma-separated strategy names, or "all" (default)')
+    ap.add_argument("--bet", action="store_true",
+                    help="Place real Polymarket orders on allowlisted strategies. "
+                         "Defaults to shadow-only. Requires .env CLOB credentials. "
+                         "Run `python -m automata.eth` alongside for redeem.")
     args = ap.parse_args()
-    run_daemon(interval=args.interval, once=args.once, strategies_csv=args.strategies)
+    run_daemon(interval=args.interval, once=args.once,
+               strategies_csv=args.strategies, bet=args.bet)
 
 
 # Backwards-compat constant for any caller that imported the original single-strategy name.

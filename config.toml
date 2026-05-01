@@ -199,6 +199,26 @@ max_minutes = 7
 redeem_only_mode = true
 
 
+[btc_pre_candle]
+# Live betting — disabled by default. Enable with --bet on the CLI.
+# bet_shares: fixed shares per fire. Polymarket's orderMinSize on these
+# 1H BTC markets is 5, so 5 is the smallest legal size. At ~$0.50 entry
+# this costs ~$2.50/fire.
+bet_shares = 5
+# max_entry_ask: refuse to fire if the chosen-side ask is above this. The
+# backtest assumed flat $0.50; +30¢ slack lets us still trade when the
+# market is leaning hard, but caps loss-per-share at 65¢.
+max_entry_ask = 0.65
+# daily_spend_cap_usdc: stop placing new live orders once the day's
+# cumulative live cost crosses this (UTC day boundary).
+daily_spend_cap_usdc = 20.0
+# live_strategies: comma-separated allowlist of strategies that may bet
+# live. Anything else only records a shadow fire even with --bet on.
+# Default is the only strategy whose backtest Wilson-lower-bound clears
+# 52% breakeven on the largest sample.
+live_strategies = "P13_24h_extreme_0.2"
+
+
 [gamma]
 # EVENT_HORIZON_HOURS — how far out to fetch events from Gamma
 event_horizon_hours = 30
