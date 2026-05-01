@@ -150,7 +150,12 @@ min_delta_f = 4.0
 
 # TEMPBUY_BET_SHARES — fixed share size per bet. Skipped if free USDC
 # balance can't cover shares * price.
-bet_shares = 20.0
+bet_shares = 30.0
+
+# TEMPBUY_MIN_TOPUP_SHARES — minimum gap (target_shares - held - open_buy)
+# before topping up an existing held NO position. Avoids order spam at
+# tiny increments. Default 5.0 matches the existing $5 partial-buy floor.
+min_topup_shares = 5.0
 
 # TEMPBUY_MIN_HOURS / TEMPBUY_MAX_HOURS — only consider events whose
 # local-3pm resolution falls in [now+min_hours, now+max_hours]. The

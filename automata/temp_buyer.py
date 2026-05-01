@@ -16,7 +16,7 @@ Then, for the top eligible item that we don't already hold:
     * no live position + no open buy + no DB row on (city, event_date)
 
 …place one GTC limit buy on the NO token at the live ask for
-TEMPBUY_BET_SHARES (default 20 sh). Skipped if free USDC balance is
+TEMPBUY_BET_SHARES (default 30 sh). Skipped if free USDC balance is
 below the resulting cost.
 
 By default we only consider events resolving 4–18 hours from now —
@@ -32,7 +32,7 @@ Usage:
   python -m automata.temp_buyer --bet             # live: place the order
   python -m automata.temp_buyer --within 24       # 24h upper bound
   python -m automata.temp_buyer --min-hours 8     # require >=8h to resolution
-  python -m automata.temp_buyer --bet --shares 20
+  python -m automata.temp_buyer --bet --shares 30
 """
 from __future__ import annotations
 
@@ -88,6 +88,7 @@ log = logging.getLogger("automata.temp_buyer")
 
 def _select_for_event(
     event: dict, *, min_no_ask: float, max_no_ask: float, min_no_bid: float = 0.0,
+    held_no_token_id: str | None = None,
 ) -> dict | None:
     """
     Per-event picker: among buckets strictly below the YES-favorite whose
@@ -99,6 +100,11 @@ def _select_for_event(
     Returns the NO token id, detected unit (C/F), bucket distance to the
     favorite, and resolution time so the caller can place an order. No
     min-distance filter here — caller layers that on top.
+
+    When `held_no_token_id` is provided, return the candidate dict for
+    that exact NO token (used by the top-up pass) instead of the
+    lowest-temp pick. The same quality gates apply; if the held bucket
+    fails any gate, returns None.
     """
     from experiment.view import (
         _bucket_label,
@@ -142,24 +148,38 @@ def _select_for_event(
     except ValueError:
         return None
 
-    qualifying: list[tuple[dict, dict]] = []
-    for m, r in pairs:
+    def _passes_gates(r: dict) -> bool:
         if r["closed"]:
-            continue
+            return False
         if r["no_ask"] is None or r["no_ask"] < min_no_ask or r["no_ask"] > max_no_ask:
-            continue
+            return False
         # Exit-liquidity guard: no_bid is derived as 1 - yes_ask. If yes_ask is
         # None, no_bid is None — meaning no one is bidding to BUY our NO at any
         # price, so we'd have no exit if forecast shifts. Reject the bucket.
         if r["no_bid"] is None or r["no_bid"] < min_no_bid:
-            continue
+            return False
         if _bucket_sort_key(r["question"]) >= fav_temp:
-            continue
-        qualifying.append((m, r))
-    if not qualifying:
-        return None
-    qualifying.sort(key=lambda mr: _bucket_sort_key(mr[1]["question"]))
-    m, r = qualifying[0]
+            return False
+        return True
+
+    if held_no_token_id is not None:
+        # Top-up path: locate the held bucket and apply the same gates.
+        match = None
+        for m, r in pairs:
+            if _extract_no_token_id(m) == held_no_token_id:
+                match = (m, r)
+                break
+        if match is None:
+            return None
+        m, r = match
+        if not _passes_gates(r):
+            return None
+    else:
+        qualifying: list[tuple[dict, dict]] = [(m, r) for m, r in pairs if _passes_gates(r)]
+        if not qualifying:
+            return None
+        qualifying.sort(key=lambda mr: _bucket_sort_key(mr[1]["question"]))
+        m, r = qualifying[0]
 
     no_token_id = _extract_no_token_id(m)
     if not no_token_id:
@@ -283,11 +303,16 @@ def _cancel_stale_buy_orders(
     client: Any,
     db_token_city_date: dict[str, tuple[str, str]],
     stale_minutes: float,
+    *,
+    dry_run: bool = False,
 ) -> tuple[set[str], list[dict]]:
     """Cancel our own BUY orders older than `stale_minutes`. Returns
     (cancelled_order_ids, all_open_orders) — caller filters the second
     by the first when building dedup. Only touches orders on tokens we
-    have a DB record for, to avoid stepping on other accounts' orders."""
+    have a DB record for, to avoid stepping on other accounts' orders.
+    When dry_run=True, logs `WOULD CANCEL` and returns the IDs in
+    `cancelled` so downstream dedup matches a live run, but never
+    actually cancels."""
     import time as _time
     from automata.client import cancel_order, get_all_open_orders
 
@@ -323,6 +348,11 @@ def _cancel_stale_buy_orders(
             continue
         age_min = (_time.time() - ts) / 60
         city = db_token_city_date[tid][0]
+        if dry_run:
+            cancelled.add(order_id)
+            log.info("[stale-cancel] WOULD CANCEL BUY on %s (%.1fm old)  id=%s",
+                     city, age_min, order_id[:14])
+            continue
         try:
             cancel_order(client, order_id)
             cancelled.add(order_id)
@@ -332,7 +362,8 @@ def _cancel_stale_buy_orders(
             log.warning("[stale-cancel] %s id=%s failed: %s",
                         city, order_id[:14], exc)
     if cancelled:
-        log.info("[stale-cancel] cancelled %d order(s)", len(cancelled))
+        verb = "would cancel" if dry_run else "cancelled"
+        log.info("[stale-cancel] %s %d order(s)", verb, len(cancelled))
     return cancelled, orders
 
 
@@ -342,12 +373,14 @@ def _place_take_profit_orders(
     open_orders: list[dict],
     *,
     sell_price: float,
+    dry_run: bool = False,
 ) -> int:
     """Top up GTC limit SELLs at `sell_price` so every position is fully
     covered. For each held token, sum the open SELL shares; if the gap
     to the position size is at or above Polymarket's $1 minimum, place
     one new SELL for that gap. Reuses caller-provided position + order
-    snapshots. Returns the count of new sells placed."""
+    snapshots. Returns the count of new sells placed (or that would
+    be placed in dry-run)."""
     from automata.client import place_sell_order
 
     if not positions:
@@ -378,6 +411,15 @@ def _place_take_profit_orders(
         sell_size = math.floor(gap * 100) / 100
         if sell_size < min_gap_shares:
             continue
+        if dry_run:
+            log.info(
+                "[take-profit] WOULD SELL %.2f sh @ %.2fc  token=%s  "
+                "(pos=%.2f covered=%.2f gap=%.2f)",
+                sell_size, sell_price * 100, tid[:14],
+                size, covered, gap,
+            )
+            placed += 1
+            continue
         try:
             resp = place_sell_order(client, tid, sell_price, sell_size)
             order_id = str(resp.get("orderID") or resp.get("id") or "?")
@@ -392,9 +434,241 @@ def _place_take_profit_orders(
         except Exception as exc:
             log.warning("[take-profit] sell %s failed: %s", tid[:14], exc)
     if placed:
-        log.info("[take-profit] placed %d new sell order(s) at %.2fc",
-                 placed, sell_price * 100)
+        verb = "would place" if dry_run else "placed"
+        log.info("[take-profit] %s %d new sell order(s) at %.2fc",
+                 verb, placed, sell_price * 100)
+    else:
+        log.info("[take-profit] %d position(s), all covered — no new sells needed",
+                 len(positions))
     return placed
+
+
+def _open_buy_shares_by_token(
+    open_orders: list[dict], cancelled_order_ids: set[str],
+) -> dict[str, float]:
+    """Sum live (non-cancelled) BUY shares per token_id. Used by the
+    top-up pass so we don't double-up on a token already covered by an
+    open buy order."""
+    out: dict[str, float] = {}
+    for o in open_orders:
+        order_id = str(o.get("id") or o.get("orderID") or "")
+        if order_id in cancelled_order_ids:
+            continue
+        if str(o.get("side", "")).upper() != "BUY":
+            continue
+        tid = str(o.get("asset_id") or o.get("token_id") or "")
+        if not tid:
+            continue
+        out[tid] = out.get(tid, 0.0) + _order_open_shares(o)
+    return out
+
+
+def _run_topup_pass(
+    client: Any,
+    *,
+    host: str,
+    live_positions: list[dict],
+    open_orders: list[dict],
+    cancelled_order_ids: set[str],
+    target_shares: float,
+    min_no_ask: float,
+    max_no_ask: float,
+    min_no_bid: float,
+    min_bucket_distance: int,
+    city_blacklist: set[str],
+    min_topup_shares: float,
+    balance: float,
+    max_orders_remaining: int,
+    record_bet_fn: Any,
+    dry_run: bool = False,
+) -> tuple[int, float]:
+    """Top up held NO positions to `target_shares`. Skips the time
+    window check (held positions were validated at original entry) but
+    applies all other quality gates: ask band, bucket distance,
+    blacklist, NO bid floor. Returns (orders_placed, updated_balance).
+    When dry_run=True, logs `WOULD BUY` lines and decrements `balance`
+    as if orders were placed, but never calls place_no_order or
+    record_bet_fn."""
+    from experiment.view import _parse_json_list, fetch_events_resolving_within
+    from automata.client import get_best_bid_ask, place_no_order
+    from automata.parser import _extract_no_token_id
+
+    if max_orders_remaining <= 0:
+        log.info("[top-up] max_orders cap already consumed — skip")
+        return 0, balance
+    if balance < 5.0:
+        log.info("[top-up] balance $%.2f < $5 floor — skip top-up pass", balance)
+        return 0, balance
+
+    held_no = [
+        p for p in live_positions
+        if str(p.get("outcome", "")).lower() == "no"
+        and (p.get("token_id") or "")
+        and float(p.get("size") or 0) > 0
+    ]
+    if not held_no:
+        log.info("[top-up] no held NO positions")
+        return 0, balance
+
+    # Wide window so we don't drop events that drifted past the normal
+    # 4–18h band. The time gate is irrelevant for top-ups.
+    try:
+        events = fetch_events_resolving_within(72, min_hours=0.0)
+    except Exception as exc:
+        log.warning("[top-up] event fetch failed: %s — skipping top-up pass", exc)
+        return 0, balance
+
+    event_by_no_token: dict[str, dict] = {}
+    for ev in events:
+        for m in _parse_json_list(ev.get("markets")) or []:
+            if not isinstance(m, dict):
+                continue
+            tid = _extract_no_token_id(m)
+            if tid:
+                event_by_no_token[tid] = ev
+
+    open_buy_shares = _open_buy_shares_by_token(open_orders, cancelled_order_ids)
+
+    placed = 0
+    for pos in held_no:
+        if placed >= max_orders_remaining:
+            break
+        tid = str(pos["token_id"])
+        held_sh = float(pos["size"])
+        open_sh = open_buy_shares.get(tid, 0.0)
+        gap = round(target_shares - held_sh - open_sh, 2)
+
+        if gap < min_topup_shares:
+            log.info(
+                "[top-up] gap %.2f sh < %.2f  token=%s held=%.2f open=%.2f target=%.2f — skip",
+                gap, min_topup_shares, tid[:14], held_sh, open_sh, target_shares,
+            )
+            continue
+
+        ev = event_by_no_token.get(tid)
+        if ev is None:
+            log.info(
+                "[top-up] held token %s not found in any current event — skip",
+                tid[:14],
+            )
+            continue
+
+        sel = _select_for_event(
+            ev, min_no_ask=min_no_ask, max_no_ask=max_no_ask,
+            min_no_bid=min_no_bid, held_no_token_id=tid,
+        )
+        if sel is None:
+            log.info(
+                "[top-up] %s rejected gates (band/closed/no_bid/below-fav) — skip",
+                tid[:14],
+            )
+            continue
+        if sel["city"] in city_blacklist:
+            log.info("[top-up] %s blacklisted city — skip", sel["city"])
+            continue
+        if (sel["bucket_distance"] or 0) < min_bucket_distance:
+            log.info(
+                "[top-up] dist %d < %d  %s %s — skip",
+                sel["bucket_distance"] or 0, min_bucket_distance,
+                sel["city"], sel["bucket_label"],
+            )
+            continue
+
+        live_bid, live_ask = get_best_bid_ask(host, tid)
+        if live_ask is None:
+            log.info("[top-up] no live ask  %s %s — skip", sel["city"], sel["bucket_label"])
+            continue
+        if live_ask < min_no_ask or live_ask > max_no_ask:
+            log.info(
+                "[top-up] ask %.2fc out of band  %s — skip",
+                live_ask * 100, sel["city"],
+            )
+            continue
+        price = round(min(live_ask, max_no_ask), 4)
+
+        shares = math.floor(gap * 100) / 100
+        cost = round(shares * price, 2)
+        if balance < cost:
+            if balance < 5.0:
+                log.info("[top-up] balance $%.2f < $5 — abort top-up pass", balance)
+                break
+            affordable = math.floor((balance / price) * 100) / 100
+            if affordable < min_topup_shares:
+                log.info(
+                    "[top-up] affordable %.2f sh < %.2f  %s — skip",
+                    affordable, min_topup_shares, sel["city"],
+                )
+                continue
+            shares = affordable
+            cost = round(shares * price, 2)
+            log.info(
+                "[top-up] partial %.2f sh @ %.3f ($%.2f) using $%.2f balance",
+                shares, price, cost, balance,
+            )
+
+        log.info(
+            "[top-up] queued %s %s  +%.2f sh @ %.2fc ($%.2f)  "
+            "(held=%.2f open=%.2f gap=%.2f target=%.2f)",
+            sel["city"], sel["bucket_label"], shares, price * 100, cost,
+            held_sh, open_sh, gap, target_shares,
+        )
+
+        if dry_run:
+            log.info(
+                "[top-up] WOULD BUY %s %s  No @ %.2fc  %.2f sh ($%.2f)",
+                sel["city"], sel["bucket_label"], price * 100, shares, cost,
+            )
+            balance = round(balance - cost, 2)
+            placed += 1
+            continue
+
+        try:
+            resp = place_no_order(client, tid, price, shares, post_only=False)
+            order_id = str(resp.get("orderID") or resp.get("id") or "?")
+            status = resp.get("status") or "submitted"
+            log.info(
+                "[top-up] %s %s  BUY No @ %.2fc  %.2f sh ($%.2f)  → %s id=%s",
+                sel["city"], sel["bucket_label"], price * 100, shares, cost,
+                status, order_id[:18],
+            )
+            balance = round(balance - cost, 2)
+            placed += 1
+            try:
+                record_bet_fn(
+                    city=sel["city"],
+                    icao=None,
+                    event_date=sel["event_date"],
+                    question=sel["question"],
+                    option="No",
+                    token_id=tid,
+                    order_id=order_id,
+                    shares=shares,
+                    no_price=price,
+                    yes_price=sel.get("fav_yes_bid"),
+                    cost_usdc=cost,
+                    unit=sel["unit"],
+                    threshold=None,
+                    threshold_hi=None,
+                    direction=None,
+                    forecast_high=None,
+                )
+            except Exception as exc:
+                log.warning("[top-up] record_bet failed: %s", exc)
+        except Exception as exc:
+            log.error(
+                "[top-up] order failed for %s %s: %s",
+                sel["city"], sel["bucket_label"], exc,
+            )
+
+    if placed:
+        verb = "would place" if dry_run else "placed"
+        log.info(
+            "[top-up] %s %d top-up order(s), balance now $%.2f",
+            verb, placed, balance,
+        )
+    else:
+        log.info("[top-up] no top-ups placed")
+    return placed, balance
 
 
 def run(
@@ -413,7 +687,7 @@ def run(
     min_bucket_distance = config.get_int(
         "TEMPBUY_MIN_BUCKET_DISTANCE", "temp_buyer", "min_bucket_distance", 2
     )
-    cfg_shares  = config.get_float("TEMPBUY_BET_SHARES", "temp_buyer", "bet_shares", 20.0)
+    cfg_shares  = config.get_float("TEMPBUY_BET_SHARES", "temp_buyer", "bet_shares", 30.0)
     cfg_min_h   = config.get_float("TEMPBUY_MIN_HOURS", "temp_buyer", "min_hours", 4.0)
     cfg_max_h   = config.get_int("TEMPBUY_MAX_HOURS", "temp_buyer", "max_hours", 18)
     cfg_min_bal = config.get_float("TEMPBUY_MIN_BALANCE_USDC", "temp_buyer", "min_balance_usdc", 10.0)
@@ -427,6 +701,7 @@ def run(
         ["Seoul", "Taipei", "Lagos", "Denver", "Jakarta"],
     ))
 
+    log.info("Target shares per position: %.2f (top-ups gap up to this)", target_shares)
     log.info("Fetching events resolving in %.1f–%dh...", floor_hours, window_hours)
     events = fetch_events_resolving_within(window_hours, min_hours=floor_hours)
     log.info("  %d temperature events fetched", len(events))
@@ -468,10 +743,8 @@ def run(
         log.info("  no buy candidates after filters")
 
     if dry_run:
-        log.info("[DRY-RUN] no orders placed (use --bet to send)")
-        return
-    # Live (--bet) mode falls through even when candidates is empty, so
-    # the take-profit pass still runs against existing positions.
+        log.info("[DRY-RUN] previewing live actions — no orders will be placed")
+    # Live and dry-run both fall through: dry-run logs what live would do.
 
     # ── Live: build client, fetch balance, dedup, place order(s) ──────────
     from automata.client import (
@@ -490,7 +763,8 @@ def run(
     base_required = ["POLYMARKET_PRIVATE_KEY", "POLYMARKET_HOST"]
     missing = [k for k in base_required if not os.getenv(k)]
     if missing:
-        log.error("Missing .env keys for live betting: %s", ", ".join(missing))
+        verb = "preview" if dry_run else "live betting"
+        log.error("Missing .env keys for %s: %s", verb, ", ".join(missing))
         return
     if not (os.getenv("CLOB_API_KEY") and os.getenv("CLOB_SECRET") and os.getenv("CLOB_PASS")):
         try:
@@ -534,10 +808,11 @@ def run(
     db_token_city_date = get_token_city_date_map()
     stale_minutes = config.get_float("TEMPBUY_STALE_MINUTES", "temp_buyer", "stale_minutes", 10.0)
     cancelled_order_ids, all_open_orders = _cancel_stale_buy_orders(
-        client, db_token_city_date, stale_minutes,
+        client, db_token_city_date, stale_minutes, dry_run=dry_run,
     )
-    # Refresh balance — cancellations release reserved USDC.
-    if cancelled_order_ids:
+    # Refresh balance — cancellations release reserved USDC. Skip in
+    # dry-run (no real cancels happened, so balance hasn't changed).
+    if cancelled_order_ids and not dry_run:
         try:
             balance = get_usdc_balance(client)
             log.info("[stale-cancel] balance after cancels: $%.2f", balance)
@@ -581,20 +856,45 @@ def run(
     ]
     _place_take_profit_orders(
         client, live_positions, active_open_orders,
-        sell_price=take_profit_price,
+        sell_price=take_profit_price, dry_run=dry_run,
+    )
+
+    # ── Top-up pass: bring held NO positions up to target_shares ─────────
+    min_topup_shares = config.get_float(
+        "TEMPBUY_MIN_TOPUP_SHARES", "temp_buyer", "min_topup_shares", 5.0,
+    )
+    topup_placed, balance = _run_topup_pass(
+        client,
+        host=os.environ["POLYMARKET_HOST"],
+        live_positions=live_positions,
+        open_orders=all_open_orders,
+        cancelled_order_ids=cancelled_order_ids,
+        target_shares=target_shares,
+        min_no_ask=min_no_ask,
+        max_no_ask=max_no_ask,
+        min_no_bid=min_no_bid,
+        min_bucket_distance=min_bucket_distance,
+        city_blacklist=city_blacklist,
+        min_topup_shares=min_topup_shares,
+        balance=balance,
+        max_orders_remaining=max_orders,
+        record_bet_fn=record_bet,
+        dry_run=dry_run,
     )
 
     if balance < cfg_min_bal:
         log.info("Balance $%.2f below $%.2f floor — skipping buy pass "
-                 "(take-profit completed)", balance, cfg_min_bal)
+                 "(take-profit + top-up completed)", balance, cfg_min_bal)
         return
     if not candidates:
-        log.info("[temp-buyer] done — take-profit pass only (no buy candidates)")
+        log.info("[temp-buyer] done — no new-entry candidates (top-up=%d)", topup_placed)
         return
 
     placed = 0
     for c in candidates:
-        if placed >= max_orders:
+        if (placed + topup_placed) >= max_orders:
+            log.info("[temp-buyer] max_orders cap reached (top-up=%d new=%d) — stopping",
+                     topup_placed, placed)
             break
 
         # Event-level dedup: skip if we already hold (or have an open buy on)
@@ -631,6 +931,16 @@ def run(
             cost = round(shares * price, 2)
             log.info("  partial size %.2f sh @ %.3f ($%.2f) — using available balance $%.2f",
                      shares, price, cost, balance)
+
+        if dry_run:
+            log.info(
+                "[temp-buyer] WOULD BUY %s %s  No @ %.2fc  %.2f sh ($%.2f)",
+                c["city"], c["bucket_label"], price * 100, shares, cost,
+            )
+            balance = round(balance - cost, 2)
+            placed += 1
+            held_token_ids |= c["event_token_ids"]
+            continue
 
         try:
             resp = place_no_order(client, c["no_token_id"], price, shares, post_only=False)
@@ -672,7 +982,8 @@ def run(
             log.error("[temp-buyer] order failed for %s %s: %s",
                       c["city"], c["bucket_label"], exc)
 
-    log.info("  done — %d order(s) placed, $%.2f balance remaining", placed, balance)
+    verb = "would place" if dry_run else "placed"
+    log.info("  done — %d order(s) %s, $%.2f balance remaining", placed, verb, balance)
 
 
 def main() -> int:
@@ -689,7 +1000,7 @@ def main() -> int:
                    help="Drop events resolving sooner than this many hours from now "
                         "(default: [temp_buyer].min_hours = 4)")
     p.add_argument("--shares", type=float, default=None,
-                   help="Shares per bet (default: [temp_buyer].bet_shares = 20)")
+                   help="Shares per bet (default: [temp_buyer].bet_shares = 30)")
     p.add_argument("--max-orders", type=int, default=1,
                    help="How many bets to place this run (default 1, top-of-list)")
     p.add_argument("--stale-minutes", type=float, default=None,
