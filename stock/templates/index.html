@@ -34,6 +34,8 @@
       <a class="btn btn-sm btn-outline-primary" href="weather-log">Weather Log</a>
       <a class="btn btn-sm btn-outline-success" href="weather-pro">Weather Pro</a>
       <a class="btn btn-sm btn-outline-info" href="weather-model">Weather Model</a>
+      <a class="btn btn-sm btn-outline-warning" href="polymarket-temps">Polymarket Temps</a>
+      <a class="btn btn-sm btn-outline-danger" href="btc-shadow">BTC Shadow</a>
       <small class="text-muted" id="health-meta"></small>
       <small class="text-muted" id="last-refresh"></small>
       <button class="btn btn-sm btn-outline-secondary" onclick="refreshAll()">&#x21bb; Refresh</button>
@@ -284,9 +286,9 @@
     </div>
   </div>
 
-  <!-- Row 7: movers -->
+  <!-- Row 7: movers + momentum -->
   <div class="row g-3 mb-3">
-    <div class="col-xl-6">
+    <div class="col-xl-4">
       <div class="card h-100">
         <div class="card-header fw-semibold">Top 10 Rising (S&P 500)</div>
         <div class="card-body p-0">
@@ -297,7 +299,7 @@
         </div>
       </div>
     </div>
-    <div class="col-xl-6">
+    <div class="col-xl-4">
       <div class="card h-100">
         <div class="card-header fw-semibold">Top 10 Losing (S&P 500)</div>
         <div class="card-body p-0">
@@ -307,6 +309,41 @@
           </table>
         </div>
       </div>
+    </div>
+    <div class="col-xl-4">
+      <div class="card h-100">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span>Top 10 Momentum (S&P 500)</span>
+          <small class="text-muted fw-normal" id="momentum-asof"
+            title="Composite cross-sectional z-score: equal-weight average of (1) 1-month return, (2) 6-month return skipping the most recent month, and (3) distance from 200-day SMA. Each factor is winsorized at ±3 standard deviations across the S&P 500 universe. Strength score, not probability — higher score historically correlates with continuation, but isn't a modeled win-rate. Refs: Jegadeesh-Titman 1993; Asness-Moskowitz-Pedersen 2013.">
+            strength score · ⓘ
+          </small>
+        </div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0">
+            <thead><tr>
+              <th>Sym</th><th>Sector</th>
+              <th class="text-end">Score</th>
+              <th class="text-end">1M</th>
+              <th class="text-end">6-1</th>
+              <th class="text-end">vs 200d</th>
+              <th class="text-end">RSI</th>
+            </tr></thead>
+            <tbody id="momentum-up"><tr><td colspan="7" class="text-muted text-center py-3">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Row 7c: momentum chart (last 60d, normalized to 100) -->
+  <div class="card mb-3">
+    <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+      <span>Top 10 Momentum — Normalized Price (last 60 trading days)</span>
+      <small class="text-muted fw-normal">all lines start at 100; slope = trend, gap = relative outperformance</small>
+    </div>
+    <div class="card-body">
+      <canvas id="momentum-chart" style="max-height:380px"></canvas>
     </div>
   </div>
 

@@ -1067,7 +1067,7 @@ def _scan_positions(dry_run: bool = True) -> None:
         log.warning("POLYMARKET_FUNDER not set — cannot scan positions")
         return
 
-    from automata.client import build_client, get_positions, get_open_orders, place_sell_order, place_market_sell, get_best_bid
+    from automata.client import build_client, get_positions, get_open_orders, place_sell_order
     client = build_client(
         host=os.environ["POLYMARKET_HOST"],
         private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
@@ -1088,20 +1088,7 @@ def _scan_positions(dry_run: bool = True) -> None:
         token_id = pos["token_id"]
         size     = pos["size"]
         if size < 5:
-            host = os.environ["POLYMARKET_HOST"]
-            bid = get_best_bid(host, token_id)
-            if bid is not None and bid >= take_profit:
-                if dry_run:
-                    log.info("  token %s  %.2f shares — [DRY RUN] bid %.1f¢ >= %.1f¢, would market sell", token_id[:12], size, bid * 100, take_profit * 100)
-                else:
-                    try:
-                        resp = place_market_sell(client, token_id, bid, size)
-                        order_id = resp.get("orderID") or resp.get("id") or "?"
-                        log.info("  token %s  %.2f shares — market sell @ %.1f¢  id=%s", token_id[:12], size, bid * 100, order_id)
-                    except Exception as exc:
-                        log.error("  token %s — market sell failed: %s", token_id[:12], exc)
-            else:
-                log.info("  token %s  %.2f shares — too small, bid not at target yet", token_id[:12], size)
+            log.info("  token %s  %.2f shares — below 5-share floor, skipping", token_id[:12], size)
             continue
         orders   = get_open_orders(client, token_id)
         existing_sells = [o for o in orders if str(o.get("side", "")).upper() == "SELL"]

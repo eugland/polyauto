@@ -48,6 +48,7 @@ city_blacklist = [
     "Chongqing",
     "Hong Kong",
     "Shenzhen",
+    "Busan",
 ]
 
 # ── Temperature safety margins ────────────────────────────────────────────
@@ -130,6 +131,60 @@ bet_passes = 2
 bet_pass_wait_seconds = 10
 
 
+[temp_buyer]
+# automata.temp_buyer — buys NO at the top of the experiment.view list
+# (lowest temp bucket sitting strictly below the YES-favorite). The
+# city blacklist is shared with [weather] so this section doesn't
+# duplicate it.
+
+# TEMPBUY_MIN_NO_ASK / TEMPBUY_MAX_NO_ASK — accept buckets with NO ask
+# in [min, max] (inclusive). min=0.97 matches the user spec "c > 97".
+# max=0.998 deliberately excludes 99.9¢ buckets — the saturated top-of-
+# stack — so we pick the next bucket down (more upside per share).
+min_no_ask = 0.97
+max_no_ask = 0.998
+
+# TEMPBUY_MIN_DELTA_C / TEMPBUY_MIN_DELTA_F — gap to YES-favorite
+# bucket required, applied per-event using the question's unit.
+min_delta_c = 2.0
+min_delta_f = 4.0
+
+# TEMPBUY_BET_SHARES — fixed share size per bet. Skipped if free USDC
+# balance can't cover shares * price.
+bet_shares = 30.0
+
+# TEMPBUY_MIN_TOPUP_SHARES — minimum gap (target_shares - held - open_buy)
+# before topping up an existing held NO position. Avoids order spam at
+# tiny increments. Default 5.0 matches the existing $5 partial-buy floor.
+min_topup_shares = 5.0
+
+# TEMPBUY_MIN_HOURS / TEMPBUY_MAX_HOURS — only consider events whose
+# local-3pm resolution falls in [now+min_hours, now+max_hours]. The
+# 4-hour floor skips events too close to resolution to react to;
+# capping at 18h drops events where the YES favorite hasn't settled.
+min_hours = 4.0
+max_hours = 18
+
+# TEMPBUY_STALE_MINUTES — cancel our own unfilled BUY orders older than
+# this many minutes at the start of every live run. Frees the USDC that
+# Polymarket has reserved for those resting orders so it can be
+# redeployed. Set 0 to disable; lower = faster reclaim, but cancels
+# orders that might still fill at troughs.
+stale_minutes = 10.0
+
+# TEMPBUY_MIN_BALANCE_USDC — USDC reserve. The bot will never spend down
+# past this balance: bet sizes are computed against (balance - reserve),
+# the new-buy pass is skipped if balance ≤ reserve, and partial-fills use
+# only the spendable surplus. Set 0 to disable.
+min_balance_usdc = 16.0
+
+# TEMPBUY_TAKE_PROFIT_PRICE — every live cycle, place a GTC limit SELL at
+# this price on each held NO token that doesn't already have an open sell
+# order. 0.999 = 99.9¢ — only fills if the market spikes that high, in
+# which case we're happy to take it. Existing sell orders are not touched.
+take_profit_price = 0.999
+
+
 [eth_1h]
 # SELL_TARGET — take-profit price (ignored when redeem_only_mode = true)
 sell_target = 0.99
@@ -144,6 +199,26 @@ min_minutes = 0
 max_minutes = 7
 # REDEEM_ONLY_MODE — hold to resolution/redeem; no TP sell placement
 redeem_only_mode = true
+
+
+[btc_pre_candle]
+# Live betting — disabled by default. Enable with --bet on the CLI.
+# bet_shares: fixed shares per fire. Polymarket's orderMinSize on these
+# 1H BTC markets is 5, so 5 is the smallest legal size. At ~$0.50 entry
+# this costs ~$2.50/fire.
+bet_shares = 5
+# max_entry_ask: refuse to fire if the chosen-side ask is above this. The
+# backtest assumed flat $0.50; +30¢ slack lets us still trade when the
+# market is leaning hard, but caps loss-per-share at 65¢.
+max_entry_ask = 0.65
+# daily_spend_cap_usdc: stop placing new live orders once the day's
+# cumulative live cost crosses this (UTC day boundary).
+daily_spend_cap_usdc = 20.0
+# live_strategies: comma-separated allowlist of strategies that may bet
+# live. Anything else only records a shadow fire even with --bet on.
+# Default is the only strategy whose backtest Wilson-lower-bound clears
+# 52% breakeven on the largest sample.
+live_strategies = "P13_24h_extreme_0.2"
 
 
 [gamma]

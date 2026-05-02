@@ -167,13 +167,15 @@ def _bucket_resolution(condition_id: str) -> tuple[bool, bool] | None:
 
 def _redeem_resolved_held_events(dry_run: bool, log: logging.Logger) -> dict:
     """
-    For each held event, query each bucket's on-chain payout. Redeem the YES of
-    any bucket whose YES is the winning side (we never hold NO post-CONVERT).
-    Idempotent at the action level — re-redeeming a zero balance is a no-op.
+    Walk the live portfolio (data-api /positions). For each unique conditionId
+    we hold a position in, query on-chain payout. If the bucket has resolved
+    and we hold the winning side, redeem via NegRiskAdapter.
+
+    No Gamma payload, no DB — purely positions + on-chain payout. This means
+    resolved markets that have dropped out of Gamma's open feed still get
+    redeemed.
     """
-    from automata.polymarket import fetch_temperature_markets_payload
     from automata.splitter import action_redeem_neg_risk
-    from automata.parser import _extract_yes_token_id, _extract_no_token_id
     from automata.client import get_positions
 
     funder = os.getenv("POLYMARKET_FUNDER") or ""
@@ -181,44 +183,39 @@ def _redeem_resolved_held_events(dry_run: bool, log: logging.Logger) -> dict:
         return {"redeemed": 0, "error": "no funder"}
 
     held = get_positions(funder)
-    held_tokens = {p["token_id"] for p in held if p.get("size", 0) > 0.01}
-    if not held_tokens:
+    if not held:
         return {"redeemed": 0, "skipped": "no held tokens"}
 
-    payload = fetch_temperature_markets_payload()
-    # Build (conditionId → metadata) for every weather market we hold YES of
-    conds_to_check: list[dict] = []
-    for raw in payload["markets"]:
-        yes_tok = _extract_yes_token_id(raw)
-        no_tok = _extract_no_token_id(raw)
-        if not (yes_tok in held_tokens or no_tok in held_tokens):
+    # Group held positions by conditionId. Only neg-risk positions are
+    # eligible — action_redeem_neg_risk uses the NegRiskAdapter path.
+    by_cid: dict[str, list[dict]] = {}
+    for p in held:
+        cid = p.get("conditionId") or ""
+        if not cid or not p.get("negativeRisk"):
             continue
-        cid = raw.get("conditionId")
-        if not cid:
-            continue
-        conds_to_check.append({
-            "conditionId": cid,
-            "event_slug": raw.get("event_slug"),
-            "question": raw.get("groupItemTitle") or raw.get("question"),
-        })
+        by_cid.setdefault(cid, []).append(p)
+
+    if not by_cid:
+        return {"redeemed": 0, "skipped": "no neg-risk held"}
 
     redeemed = 0
-    for c in conds_to_check:
-        status = _bucket_resolution(c["conditionId"])
+    for cid, positions in by_cid.items():
+        status = _bucket_resolution(cid)
         if status is None or not status[0]:
             continue
-        is_resolved, yes_won = status
-        if not yes_won:
-            continue  # YES of this bucket is the loser side — redemption gives $0, skip
-        log.info("[REDEEM] %s | %s | conditionId=%s",
-                 c.get("event_slug", ""), c.get("question", ""), c["conditionId"][:18])
+        _, yes_won = status
+        held_outcomes = {p.get("outcome", "").lower() for p in positions}
+        winning_side = "yes" if yes_won else "no"
+        tokens_str = ",".join(p["token_id"][:8] for p in positions)
+        log.info("[REDEEM] cid=%s  winning_side=%s  held=%s  tokens=%s",
+                 cid[:18], winning_side, ",".join(sorted(held_outcomes)) or "?", tokens_str)
         try:
-            res = action_redeem_neg_risk(c["conditionId"], dry_run, log)
+            res = action_redeem_neg_risk(cid, dry_run, log)
             if res.get("ok") and not res.get("dry_run"):
                 redeemed += 1
         except Exception as exc:
-            log.warning("redeem failed on %s: %s", c["conditionId"][:14], exc)
-    return {"redeemed": redeemed, "checked": len(conds_to_check)}
+            log.warning("redeem failed on %s: %s", cid[:14], exc)
+    return {"redeemed": redeemed, "checked": len(by_cid)}
 
 
 # ───────────── Cancel-on-exit: cancel all open CLOB sells before stopping ────
@@ -316,6 +313,7 @@ def runner(
     pick_interval: int,
     maintenance_interval: int,
     redeem_interval: int,
+    redeem_enabled: bool,
     free_usdc_buffer: float,
     once: bool,
     min_shares: float,
@@ -332,8 +330,10 @@ def runner(
     log.info("──────── RUNNER START ────────")
     log.info("  dry_run=%s  per-trade=$%.2f  budget=$%.2f  max-events=%d  min-score=%.0f",
              dry_run, usdc_per_trade, budget, max_events, min_score)
-    log.info("  intervals: pick=%ds  maintain=%ds  redeem=%ds  summary=%ds",
-             pick_interval, maintenance_interval, redeem_interval, summary_interval)
+    log.info("  intervals: pick=%ds  maintain=%ds  redeem=%s  summary=%ds",
+             pick_interval, maintenance_interval,
+             f"{redeem_interval}s" if redeem_enabled else "disabled",
+             summary_interval)
     log.info("  cancel_on_exit=%s  funder=%s", cancel_on_exit, funder)
     log.info("──────────────────────────────")
 
@@ -378,7 +378,7 @@ def runner(
                 last_maintenance_at = now
 
             # ─── REDEEM: cash out resolved events ─────────────────────────────
-            if now - last_redeem_at >= redeem_interval:
+            if redeem_enabled and now - last_redeem_at >= redeem_interval:
                 try:
                     stats = _redeem_resolved_held_events(dry_run, log)
                     log.info("[redeem] checked=%d redeemed=%d",
@@ -460,7 +460,10 @@ def runner(
                 return
 
             # Sleep until the next loop event (smallest interval). Catches signals.
-            sleep_for = min(maintenance_interval, redeem_interval, pick_interval, 60)
+            intervals = [maintenance_interval, pick_interval, 60]
+            if redeem_enabled:
+                intervals.append(redeem_interval)
+            sleep_for = min(intervals)
             time.sleep(sleep_for)
     except KeyboardInterrupt:
         log.info("──── RUNNER STOPPING (KeyboardInterrupt) ────")
@@ -483,12 +486,12 @@ def runner(
 
 def main() -> int:
     p = argparse.ArgumentParser(description="Autonomous aapang-style trading runner")
-    p.add_argument("--usdc", type=float, default=5.0,
-                   help="Per-event SPLIT amount in USDC (= shares per bucket). Default $5.")
-    p.add_argument("--budget", type=float, default=50.0,
-                   help="Max $ committed across all held events at once. Default $50.")
-    p.add_argument("--max-events", type=int, default=10,
-                   help="Max concurrent distinct events in play. Default 10.")
+    p.add_argument("--usdc", type=float, default=20.0,
+                   help="Per-event SPLIT amount in USDC (= shares per bucket). Default $20.")
+    p.add_argument("--budget", type=float, default=150.0,
+                   help="Max $ committed across all held events at once. Default $150.")
+    p.add_argument("--max-events", type=int, default=50,
+                   help="Max concurrent distinct events in play. Default 50.")
     p.add_argument("--min-score", type=float, default=30.0,
                    help="Picker minimum score to take an event. Default 30.")
     p.add_argument("--pick-interval", type=int, default=1800,
@@ -497,6 +500,10 @@ def main() -> int:
                    help="Seconds between seller_bot scans. Default 60.")
     p.add_argument("--redeem-interval", type=int, default=300,
                    help="Seconds between redeem scans. Default 300 (5min).")
+    p.add_argument("--redeem", dest="redeem", action="store_true", default=False,
+                   help="Enable the auto-redeem loop. Default: disabled.")
+    p.add_argument("--no-redeem", dest="redeem", action="store_false",
+                   help="Disable the auto-redeem loop (default).")
     p.add_argument("--free-usdc-buffer", type=float, default=1.0,
                    help="Reserve this much extra USDC above per-trade for slack. Default $1.")
     p.add_argument("--min-gap", type=int, default=2,
@@ -529,6 +536,7 @@ def main() -> int:
         pick_interval=max(60, args.pick_interval),
         maintenance_interval=max(15, args.maintenance_interval),
         redeem_interval=max(60, args.redeem_interval),
+        redeem_enabled=args.redeem,
         free_usdc_buffer=args.free_usdc_buffer,
         once=args.once,
         min_shares=args.min_shares,

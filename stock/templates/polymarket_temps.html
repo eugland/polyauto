@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7fbff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
+  <title>Polymarket Temps</title>
+  <script>
+    (function () {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const set = (m) => document.documentElement.setAttribute(
+        'data-bs-theme', m.matches ? 'dark' : 'light');
+      set(mq);
+      mq.addEventListener('change', set);
+    })();
+  </script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="static/css/style.css?v=adaptive1">
+  <style>
+    .toolbar { padding: 10px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .wrap { max-width: 1280px; }
+    table.temps { width: 100%; }
+    table.temps th, table.temps td {
+      font-size: 0.95rem;
+      vertical-align: middle;
+      padding: 8px 14px;
+      white-space: nowrap;
+    }
+    table.temps th { font-weight: 600; color: var(--bs-secondary-color); }
+    table.temps td.num,
+    table.temps th.num { font-variant-numeric: tabular-nums; text-align: right; }
+    table.temps td.mono,
+    table.temps th.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    table.temps td.city a { text-decoration: none; color: var(--bs-body-color); font-weight: 500; }
+    table.temps td.city a:hover { text-decoration: underline; color: var(--bs-link-color); }
+    table.temps td.city .date { color: var(--bs-secondary-color); margin-left: 8px; font-variant-numeric: tabular-nums; font-size: 0.85rem; }
+    .muted { color: var(--bs-secondary-color); }
+  </style>
+</head>
+<body>
+<div class="container py-2 wrap">
+  <div class="toolbar">
+    <a class="btn btn-sm btn-outline-secondary" href="./">&larr; Dashboard</a>
+    <span class="text-muted small ms-2">Within</span>
+    <select id="within" class="form-select form-select-sm" style="width:80px">
+      <option value="6">6h</option>
+      <option value="12" selected>12h</option>
+      <option value="24">24h</option>
+      <option value="48">48h</option>
+    </select>
+    <span class="text-muted small ms-2">NO bid &ge;</span>
+    <input id="min-no-bid" class="form-control form-control-sm" style="width:75px" type="number" step="0.01" min="0" max="1" value="0.95">
+    <span class="text-muted small ms-2">&Delta; &ge;</span>
+    <input id="min-delta" class="form-control form-control-sm" style="width:65px" type="number" step="1" min="0" value="2">
+    <button id="refresh" class="btn btn-sm btn-outline-primary ms-2">&#x21bb;</button>
+    <span id="status" class="text-muted small ms-auto"></span>
+  </div>
+
+  <table class="table table-sm table-hover temps mb-0">
+    <thead>
+      <tr>
+        <th>City</th>
+        <th class="num">Resolves</th>
+        <th class="num mono">Bucket</th>
+        <th class="num">NO ask</th>
+        <th class="num">NO bid</th>
+        <th class="num mono">Fav</th>
+        <th class="num">&Delta;</th>
+      </tr>
+    </thead>
+    <tbody id="rows">
+      <tr><td colspan="7" class="text-muted text-center py-3">Loading&hellip;</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtPct = (p) => p == null ? '-' : (p * 100).toFixed(1) + 'c';
+const fmtDelta = (d) => d == null ? '-' : (d === Math.round(d) ? d.toFixed(0) : d.toFixed(1));
+
+function withBasePath(url) {
+  if (!url || !url.startsWith('/')) return url;
+  const p = window.location.pathname || '/';
+  if (p === '/stock' || p.startsWith('/stock/')) return '/stock' + url;
+  return url;
+}
+
+async function load() {
+  const within = $('within').value;
+  const minNoBid = $('min-no-bid').value;
+  const minDelta = $('min-delta').value;
+  $('status').textContent = 'Loading…';
+  $('rows').innerHTML = '<tr><td colspan="10" class="text-muted text-center py-3">Loading&hellip;</td></tr>';
+  const qs = new URLSearchParams({ within, min_no_bid: minNoBid, min_delta: minDelta });
+  try {
+    const resp = await fetch(withBasePath('/api/polymarket-temps') + '?' + qs.toString());
+    const body = await resp.json();
+    if (!resp.ok || body.error) {
+      $('status').textContent = 'Error: ' + (body.error || resp.statusText);
+      return;
+    }
+    render(body.rows || []);
+    $('status').textContent = `${(body.rows || []).length} events · ${new Date().toLocaleTimeString()}`;
+  } catch (exc) {
+    $('status').textContent = 'Error: ' + exc.message;
+  }
+}
+
+function render(rows) {
+  if (!rows.length) {
+    $('rows').innerHTML = '<tr><td colspan="7" class="text-muted text-center py-3">No events match the filters.</td></tr>';
+    return;
+  }
+  const html = rows.map(r => {
+    const fav = r.fav_label
+      ? `${escapeHtml(r.fav_label)} <span class="muted">${fmtPct(r.fav_yes_bid)}</span>`
+      : '<span class="muted">-</span>';
+    return `
+      <tr>
+        <td class="city"><a href="${escapeAttr(r.url)}" target="_blank" rel="noopener">${escapeHtml(r.city)}</a><span class="date">${escapeHtml(r.date)}</span></td>
+        <td class="num">${escapeHtml(r.resolves_local)}</td>
+        <td class="num mono">${escapeHtml(r.bucket_label)}</td>
+        <td class="num">${fmtPct(r.no_ask)}</td>
+        <td class="num">${fmtPct(r.no_bid)}</td>
+        <td class="num mono">${fav}</td>
+        <td class="num">${fmtDelta(r.delta)}</td>
+      </tr>`;
+  }).join('');
+  $('rows').innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+function escapeAttr(s) {
+  return escapeHtml(s).replaceAll('"', '&quot;');
+}
+
+$('refresh').addEventListener('click', load);
+$('within').addEventListener('change', load);
+$('min-no-bid').addEventListener('change', load);
+$('min-delta').addEventListener('change', load);
+load();
+</script>
+</body>
+</html>

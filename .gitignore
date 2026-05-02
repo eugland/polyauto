@@ -86,3 +86,7 @@ Thumbs.db
 db/
 logs/
 experiment/cache/
+
+# btc_1h_backtest: source under VCS, generated artifacts ignored
+experiment/btc_1h_backtest/results*.parquet
+experiment/btc_1h_backtest/REPORT*.md

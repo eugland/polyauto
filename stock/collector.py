@@ -120,6 +120,22 @@ def init_db(path: str | Path) -> duckdb.DuckDBPyConnection:
             PRIMARY KEY(event_date, event_time, name)
         )
     """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS momentum_snapshots (
+            as_of_date     DATE,
+            symbol         VARCHAR,
+            ret_21d        DOUBLE,
+            ret_126_21     DOUBLE,
+            sma_200        DOUBLE,
+            dist_sma200    DOUBLE,
+            rsi_14         DOUBLE,
+            z_ret_21d      DOUBLE,
+            z_ret_126_21   DOUBLE,
+            z_dist_sma200  DOUBLE,
+            composite_z    DOUBLE,
+            PRIMARY KEY(as_of_date, symbol)
+        )
+    """)
     init_pro_schema(con)
     return con
 
@@ -262,6 +278,141 @@ def prune_daily(con: duckdb.DuckDBPyConnection, keep_days: int = 1850) -> None:
 
 def prune_vol(con: duckdb.DuckDBPyConnection, keep_days: int = 60) -> None:
     con.execute(f"DELETE FROM vol_snapshots WHERE ts < CURRENT_TIMESTAMP - INTERVAL {keep_days} DAY")
+
+
+def refresh_momentum_snapshot(con: duckdb.DuckDBPyConnection) -> int:
+    """
+    Compute a one-row-per-S&P-500-symbol momentum snapshot keyed by `as_of_date`.
+
+    Three orthogonal factors are combined into a cross-sectional composite z-score:
+      1. ret_21d        — 1-month return                          (close[t]/close[t-21] - 1)
+      2. ret_126_21     — 6-month skip-1-month return             (close[t-21]/close[t-126] - 1)
+      3. dist_sma200    — distance above 200-day simple MA        (close[t]/sma_200 - 1)
+
+    SMA-200 uses closes through `t-1` so the long-trend baseline doesn't
+    whipsaw on a partial intraday bar. RSI(14) is recorded as a display
+    column but excluded from the composite — it's mean-reverting at extremes
+    and would invert the intended signal.
+
+    Each per-factor cross-sectional z-score is winsorized at ±3 before
+    averaging. Stocks with <130 daily bars are written with `composite_z=NULL`
+    (excluded from the leaderboard, preserved for diagnostics).
+
+    Returns the number of rows upserted.
+    """
+    import pandas as pd
+    import numpy as np
+
+    today = date.today()
+
+    # Pull the full daily-bar history we need, restricted to S&P 500 names
+    rows = con.execute("""
+        SELECT b.symbol, b.date, b.close
+        FROM daily_bars b
+        JOIN universe u ON u.symbol = b.symbol
+        WHERE u.is_sp500 = TRUE AND b.close IS NOT NULL AND b.close > 0
+        ORDER BY b.symbol, b.date
+    """).fetchall()
+    if not rows:
+        return 0
+    df = pd.DataFrame(rows, columns=["symbol", "date", "close"])
+
+    # Per-symbol indicators
+    out: list[dict] = []
+    for sym, g in df.groupby("symbol", sort=False):
+        g = g.sort_values("date").reset_index(drop=True)
+        n = len(g)
+        if n < 22:   # not enough history for even ret_21d
+            out.append({
+                "symbol": sym, "ret_21d": None, "ret_126_21": None,
+                "sma_200": None, "dist_sma200": None, "rsi_14": None,
+            })
+            continue
+        c = g["close"].to_numpy(dtype=float)
+
+        # 1-month return
+        ret_21d = c[-1] / c[-22] - 1.0
+
+        # 6-month skip-1: close[t-21] / close[t-126] - 1
+        ret_126_21 = (c[-22] / c[-127] - 1.0) if n >= 127 else None
+
+        # SMA-200 using closes [t-200..t-1] inclusive — exclude today's bar
+        if n >= 201:
+            sma_200 = float(c[-201:-1].mean())
+            dist_sma200 = c[-1] / sma_200 - 1.0 if sma_200 > 0 else None
+        else:
+            sma_200 = None
+            dist_sma200 = None
+
+        # RSI(14) Wilder
+        if n >= 16:
+            deltas = np.diff(c)
+            gains  = np.clip(deltas,  0, None)
+            losses = np.clip(-deltas, 0, None)
+            avg_g = gains[:14].mean()
+            avg_l = losses[:14].mean()
+            for i in range(14, len(deltas)):
+                avg_g = (avg_g * 13 + gains[i])  / 14
+                avg_l = (avg_l * 13 + losses[i]) / 14
+            if avg_l <= 0:
+                rsi_14 = 100.0
+            else:
+                rsi_14 = 100.0 - 100.0 / (1.0 + avg_g / avg_l)
+        else:
+            rsi_14 = None
+
+        out.append({
+            "symbol":      sym,
+            "ret_21d":     float(ret_21d),
+            "ret_126_21":  float(ret_126_21) if ret_126_21 is not None else None,
+            "sma_200":     sma_200,
+            "dist_sma200": float(dist_sma200) if dist_sma200 is not None else None,
+            "rsi_14":      float(rsi_14) if rsi_14 is not None else None,
+        })
+
+    snap = pd.DataFrame(out)
+
+    def _winsorize_zscore(s: pd.Series) -> pd.Series:
+        valid = s.dropna()
+        if len(valid) < 30:
+            return pd.Series([None] * len(s), index=s.index, dtype="float64")
+        mu, sd = valid.mean(), valid.std(ddof=1)
+        if not sd or sd == 0:
+            return pd.Series([None] * len(s), index=s.index, dtype="float64")
+        z = (s - mu) / sd
+        return z.clip(lower=-3.0, upper=3.0)
+
+    snap["z_ret_21d"]     = _winsorize_zscore(snap["ret_21d"])
+    snap["z_ret_126_21"]  = _winsorize_zscore(snap["ret_126_21"])
+    snap["z_dist_sma200"] = _winsorize_zscore(snap["dist_sma200"])
+
+    # Composite — only valid when all three factor z-scores are present.
+    # Stocks with <130 days of history won't have ret_126_21 / dist_sma200,
+    # which is the intended "min history" filter.
+    z_cols = ["z_ret_21d", "z_ret_126_21", "z_dist_sma200"]
+    snap["composite_z"] = snap[z_cols].mean(axis=1, skipna=False)
+
+    # Upsert (DuckDB: delete-then-insert for the day)
+    con.execute("DELETE FROM momentum_snapshots WHERE as_of_date = ?", [today])
+    insert_rows = [
+        (
+            today, r["symbol"],
+            r["ret_21d"], r["ret_126_21"], r["sma_200"], r["dist_sma200"], r["rsi_14"],
+            (None if pd.isna(r["z_ret_21d"]) else float(r["z_ret_21d"])),
+            (None if pd.isna(r["z_ret_126_21"]) else float(r["z_ret_126_21"])),
+            (None if pd.isna(r["z_dist_sma200"]) else float(r["z_dist_sma200"])),
+            (None if pd.isna(r["composite_z"]) else float(r["composite_z"])),
+        )
+        for _, r in snap.iterrows()
+    ]
+    con.executemany("""
+        INSERT INTO momentum_snapshots (
+            as_of_date, symbol,
+            ret_21d, ret_126_21, sma_200, dist_sma200, rsi_14,
+            z_ret_21d, z_ret_126_21, z_dist_sma200, composite_z
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, insert_rows)
+    return len(insert_rows)
 
 
 # ── Steps ─────────────────────────────────────────────────────────────────────
@@ -906,6 +1057,12 @@ def collect_once(con: duckdb.DuckDBPyConnection, state: dict,
         n = refresh_daily_bars(con, rest_syms, on_chunk=_after_chunk)
         log.info("Daily bars refreshed (%d rows upserted)", n)
         state["last_daily"] = now
+
+        try:
+            n_mom = refresh_momentum_snapshot(con)
+            log.info("Momentum snapshot upserted (%d rows)", n_mom)
+        except Exception:
+            log.exception("refresh_momentum_snapshot failed")
     else:
         try:
             n_quotes = refresh_quotes(con)

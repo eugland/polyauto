@@ -36,6 +36,16 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from automata import config
+from automata.crypto_common import (
+    HEADERS,
+    MONTH_NAMES,
+    _black_scholes_digital_up_prob,
+    _fetch_1m_momentum,
+    _get,
+    _normal_cdf,
+    _realized_annual_vol,
+    build_slug,
+)
 
 log = logging.getLogger("automata.eth_1h")
 
@@ -69,16 +79,7 @@ LOG_FILE = LOG_DIR / "eth_1h.log"
 
 _file_log_initialized = False
 
-MONTH_NAMES = [
-    "", "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december",
-]
 ET_OFFSET = timedelta(hours=-4)   # EDT (UTC-4)
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-    "Accept": "application/json",
-}
 
 GAMMA_API = "https://gamma-api.polymarket.com/events?slug={slug}"
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
@@ -359,53 +360,7 @@ def current_et() -> datetime:
     return datetime.now(timezone(ET_OFFSET))
 
 
-def build_slug(dt: datetime) -> str:
-    """ethereum-up-or-down-april-5-2026-3pm-et"""
-    month = MONTH_NAMES[dt.month]
-    h24   = dt.hour
-    h12   = h24 % 12 or 12
-    return f"ethereum-up-or-down-{month}-{dt.day}-{dt.year}-{h12}{'am' if h24 < 12 else 'pm'}-et"
-
-
 # ── Market fetch ───────────────────────────────────────────────────────────────
-
-def _get(url: str) -> any:
-    req = Request(url, headers=HEADERS)
-    with urlopen(req, timeout=10) as r:
-        return json.loads(r.read())
-
-
-def _normal_cdf(x: float) -> float:
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
-
-
-def _realized_annual_vol(symbol: str = "ETHUSDT", lookback_hours: int = 168) -> float | None:
-    """
-    Estimate annualized volatility from hourly log returns.
-    """
-    try:
-        klines = _get(
-            f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit={lookback_hours}"
-        )
-    except Exception:
-        return None
-    if not isinstance(klines, list) or len(klines) < 3:
-        return None
-    closes: list[float] = []
-    for row in klines:
-        try:
-            closes.append(float(row[4]))
-        except Exception:
-            continue
-    if len(closes) < 3:
-        return None
-    rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0 and closes[i] > 0]
-    if len(rets) < 2:
-        return None
-    mean = sum(rets) / len(rets)
-    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-    hourly_vol = math.sqrt(max(var, 0.0))
-    return hourly_vol * math.sqrt(365.0 * 24.0)
 
 
 def _fetch_eth_volume_stats(symbol: str = "ETHUSDT", lookback_hours: int = 24) -> tuple[float | None, float | None, float | None]:
@@ -435,17 +390,6 @@ def _fetch_eth_volume_stats(symbol: str = "ETHUSDT", lookback_hours: int = 24) -
             continue
     avg_quote = (sum(qvs) / len(qvs)) if qvs else None
     return current_base, current_quote, avg_quote
-
-
-def _black_scholes_digital_up_prob(spot: float, strike: float, years_to_expiry: float, sigma: float, r: float = 0.0) -> float | None:
-    """
-    Risk-neutral probability P(S_T >= K) for a cash-or-nothing digital call.
-    """
-    if spot <= 0 or strike <= 0 or years_to_expiry <= 0 or sigma <= 0:
-        return None
-    sqrt_t = math.sqrt(years_to_expiry)
-    d2 = (math.log(spot / strike) + (r - 0.5 * sigma * sigma) * years_to_expiry) / (sigma * sqrt_t)
-    return min(1.0, max(0.0, _normal_cdf(d2)))
 
 
 def _fetch_eth_bs_fair(
@@ -494,111 +438,6 @@ def _fetch_eth_bs_fair(
         return None, None, None, None
     fair_down = 1.0 - fair_up
     return fair_up, fair_down, spot, strike
-
-
-def _fetch_1m_momentum(symbol: str = "ETHUSDT", lookback: int = 7) -> dict | None:
-    """
-    Fetch the last `lookback+1` 1-minute klines and compute momentum metrics.
-
-    Returns dict:
-      taker_ratio    – taker buy vol / total vol for last completed candle
-                       (0 = all sellers, 1 = all buyers)
-      consecutive_dir – +N consecutive up candles, -N consecutive down candles
-      vol_accel      – current-minute projected vol rate vs prior N-minute average
-      trade_count    – number of trades in last completed 1m candle
-      sigma_1m       – realized 1m return std-dev as a fraction (e.g. 0.001 = 0.1%)
-    or None on any fetch failure.
-    """
-    try:
-        klines = _get(
-            f"https://api.binance.com/api/v3/klines"
-            f"?symbol={symbol}&interval=1m&limit={lookback + 1}"
-        )
-    except Exception:
-        return None
-
-    if not isinstance(klines, list) or len(klines) < 3:
-        return None
-
-    completed = klines[:-1]   # fully closed 1m candles
-    current   = klines[-1]    # current open (incomplete) candle
-
-    # ── Taker ratio (last completed candle) ───────────────────────────────────
-    try:
-        last       = completed[-1]
-        base_vol   = float(last[5])
-        taker_buy  = float(last[9])
-        taker_ratio = taker_buy / base_vol if base_vol > 0 else 0.5
-    except Exception:
-        taker_ratio = 0.5
-
-    # ── Trade count (last completed candle) ───────────────────────────────────
-    try:
-        trade_count = int(completed[-1][8])
-    except Exception:
-        trade_count = None
-
-    # ── Consecutive direction ─────────────────────────────────────────────────
-    # Walks backwards through completed candles; stops at first direction change or doji.
-    consecutive = 0
-    try:
-        for k in reversed(completed):
-            o, c = float(k[1]), float(k[4])
-            if c > o:
-                if consecutive >= 0:
-                    consecutive += 1
-                else:
-                    break
-            elif c < o:
-                if consecutive <= 0:
-                    consecutive -= 1
-                else:
-                    break
-            else:
-                break   # doji — stop streak
-    except Exception:
-        consecutive = 0
-
-    # ── Volume acceleration ───────────────────────────────────────────────────
-    # Projects the current (incomplete) minute's volume to a full minute
-    # and compares against the average of the last 5 completed minutes.
-    vol_accel = None
-    try:
-        open_ms    = int(current[0])
-        now_ms     = int(time.time() * 1000)
-        elapsed_ms = max(now_ms - open_ms, 1_000)          # floor at 1 s
-        projected  = float(current[5]) * (60_000 / elapsed_ms)
-        prior_vols = [float(k[5]) for k in completed[-min(5, len(completed)):]]
-        avg_prior  = sum(prior_vols) / len(prior_vols) if prior_vols else None
-        if avg_prior and avg_prior > 0:
-            vol_accel = projected / avg_prior
-    except Exception:
-        pass
-
-    # ── 1-minute realized sigma ───────────────────────────────────────────────
-    sigma_1m = None
-    try:
-        closes = [float(k[4]) for k in completed]
-        if len(closes) >= 3:
-            rets = [
-                math.log(closes[i] / closes[i - 1])
-                for i in range(1, len(closes))
-                if closes[i - 1] > 0 and closes[i] > 0
-            ]
-            if len(rets) >= 2:
-                mean     = sum(rets) / len(rets)
-                var      = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
-                sigma_1m = math.sqrt(max(var, 0.0))
-    except Exception:
-        pass
-
-    return {
-        "taker_ratio":     taker_ratio,
-        "consecutive_dir": consecutive,
-        "vol_accel":       vol_accel,
-        "trade_count":     trade_count,
-        "sigma_1m":        sigma_1m,
-    }
 
 
 def _assess_reversal_risk(

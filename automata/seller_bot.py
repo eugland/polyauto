@@ -1,28 +1,26 @@
 """
-Aapang-style fade-sell daemon (Phases 1 + 3).
+Dust-fade daemon for held YES weather positions.
 
 Operates on YES weather positions you ALREADY HOLD (this module never SPLITs —
 that's `automata.splitter`). For each held YES of a multi-bucket temperature
 event, it:
 
-  1. Identifies the event's peers and the peak-YES bucket.
-  2. Computes our "distance" from peak (in threshold-sorted bucket index).
-  3. Picks a fade price by stage:
-       distance >= MIN_GAP, > CLOSURE_MINUTES to resolution  → EDGE_PX  (0.002)
-       distance == MIN_GAP-1 (=adjacent), close to resolution  → CLOSURE_PX (0.001)
-  4. Posts a GTC sell at that price, sized to our remaining size minus
-     any already-placed sell. Idempotent: never double-posts the same price.
+  1. Sorts the event's peer buckets by threshold and locates the peak (the
+     bucket with the highest max(yes_bid, yes_ask)).
+  2. For below-peak buckets only, if the gap rule passes and
+     max(yes_bid, yes_ask) <= DUST_ASK_THRESHOLD ($0.02), posts a GTC sell
+     walked to the current bid (so it crosses immediately).
+  3. All other buckets — peak, above-peak, mid-priced, model-vetoed — are
+     left alone (no orders placed, no orders cancelled).
 
-Rationale (see aapang research):
-  • Far buckets (dist >= 4) are dust — sell within seconds of entry at $0.002.
-  • Adjacent buckets (dist 1-2) wait until forecast tightens; fade at $0.001
-    in the final minutes before resolution.
+Idempotent: never double-posts the same price. Existing orders priced
+elsewhere on a still-eligible bucket are cancelled and replaced.
 
 Usage:
   python -m automata.seller_bot                        # dry-run, single pass
   python -m automata.seller_bot --live                 # post real orders
   python -m automata.seller_bot --live --loop          # loop forever
-  python -m automata.seller_bot --min-gap 2 --edge-px 0.002 --closure-px 0.001
+  python -m automata.seller_bot --min-gap 2
 """
 from __future__ import annotations
 
@@ -166,48 +164,26 @@ def _stage_for(gap: int, minutes_to_resolution: float | None, min_gap: int, clos
     return None
 
 
-# ───────────── Three-tier classification ──────────────────────────────────────
-# Updated rules (per user spec):
-#   * peak bucket OR yes_bid >= WINNER_BID_GUARD  → WINNER-SELL @ $0.999
-#   * non-peak, yes_ask <= DUST_ASK_THRESHOLD     → DUST-FADE   @ sliding price
-#     (ask is the gate — higher of bid/ask — so wide spreads stay placeholder)
-#   * non-peak, yes_bid in (DUST..WINNER_GUARD)   → PLACEHOLDER @ $0.999
-#                                                     (insurance: fills only if
-#                                                      bucket pops to favorite)
-# Gap rule still applies to non-peak buckets:
-#   * gap >= min_gap                       → eligible always
-#   * gap == min_gap-1 (adjacent)          → eligible only in closure window
-#   * gap < min_gap-1                      → skip
+# ───────────── Classification ─────────────────────────────────────────────────
+# Rules:
+#   * below-peak, max(ask, bid) <= DUST_ASK_THRESHOLD → DUST-FADE @ sliding px
+#   * everything else                                  → skip (no order placed)
+# Gap rule (non-peak buckets):
+#   * gap >= min_gap              → eligible always
+#   * gap == min_gap-1 (adjacent) → eligible only in closure window
+#   * gap < min_gap-1             → skip
 #
 # Dust-fade pricing: walk to the current bid so the sell CROSSES immediately
 # instead of resting one tick above the spread. The gap-based prices below are
 # only used as a floor when there's no real bid to walk to (bid is 0 or
 # sub-tick). Empirical floor calibrated from experiment/aapang_dump.json.
-WINNER_SELL_PRICE = 0.999       # used for peak + placeholder. Some markets
-                                # cap at 0.99 and reject 0.999 — those orders
-                                # fail at place_sell, log, and the rest of
-                                # the buckets in that event still post fine.
-                                # Slippage matters at scale; 0.999 is right.
-WINNER_BID_GUARD = 0.50         # yes_bid >= this → never fade, post winner-sell instead
-DUST_ASK_THRESHOLD = 0.02       # ask <= this → dust (use ask, the higher of bid/ask, as
-                                # the sole gate). Anything with ask above 2¢ rests at
-                                # placeholder $0.999 instead of fading down to the bid.
+DUST_ASK_THRESHOLD = 0.02       # max(ask, bid) <= this → dust eligible
 # No-bid fallback floor (USDC per share) — only used when bid is sub-tick.
 DUST_FADE_PRICE_NEAR = 0.001    # gap 1-2 (adjacent / borderline)
 DUST_FADE_PRICE_MID  = 0.003    # gap 3-4 (sweet-spot for retail nibbles)
 DUST_FADE_PRICE_FAR  = 0.002    # gap 5+ (far edge)
 # Backward-compat alias for old call sites that pass it through unchanged.
 DUST_FADE_PRICE = DUST_FADE_PRICE_NEAR
-
-# Forward-signal thresholds. The model has exactly ONE job: veto a price-driven
-# dust-fade when it disagrees with the market. It never initiates an action of
-# its own — no model-driven fades, no model-driven winner-sells. If the price
-# gate would fade a bucket but the model says fair_yes_prob > MODEL_VETO_YES_PROB
-# (with ≥ MODEL_BIAS_MIN_SAMPLES residuals), the fade is downgraded to
-# placeholder instead.
-MODEL_BIAS_MIN_SAMPLES = 5        # only trust the model if station has ≥ N residuals seen
-MODEL_VETO_YES_PROB = 0.05        # fair_yes > 5% → veto a price-driven dust-fade
-
 
 def _dust_fade_price_for_gap(gap: int) -> float:
     """No-bid fallback floor (only used when the book has no real bid)."""
@@ -233,65 +209,43 @@ def _dust_fade_price(gap: int, yes_bid: float | None) -> float:
 def _classify_bucket(
     yes_bid: float | None,
     yes_ask: float | None,
-    is_peak: bool,
     gap: int,
     min_gap: int,
     minutes_to_resolution: float | None,
     closure_minutes: float,
-    fair_yes_prob: float | None = None,
-    model_n: int = 0,
+    is_above_peak: bool = False,
 ) -> tuple[str, float, str] | None:
     """
     Return (action, target_price, reason) or None to skip this bucket.
 
-    action ∈ {'winner-sell', 'dust-fade', 'placeholder'}.
-    `reason` describes which trigger fired: 'peak', 'bid-winner', 'gap-skip',
-    'price-dust', 'price-mid', 'model-veto', etc.
-
-    The model has exactly one role: veto a price-driven dust-fade when it
-    meaningfully disagrees with the market. It never initiates an action.
-    If the ask would qualify as dust but the trustworthy model says
-    fair_yes_prob > MODEL_VETO_YES_PROB, the fade is downgraded to placeholder.
+    action ∈ {'dust-fade'}.
     """
+    # No book at all on the CLOB — neither a bid nor an ask quote was returned.
+    # Don't try to fade into a non-existent orderbook (the place_sell_order call
+    # would 400 with "the orderbook ... does not exist"). The redeem loop
+    # handles these once they resolve on-chain.
+    if yes_bid is None and yes_ask is None:
+        return None
     bid = yes_bid or 0.0
     ask = yes_ask or 0.0
-    model_trustworthy = (
-        fair_yes_prob is not None
-        and model_n >= MODEL_BIAS_MIN_SAMPLES
-    )
 
-    # Tier 1 — winner-sell on the peak OR any bucket with yes_bid >= 0.50
-    if is_peak:
-        return ("winner-sell", WINNER_SELL_PRICE, "peak-bid")
-    if bid >= WINNER_BID_GUARD:
-        return ("winner-sell", WINNER_SELL_PRICE, "bid-winner")
-
-    # Gap rule applies only to non-peak/non-winner buckets
     in_closure = (
         minutes_to_resolution is not None
         and minutes_to_resolution <= closure_minutes
     )
     if gap < min_gap:
-        # Adjacent (gap = min_gap - 1) eligible only in closure window
         if not (in_closure and gap == max(1, min_gap - 1)):
             return None
 
-    # Tier 2 — price-driven dust detection. Use the ASK (the higher of bid/ask)
-    # as the sole gate: a book is "dust" only if ask <= DUST_ASK_THRESHOLD.
-    # Wide spreads (e.g. bid=0.001 ask=0.03) fall through to placeholder and
-    # rest high, since the ask shows buyer interest above the bid.
-    is_dust = ask <= DUST_ASK_THRESHOLD
-
-    if is_dust:
-        # Model veto: if a trustworthy model says fair_yes is meaningfully
-        # above dust, refuse to fade and rest at placeholder instead.
-        if model_trustworthy and fair_yes_prob > MODEL_VETO_YES_PROB:
-            return ("placeholder", WINNER_SELL_PRICE,
-                    f"model-veto fair_yes={fair_yes_prob:.3f} ask={ask:.4f}")
-        return ("dust-fade", _dust_fade_price(gap, yes_bid),
-                f"price-dust bid={bid:.4f} ask={ask:.4f}")
-    return ("placeholder", WINNER_SELL_PRICE,
-            f"price-mid bid={bid:.4f} ask={ask:.4f}")
+    # Dust gate uses max(ask, bid) so we still classify as dust when there's
+    # no real ask but the bid is sub-2¢.
+    if max(ask, bid) > DUST_ASK_THRESHOLD:
+        return None
+    # Above-peak buckets are upside lottery tickets — never fade.
+    if is_above_peak:
+        return None
+    return ("dust-fade", _dust_fade_price(gap, yes_bid),
+            f"price-dust bid={bid:.4f} ask={ask:.4f}")
 
 
 def scan(
@@ -339,8 +293,8 @@ def scan(
     # Build event → list of (bucket_dict). We intentionally do NOT filter
     # closed/inactive buckets here — Polymarket marks the *winning* bucket as
     # closed=true the moment Gamma confirms a winner, which would drop it from
-    # peer_books and break winner-sell maintenance. Held-position guard below
-    # ensures we only classify buckets we actually own.
+    # peer_books and skew peak detection. Held-position guard below ensures we
+    # only classify buckets we actually own.
     events: dict[str, dict[str, Any]] = {}
     for raw in raw_markets:
         event_slug = str(raw.get("event_slug") or "")
@@ -368,6 +322,13 @@ def scan(
             "threshold_hi": threshold_hi,
             "unit": unit,
             "direction": direction,
+            "closed": bool(raw.get("closed")),
+            "enable_order_book": (
+                False if raw.get("enableOrderBook") is False else True
+            ),
+            "active": (
+                False if raw.get("active") is False else True
+            ),
         })
 
     # 3) For each event, fetch live YES books, sort by threshold, mark peak idx
@@ -476,8 +437,24 @@ def scan(
                 continue
             yes_bid = peer_books[i]["yes_bid"]
             yes_ask = peer_books[i]["yes_ask"]
-            is_peak = (peak_idx is not None and i == peak_idx)
+            # Skip buckets the CLOB can't take a sell on (closed market,
+            # orderbook disabled, or no book entry at all). The redeem loop
+            # will collect these once they resolve on-chain.
+            if b.get("closed") or not b.get("enable_order_book") or not b.get("active"):
+                log.info(
+                    "[SKIP no-book ] %s %s | %s | held=%.2f | closed=%s enable_ob=%s active=%s",
+                    ev["city"], ev["title_date"], b["question"], held_size,
+                    b.get("closed"), b.get("enable_order_book"), b.get("active"),
+                )
+                continue
+            if yes_bid is None and yes_ask is None:
+                log.info(
+                    "[SKIP no-book ] %s %s | %s | held=%.2f | book missing on CLOB",
+                    ev["city"], ev["title_date"], b["question"], held_size,
+                )
+                continue
             gap = abs(i - peak_idx) if peak_idx is not None else 999
+            is_above_peak = peak_idx is not None and i > peak_idx
 
             # Read-only model query for this bucket
             model_out = weather_model.score_bucket_readonly(
@@ -495,13 +472,11 @@ def scan(
             classification = _classify_bucket(
                 yes_bid=yes_bid,
                 yes_ask=yes_ask,
-                is_peak=is_peak,
                 gap=gap,
                 min_gap=min_gap,
                 minutes_to_resolution=minutes_to_resolution,
                 closure_minutes=closure_minutes,
-                fair_yes_prob=fair_yes,
-                model_n=model_n,
+                is_above_peak=is_above_peak,
             )
             if classification is None:
                 continue
@@ -517,7 +492,6 @@ def scan(
                 "bucket_idx": i,
                 "peak_idx": peak_idx,
                 "gap": gap,
-                "is_peak": is_peak,
                 "action": action,
                 "stage": action,  # alias for back-compat with logging/db code
                 "reason": reason,
@@ -587,19 +561,17 @@ def scan(
         ]
 
         gap_to_fill = round(t["held_size"] - existing_at_target, 4)
-        peak_marker = " [PEAK]" if t.get("is_peak") else ""
         fair_yes = t.get("fair_yes_prob")
         model_str = (
             f" | fair_yes={fair_yes:.3f} (n={t.get('model_n', 0)})"
             if fair_yes is not None else " | model=N/A"
         )
         log.info(
-            "[%-13s] %s %s | %s%s | gap=%d | yes_bid=%.4f ask=%.4f%s | held=%.2f new=%.2f @ $%.4f | reason=%s",
+            "[%-13s] %s %s | %s | gap=%d | yes_bid=%.4f ask=%.4f%s | held=%.2f new=%.2f @ $%.4f | reason=%s",
             t["action"].upper(),
             t["city"],
             t["title_date"],
             t["question"],
-            peak_marker,
             t["gap"],
             t["yes_bid"],
             t["yes_ask"],
@@ -781,6 +753,7 @@ def explain_event(
         yes_bid, yes_ask = peer_books[i]["yes_bid"], peer_books[i]["yes_ask"]
         is_peak = (peak_idx is not None and i == peak_idx)
         gap = abs(i - peak_idx) if peak_idx is not None else 999
+        is_above_peak = peak_idx is not None and i > peak_idx
 
         model_out = weather_model.score_bucket_readonly(
             icao=icao,
@@ -796,15 +769,15 @@ def explain_event(
 
         classification = _classify_bucket(
             yes_bid=yes_bid, yes_ask=yes_ask,
-            is_peak=is_peak, gap=gap,
+            gap=gap,
             min_gap=min_gap,
             minutes_to_resolution=minutes_to_res,
             closure_minutes=closure_minutes,
-            fair_yes_prob=fair_yes, model_n=model_n,
+            is_above_peak=is_above_peak,
         )
 
         if classification is None:
-            action_str, price_str, reason = "SKIP", "-", "gap-rule"
+            action_str, price_str, reason = "SKIP", "-", "skipped"
         else:
             act, px, reason = classification
             action_str, price_str = act.upper(), f"${px:.4f}"

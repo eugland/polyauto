@@ -307,6 +307,123 @@ def query_movers(db_path: str, side: str, limit: int = 10) -> list[dict]:
         return []
 
 
+def query_momentum_series(db_path: str, days: int = 60, limit: int = 10,
+                          side: str = "up") -> dict:
+    """
+    Return last `days` of daily closes for the top `limit` momentum symbols,
+    each normalized so the first observation = 100. Used by the multi-line
+    chart so all stocks are comparable on the same y-axis (slope = trend).
+
+    Output: {as_of, series: [{symbol, score, points: [{t, v}]}]}
+    """
+    if _missing(db_path):
+        return {"as_of": None, "series": []}
+    try:
+        con = _connect(db_path)
+        as_of = con.execute("SELECT MAX(as_of_date) FROM momentum_snapshots").fetchone()[0]
+        if as_of is None:
+            con.close()
+            return {"as_of": None, "series": []}
+        order = "DESC" if side == "up" else "ASC"
+        top = con.execute(f"""
+            SELECT m.symbol, m.composite_z
+            FROM momentum_snapshots m
+            JOIN universe u ON u.symbol = m.symbol
+            WHERE m.as_of_date = ?
+              AND u.is_sp500 = TRUE
+              AND m.composite_z IS NOT NULL
+            ORDER BY m.composite_z {order}
+            LIMIT ?
+        """, [as_of, limit]).fetchall()
+
+        series: list[dict] = []
+        for sym, score in top:
+            rows = con.execute("""
+                SELECT date, close
+                FROM daily_bars
+                WHERE symbol = ? AND close IS NOT NULL AND close > 0
+                ORDER BY date DESC
+                LIMIT ?
+            """, [sym, days]).fetchall()
+            if not rows:
+                continue
+            rows.reverse()   # oldest → newest
+            base = rows[0][1]
+            if not base or base <= 0:
+                continue
+            pts = [
+                {
+                    "t": r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                    "v": (r[1] / base) * 100.0,
+                }
+                for r in rows
+            ]
+            series.append({"symbol": sym, "score": score, "points": pts})
+        con.close()
+        return {
+            "as_of": as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of),
+            "series": series,
+        }
+    except Exception:
+        log.exception("query_momentum_series failed")
+        return {"as_of": None, "series": []}
+
+
+def query_top_momentum(db_path: str, side: str = "up", limit: int = 10) -> dict:
+    """
+    Top stocks by composite momentum score.
+
+    Joins the most-recent momentum_snapshots row per symbol against universe
+    and current quotes, restricted to S&P 500 names with composite_z computed.
+
+    Returns dict {as_of, rows}. side='up' = highest composite_z (default);
+    side='down' = lowest (anti-momentum, exposed for completeness).
+    """
+    if _missing(db_path):
+        return {"as_of": None, "rows": []}
+    try:
+        con = _connect(db_path)
+        order = "DESC" if side == "up" else "ASC"
+        as_of = con.execute(
+            "SELECT MAX(as_of_date) FROM momentum_snapshots"
+        ).fetchone()[0]
+        if as_of is None:
+            con.close()
+            return {"as_of": None, "rows": []}
+        rows = con.execute(f"""
+            SELECT m.symbol, u.name, u.sector, q.last,
+                   m.ret_21d, m.ret_126_21, m.dist_sma200, m.rsi_14, m.composite_z
+            FROM momentum_snapshots m
+            JOIN universe u ON u.symbol = m.symbol
+            LEFT JOIN quotes q ON q.symbol = m.symbol
+            WHERE m.as_of_date = ?
+              AND u.is_sp500 = TRUE
+              AND m.composite_z IS NOT NULL
+            ORDER BY m.composite_z {order}
+            LIMIT ?
+        """, [as_of, limit]).fetchall()
+        con.close()
+        out = [
+            {
+                "symbol":     r[0],
+                "name":       r[1],
+                "sector":     r[2],
+                "price":      r[3],
+                "ret_21d":    r[4],
+                "ret_126_21": r[5],
+                "dist_sma200": r[6],
+                "rsi_14":     r[7],
+                "score":      r[8],
+            }
+            for r in rows
+        ]
+        return {"as_of": as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of),
+                "rows": out}
+    except Exception:
+        log.exception("query_top_momentum failed")
+        return {"as_of": None, "rows": []}
+
+
 # ── macro ─────────────────────────────────────────────────────────────────────
 
 def query_macro(db_path: str) -> list[dict]:

@@ -334,6 +334,28 @@ def create_app(db_path: str) -> Flask:
     def weather_model_index():
         return render_template("weather_model.html")
 
+    @app.route("/polymarket-temps")
+    def polymarket_temps():
+        return render_template("polymarket_temps.html")
+
+    @app.route("/api/polymarket-temps")
+    def api_polymarket_temps():
+        try:
+            from experiment.view import summarize_events_within
+            within = int(request.args.get("within", "12"))
+            min_no_bid = float(request.args.get("min_no_bid", "0.95"))
+            min_delta = float(request.args.get("min_delta", "2"))
+            max_no = float(request.args.get("max_no", "1.0"))
+            rows = summarize_events_within(
+                within, max_no=max_no, min_no_bid=min_no_bid, min_delta=min_delta,
+            )
+            return jsonify({
+                "rows": rows, "within": within,
+                "filters": {"min_no_bid": min_no_bid, "min_delta": min_delta, "max_no": max_no},
+            })
+        except Exception as exc:
+            return jsonify({"rows": [], "error": str(exc)}), 500
+
     @app.route("/api/weather-model/cities")
     def api_weather_model_cities():
         try:
@@ -492,6 +514,28 @@ def create_app(db_path: str) -> Flask:
         side = request.args.get("side", "up")
         limit = int(request.args.get("limit", "10"))
         return jsonify(db.query_movers(_db(), side, limit))
+
+    @app.route("/api/momentum")
+    def api_momentum():
+        side = request.args.get("side", "up")
+        try:
+            limit = int(request.args.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        return jsonify(db.query_top_momentum(_db(), side=side, limit=limit))
+
+    @app.route("/api/momentum/series")
+    def api_momentum_series():
+        side = request.args.get("side", "up")
+        try:
+            days = int(request.args.get("days", "60"))
+        except ValueError:
+            days = 60
+        try:
+            limit = int(request.args.get("limit", "10"))
+        except ValueError:
+            limit = 10
+        return jsonify(db.query_momentum_series(_db(), days=days, limit=limit, side=side))
 
     @app.route("/api/macro")
     def api_macro():
@@ -737,5 +781,216 @@ def create_app(db_path: str) -> Flask:
                     except Exception:
                         pass
         return jsonify(results)
+
+    # ── BTC pre-candle shadow forward-test ─────────────────────────────────────
+    def _btc_shadow_ro_connect():
+        # DuckDB takes an exclusive lock when opened RW, so a read-only
+        # connection from this UI fails while the daemon is running. Fall
+        # back to copying the file (1MB-ish) into a tempdir and reading
+        # the snapshot. Stale by at most one daemon poll cycle.
+        from automata import btc_pre_candle as bpc
+        import duckdb as _duck
+        db_path = bpc.DB_PATH
+        if not db_path.exists():
+            return None
+        try:
+            return _duck.connect(str(db_path), read_only=True)
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "conflicting lock" not in msg and "could not set lock" not in msg:
+                raise
+            import shutil, tempfile
+            snap_dir = Path(tempfile.gettempdir()) / "polyauto_btc_pre_candle_ro"
+            snap_dir.mkdir(parents=True, exist_ok=True)
+            snap = snap_dir / "btc_pre_candle.db"
+            snap_wal = snap.with_suffix(snap.suffix + ".wal")
+            if snap_wal.exists():
+                snap_wal.unlink()
+            shutil.copy2(db_path, snap)
+            wal = db_path.with_suffix(db_path.suffix + ".wal")
+            if wal.exists():
+                shutil.copy2(wal, snap_wal)
+            return _duck.connect(str(snap), read_only=True)
+
+    @app.route("/btc-shadow")
+    def btc_shadow():
+        return render_template("btc_shadow.html")
+
+    @app.route("/api/btc-shadow/summary")
+    def api_btc_shadow_summary():
+        """
+        Optional ?strategy=NAME filters all stats. Always returns a `by_strategy`
+        breakdown rolled up across every strategy in the DB so the UI can show
+        them side-by-side regardless of the filter.
+        """
+        try:
+            from automata import btc_pre_candle as bpc
+            strategy = request.args.get("strategy") or None
+            where_strat = "AND strategy = ?" if strategy else ""
+            params_strat = [strategy] if strategy else []
+            con = _btc_shadow_ro_connect()
+            if con is None:
+                return jsonify({
+                    "filter_strategy": strategy,
+                    "strategies_registered": [s.name for s in bpc.STRATEGIES_ALL],
+                    "n_total": 0, "n_settled": 0, "wins": 0, "hit_rate": None,
+                    "total_pnl": 0.0, "avg_entry": None,
+                    "monthly": [], "by_strategy": [],
+                    "fire_offset_window_min": [bpc.FIRE_MIN_OFFSET, bpc.FIRE_MAX_OFFSET],
+                })
+            try:
+                head = con.execute(f"""
+                    SELECT
+                      COUNT(*) AS n_total,
+                      COUNT(resolved_at) AS n_settled,
+                      SUM(won) AS wins,
+                      SUM(pnl_per_share) AS total_pnl,
+                      AVG(entry_price) FILTER (WHERE resolved_at IS NOT NULL) AS avg_entry
+                    FROM fires
+                    WHERE 1=1 {where_strat}
+                """, params_strat).fetchone()
+                n_total, n_settled, wins, total_pnl, avg_entry = head
+                hit_rate = (float(wins) / float(n_settled)) if n_settled else None
+
+                monthly = con.execute(f"""
+                    SELECT date_trunc('month', target_hour_utc) AS month,
+                           COUNT(*) AS n,
+                           SUM(won) AS wins,
+                           SUM(pnl_per_share) AS pnl
+                    FROM fires
+                    WHERE resolved_at IS NOT NULL {where_strat}
+                    GROUP BY 1
+                    ORDER BY 1
+                """, params_strat).fetchall()
+
+                # Per-strategy rollup over ALL fires (not affected by ?strategy=).
+                rollup = con.execute("""
+                    SELECT strategy,
+                           COUNT(*)            AS n_total,
+                           COUNT(resolved_at)  AS n_settled,
+                           SUM(won)            AS wins,
+                           SUM(pnl_per_share)  AS pnl,
+                           AVG(entry_price) FILTER (WHERE resolved_at IS NOT NULL) AS avg_entry
+                    FROM fires
+                    GROUP BY strategy
+                    ORDER BY pnl DESC NULLS LAST, n_total DESC
+                """).fetchall()
+            finally:
+                con.close()
+
+            registered = [s.name for s in bpc.STRATEGIES_ALL]
+            return jsonify({
+                "filter_strategy": strategy,
+                "strategies_registered": registered,
+                "n_total":  int(n_total or 0),
+                "n_settled": int(n_settled or 0),
+                "wins":     int(wins or 0),
+                "hit_rate": hit_rate,
+                "total_pnl": float(total_pnl or 0.0),
+                "avg_entry": float(avg_entry) if avg_entry is not None else None,
+                "monthly": [
+                    {
+                        "month": (m.isoformat() if hasattr(m, "isoformat") else str(m))[:7],
+                        "n": int(n or 0),
+                        "wins": int(w or 0),
+                        "pnl": float(p or 0.0),
+                        "hit_rate": (float(w) / float(n)) if n else None,
+                    }
+                    for (m, n, w, p) in monthly
+                ],
+                "by_strategy": [
+                    {
+                        "strategy": s,
+                        "n_total":   int(nt or 0),
+                        "n_settled": int(ns or 0),
+                        "wins":      int(w or 0),
+                        "pnl":       float(p or 0.0),
+                        "hit_rate":  (float(w) / float(ns)) if ns else None,
+                        "avg_entry": float(ae) if ae is not None else None,
+                    }
+                    for (s, nt, ns, w, p, ae) in rollup
+                ],
+                "fire_offset_window_min": [bpc.FIRE_MIN_OFFSET, bpc.FIRE_MAX_OFFSET],
+            })
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 500
+
+    @app.route("/api/btc-shadow/fires")
+    def api_btc_shadow_fires():
+        try:
+            from automata import btc_pre_candle as bpc  # noqa: F401
+            try:
+                limit = int(request.args.get("limit", "200"))
+            except ValueError:
+                limit = 200
+            strategy = request.args.get("strategy") or None
+            where_strat = "WHERE strategy = ?" if strategy else ""
+            params = [strategy] if strategy else []
+            params.append(limit)
+            con = _btc_shadow_ro_connect()
+            if con is None:
+                return jsonify({"fires": []})
+            try:
+                rows = con.execute(f"""
+                    SELECT id, recorded_at, target_hour_utc, end_utc, fire_offset_min,
+                           strategy, side, rsi_7, rsi_14, rsi_28, ret_1h, ret_3h,
+                           dist_to_24h_hi_pct, dist_to_24h_lo_pct,
+                           slug, up_bid, up_ask, down_bid, down_ask, entry_price,
+                           resolved_at, candle_open, candle_close, winner, won, pnl_per_share
+                    FROM fires
+                    {where_strat}
+                    ORDER BY recorded_at DESC
+                    LIMIT ?
+                """, params).fetchall()
+                cols = [
+                    "id","recorded_at","target_hour_utc","end_utc","fire_offset_min",
+                    "strategy","side","rsi_7","rsi_14","rsi_28","ret_1h","ret_3h",
+                    "dist_to_24h_hi_pct","dist_to_24h_lo_pct",
+                    "slug","up_bid","up_ask","down_bid","down_ask","entry_price",
+                    "resolved_at","candle_open","candle_close","winner","won","pnl_per_share",
+                ]
+            finally:
+                con.close()
+            out = []
+            for r in rows:
+                d = dict(zip(cols, r))
+                for k in ("recorded_at", "target_hour_utc", "end_utc", "resolved_at"):
+                    if d.get(k) is not None and hasattr(d[k], "isoformat"):
+                        d[k] = d[k].isoformat()
+                out.append(d)
+            return jsonify({"fires": out})
+        except Exception as exc:
+            return jsonify({"fires": [], "error": str(exc)}), 500
+
+    @app.route("/api/btc-shadow/equity")
+    def api_btc_shadow_equity():
+        """Per-strategy cumulative PnL series, for multi-line charting."""
+        try:
+            from automata import btc_pre_candle as bpc  # noqa: F401
+            con = _btc_shadow_ro_connect()
+            if con is None:
+                return jsonify({"series": []})
+            try:
+                rows = con.execute("""
+                    SELECT strategy, resolved_at, pnl_per_share
+                    FROM fires
+                    WHERE resolved_at IS NOT NULL
+                    ORDER BY strategy, resolved_at
+                """).fetchall()
+            finally:
+                con.close()
+
+            by_strategy: dict[str, list[dict]] = {}
+            cum: dict[str, float] = {}
+            for s, ts, pnl in rows:
+                cum[s] = cum.get(s, 0.0) + float(pnl or 0.0)
+                by_strategy.setdefault(s, []).append({
+                    "t": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                    "cum_pnl": cum[s],
+                })
+            series = [{"strategy": s, "points": pts} for s, pts in by_strategy.items()]
+            return jsonify({"series": series})
+        except Exception as exc:
+            return jsonify({"series": [], "error": str(exc)}), 500
 
     return app
