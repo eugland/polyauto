@@ -138,25 +138,34 @@ bet_pass_wait_seconds = 10
 # duplicate it.
 
 # TEMPBUY_MIN_NO_ASK / TEMPBUY_MAX_NO_ASK — accept buckets with NO ask
-# in [min, max] (inclusive). min=0.97 matches the user spec "c > 97".
-# max=0.998 deliberately excludes 99.9¢ buckets — the saturated top-of-
-# stack — so we pick the next bucket down (more upside per share).
-min_no_ask = 0.97
-max_no_ask = 0.998
+# in [min, max] (inclusive). min=0.99 keeps us in the highest-confidence
+# band only. max=1.0 means the saturated 99.9¢ top-of-stack bucket is
+# allowed (no upper gate) — safety comes from min_bucket_distance, not
+# from leaving the cheapest cents on the table.
+min_no_ask = 0.99
+max_no_ask = 1.0
 
 # TEMPBUY_MIN_DELTA_C / TEMPBUY_MIN_DELTA_F — gap to YES-favorite
 # bucket required, applied per-event using the question's unit.
 min_delta_c = 2.0
 min_delta_f = 4.0
 
-# TEMPBUY_BET_SHARES — fixed share size per bet. Skipped if free USDC
-# balance can't cover shares * price.
-bet_shares = 30.0
+# TEMPBUY_BET_SHARES — target share size per bet. If free USDC balance
+# is short, the bot does a partial fill for whatever the balance allows
+# (down to TEMPBUY_MIN_TOPUP_SHARES).
+bet_shares = 100.0
 
-# TEMPBUY_MIN_TOPUP_SHARES — minimum gap (target_shares - held - open_buy)
-# before topping up an existing held NO position. Avoids order spam at
-# tiny increments. Default 5.0 matches the existing $5 partial-buy floor.
-min_topup_shares = 5.0
+# TEMPBUY_MIN_BUCKET_DISTANCE — minimum ladder steps below the YES-
+# favorite a candidate must sit before we'll buy. The picker already
+# selects the farthest-below qualifying bucket; this is a safety floor
+# that rejects events where nothing is at least this far down.
+min_bucket_distance = 3
+
+# TEMPBUY_MIN_TOPUP_SHARES — absolute minimum order size (shares). Used
+# both for top-up gap and for partial-fill new entries when balance is
+# short. 1.05 is just above Polymarket's $1 min order at 99¢ ask, so
+# any spendable balance ≥ ~$1.05 will fire.
+min_topup_shares = 1.05
 
 # TEMPBUY_MIN_HOURS / TEMPBUY_MAX_HOURS — only consider events whose
 # local-3pm resolution falls in [now+min_hours, now+max_hours]. The
@@ -175,14 +184,19 @@ stale_minutes = 10.0
 # TEMPBUY_MIN_BALANCE_USDC — USDC reserve. The bot will never spend down
 # past this balance: bet sizes are computed against (balance - reserve),
 # the new-buy pass is skipped if balance ≤ reserve, and partial-fills use
-# only the spendable surplus. Set 0 to disable.
-min_balance_usdc = 16.0
+# only the spendable surplus. 0 = no reserve, spend whatever's there.
+min_balance_usdc = 0.0
 
-# TEMPBUY_TAKE_PROFIT_PRICE — every live cycle, place a GTC limit SELL at
-# this price on each held NO token that doesn't already have an open sell
-# order. 0.999 = 99.9¢ — only fills if the market spikes that high, in
-# which case we're happy to take it. Existing sell orders are not touched.
-take_profit_price = 0.999
+# Candidate scoring: score = bucket_distance * score_bucket_weight
+#                          - hours_to_resolution * score_hours_weight
+# Defaults bias heavily toward closer-to-resolution markets — hours
+# dominate bucket distance 2:1, so a -5b @5h beats a -10b @15h. The
+# min_bucket_distance gate already enforces a quality floor on distance,
+# so among qualifying candidates lead-time is the dominant risk signal.
+# Raise score_bucket_weight to favor deeper-below-favorite buckets;
+# raise score_hours_weight to penalize lead time more aggressively.
+score_bucket_weight = 1.0
+score_hours_weight = 2.0
 
 
 [eth_1h]
@@ -208,17 +222,18 @@ redeem_only_mode = true
 # this costs ~$2.50/fire.
 bet_shares = 5
 # max_entry_ask: refuse to fire if the chosen-side ask is above this. The
-# backtest assumed flat $0.50; +30¢ slack lets us still trade when the
-# market is leaning hard, but caps loss-per-share at 65¢.
-max_entry_ask = 0.65
+# backtest assumed flat $0.50; P13_24h_extreme_0 breaks even at $0.5256
+# (54.6% hit minus 2¢ friction), so a 0.52 limit keeps every fill EV-positive.
+max_entry_ask = 0.52
 # daily_spend_cap_usdc: stop placing new live orders once the day's
 # cumulative live cost crosses this (UTC day boundary).
 daily_spend_cap_usdc = 20.0
 # live_strategies: comma-separated allowlist of strategies that may bet
 # live. Anything else only records a shadow fire even with --bet on.
-# Default is the only strategy whose backtest Wilson-lower-bound clears
-# 52% breakeven on the largest sample.
-live_strategies = "P13_24h_extreme_0.2"
+# P13_24h_extreme_0 (exact 24h hi/lo touch) — 1668 backtest fires, 54.6%
+# hit, +$42.64 PnL at $0.50 entry; breaks even up to $0.5256. Strict
+# subset of _0.2 with cleaner per-share edge (2.6¢ vs 1.9¢).
+live_strategies = "P13_24h_extreme_0"
 
 
 [gamma]

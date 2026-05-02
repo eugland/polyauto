@@ -860,11 +860,31 @@ def run_once(con: duckdb.DuckDBPyConnection, now_utc: datetime,
     return summary
 
 
+def _attach_file_log() -> None:
+    """Mirror console logs to logs/btc_pre_candle.log so the stock UI can
+    tail them at /btc-log. Idempotent — dedups by baseFilename."""
+    logs_dir = REPO / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    log_file = logs_dir / "btc_pre_candle.log"
+    root = logging.getLogger()
+    for h in root.handlers:
+        if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == str(log_file):
+            return
+    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh.setFormatter(logging.Formatter(
+        "%(asctime)s  %(levelname)-7s  %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    fh.setLevel(logging.INFO)
+    root.addHandler(fh)
+
+
 def run_daemon(interval: int = 60, once: bool = False, strategies_csv: str | None = None,
                bet: bool = False) -> None:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=logging.INFO,
                             format="%(asctime)s  %(levelname)-7s  %(message)s")
+    _attach_file_log()
     init_db()
     strategies = select_strategies(strategies_csv)
 

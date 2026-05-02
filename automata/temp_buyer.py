@@ -237,6 +237,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
         rdt = c.get("resolution_dt")
         fav_yes = c.get("fav_yes_bid")
         hours_to_res = (rdt - now).total_seconds() / 3600 if rdt else None
+        score = c.get("score")
         rows.append({
             "city":  c["city"],
             "date":  c["title_date"],
@@ -246,6 +247,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
             "fav":   f"{int(round(fav_yes * 100))}c" if fav_yes is not None else "",
             "dist":  f"-{bd}b",
             "in":    f"{hours_to_res:.1f}h" if hours_to_res is not None else "",
+            "score": f"{score:.1f}" if score is not None else "",
             "res":   rdt.astimezone().strftime("%m-%d %H:%M") if rdt else "?",
         })
 
@@ -258,6 +260,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
         ("fav",   "fav",      ">"),
         ("dist",  "dist",     ">"),
         ("in",    "in",       ">"),
+        ("score", "score",    ">"),
         ("res",   "resolves", "<"),
     ]
     widths = {
@@ -273,10 +276,6 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
             f"{r[key]:{align}{widths[key]}}" for key, _, align in cols
         ))
     return out
-
-
-def _far_future() -> datetime:
-    return datetime(9999, 12, 31, tzinfo=timezone.utc)
 
 
 def _order_open_shares(order: dict[str, Any]) -> float:
@@ -365,82 +364,6 @@ def _cancel_stale_buy_orders(
         verb = "would cancel" if dry_run else "cancelled"
         log.info("[stale-cancel] %s %d order(s)", verb, len(cancelled))
     return cancelled, orders
-
-
-def _place_take_profit_orders(
-    client: Any,
-    positions: list[dict],
-    open_orders: list[dict],
-    *,
-    sell_price: float,
-    dry_run: bool = False,
-) -> int:
-    """Top up GTC limit SELLs at `sell_price` so every position is fully
-    covered. For each held token, sum the open SELL shares; if the gap
-    to the position size is at or above Polymarket's $1 minimum, place
-    one new SELL for that gap. Reuses caller-provided position + order
-    snapshots. Returns the count of new sells placed (or that would
-    be placed in dry-run)."""
-    from automata.client import place_sell_order
-
-    if not positions:
-        return 0
-
-    existing_sell_shares: dict[str, float] = {}
-    for o in open_orders:
-        if str(o.get("side", "")).upper() != "SELL":
-            continue
-        open_sh = _order_open_shares(o)
-        if open_sh <= 0:
-            continue
-        tid = str(o.get("asset_id") or o.get("token_id") or "")
-        if tid:
-            existing_sell_shares[tid] = existing_sell_shares.get(tid, 0.0) + open_sh
-
-    # Polymarket min order is $1 — gaps below that can't be placed.
-    min_gap_shares = max(1.01, 1.0 / max(sell_price, 0.01))
-
-    placed = 0
-    for p in positions:
-        tid = p.get("token_id") or ""
-        size = float(p.get("size") or 0)
-        if not tid or size < 5:
-            continue
-        covered = existing_sell_shares.get(tid, 0.0)
-        gap = round(size - covered, 2)
-        sell_size = math.floor(gap * 100) / 100
-        if sell_size < min_gap_shares:
-            continue
-        if dry_run:
-            log.info(
-                "[take-profit] WOULD SELL %.2f sh @ %.2fc  token=%s  "
-                "(pos=%.2f covered=%.2f gap=%.2f)",
-                sell_size, sell_price * 100, tid[:14],
-                size, covered, gap,
-            )
-            placed += 1
-            continue
-        try:
-            resp = place_sell_order(client, tid, sell_price, sell_size)
-            order_id = str(resp.get("orderID") or resp.get("id") or "?")
-            log.info(
-                "[take-profit] SELL %.2f sh @ %.2fc  token=%s  "
-                "(pos=%.2f covered=%.2f gap=%.2f)  → %s id=%s",
-                sell_size, sell_price * 100, tid[:14],
-                size, covered, gap,
-                resp.get("status") or "submitted", order_id[:18],
-            )
-            placed += 1
-        except Exception as exc:
-            log.warning("[take-profit] sell %s failed: %s", tid[:14], exc)
-    if placed:
-        verb = "would place" if dry_run else "placed"
-        log.info("[take-profit] %s %d new sell order(s) at %.2fc",
-                 verb, placed, sell_price * 100)
-    else:
-        log.info("[take-profit] %d position(s), all covered — no new sells needed",
-                 len(positions))
-    return placed
 
 
 def _open_buy_shares_by_token(
@@ -591,7 +514,13 @@ def _run_topup_pass(
 
         shares = math.floor(gap * 100) / 100
         cost = round(shares * price, 2)
-        spendable = round(balance - min_balance, 2)
+        # Floor spendable so we never overshoot actual on-wire balance (the
+        # CLOB rejects orders whose raw micro-USDC amount exceeds raw balance,
+        # and `round(..., 2)` happily rounds 62.507 → 62.51, manufacturing
+        # phantom $0.003 of spend). Keep a $0.01 epsilon to absorb the gap
+        # between our display price (4dp) and the on-wire price the CLOB
+        # actually charges, which can include sub-tick precision and fees.
+        spendable = max(0.0, math.floor((balance - min_balance - 0.01) * 100) / 100)
         if cost > spendable:
             if spendable <= 0:
                 log.info("[top-up] balance $%.2f at/below reserve $%.2f — abort top-up pass",
@@ -741,16 +670,25 @@ def run(
         candidates.append(sel)
 
     if candidates:
-        # Rank: earliest resolution first (don't skip near-term events for a
-        # higher-distance pick later), then within the same resolution cluster
-        # prefer the bucket farthest below the favorite.
-        candidates.sort(key=lambda c: (
-            c.get("resolution_dt") or _far_future(),
-            -(c.get("bucket_distance") or 0),
-        ))
+        # Score = bucket_distance * w_d - hours_to_resolution * w_h. Defaults
+        # are w_d=3, w_h=1 → one ladder step is worth ~3h of lead time, so
+        # closer-to-resolution markets win unless the distance gap is large.
+        # Tune via [temp_buyer].score_bucket_weight / score_hours_weight.
+        score_bucket_w = config.get_float(
+            "TEMPBUY_SCORE_BUCKET_WEIGHT", "temp_buyer", "score_bucket_weight", 3.0,
+        )
+        score_hours_w = config.get_float(
+            "TEMPBUY_SCORE_HOURS_WEIGHT", "temp_buyer", "score_hours_weight", 1.0,
+        )
+        now = datetime.now(timezone.utc)
+        for c in candidates:
+            rdt = c.get("resolution_dt")
+            hours = (rdt - now).total_seconds() / 3600 if rdt else 1e6
+            c["score"] = (c.get("bucket_distance") or 0) * score_bucket_w - hours * score_hours_w
+        candidates.sort(key=lambda c: c["score"], reverse=True)
         log.info(
-            "  %d eligible candidate(s) (earliest resolution, then highest distance):",
-            len(candidates),
+            "  %d eligible candidate(s) (score = dist*%.1f − hours*%.1f):",
+            len(candidates), score_bucket_w, score_hours_w,
         )
         for line in _render_candidates_table(candidates):
             log.info("    %s", line)
@@ -861,19 +799,6 @@ def run(
                  and str(o.get("id") or o.get("orderID") or "") not in cancelled_order_ids
              ))
 
-    # ── Take-profit pass: 99.9¢ GTC sell on every position lacking one ──
-    take_profit_price = config.get_float(
-        "TEMPBUY_TAKE_PROFIT_PRICE", "temp_buyer", "take_profit_price", 0.999,
-    )
-    active_open_orders = [
-        o for o in all_open_orders
-        if str(o.get("id") or o.get("orderID") or "") not in cancelled_order_ids
-    ]
-    _place_take_profit_orders(
-        client, live_positions, active_open_orders,
-        sell_price=take_profit_price, dry_run=dry_run,
-    )
-
     # ── Top-up pass: bring held NO positions up to target_shares ─────────
     min_topup_shares = config.get_float(
         "TEMPBUY_MIN_TOPUP_SHARES", "temp_buyer", "min_topup_shares", 5.0,
@@ -900,7 +825,7 @@ def run(
 
     if balance <= cfg_min_bal:
         log.info("Balance $%.2f at/below $%.2f reserve — skipping buy pass "
-                 "(take-profit + top-up completed)", balance, cfg_min_bal)
+                 "(top-up completed)", balance, cfg_min_bal)
         return
     if not candidates:
         log.info("[temp-buyer] done — no new-entry candidates (top-up=%d)", topup_placed)
@@ -935,7 +860,8 @@ def run(
 
         shares = math.floor(target_shares * 100) / 100
         cost = round(shares * price, 2)
-        spendable = round(balance - cfg_min_bal, 2)
+        # Same floor-with-epsilon trick as the top-up pass; see comment there.
+        spendable = max(0.0, math.floor((balance - cfg_min_bal - 0.01) * 100) / 100)
         if cost > spendable:
             affordable_shares = math.floor((spendable / price) * 100) / 100
             if affordable_shares < min_topup_shares:
