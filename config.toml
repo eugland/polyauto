@@ -179,7 +179,7 @@ max_hours = 18
 # Polymarket has reserved for those resting orders so it can be
 # redeployed. Set 0 to disable; lower = faster reclaim, but cancels
 # orders that might still fill at troughs.
-stale_minutes = 10.0
+stale_minutes = 3.0
 
 # TEMPBUY_MIN_BALANCE_USDC — USDC reserve. The bot will never spend down
 # past this balance: bet sizes are computed against (balance - reserve),
@@ -197,6 +197,16 @@ min_balance_usdc = 0.0
 # raise score_hours_weight to penalize lead time more aggressively.
 score_bucket_weight = 1.0
 score_hours_weight = 2.0
+
+# TEMPBUY_REDEEM_RESOLVED — after each live cycle, scan funder positions
+# and redeem any whose condition has resolved on-chain. Required since
+# we no longer place take-profit sells; otherwise winning shares stay
+# parked until something else (eth daemon) sweeps them.
+redeem_resolved = true
+
+# TEMPBUY_REDEEM_MODE — relayer (default, gasless via Polymarket relayer)
+# or onchain (direct call from POLYMARKET_PRIVATE_KEY; needs POLYGON_RPC_URL).
+redeem_mode = "relayer"
 
 
 [eth_1h]

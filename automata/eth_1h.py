@@ -544,13 +544,6 @@ def _print_price_matrix(up_ask: float | None, down_ask: float | None, up_bid: fl
 
 
 def _settle_resolved_trades(private_key: str | None, rpc_url: str | None = None, redeem_mode: str = "relayer") -> None:
-    from automata.eth_15m import (
-        _get_web3_and_ctf as _get_web3_and_ctf_15m,
-        _redeem_condition_positions as _redeem_condition_positions_15m,
-        _redeem_condition_positions_relayer as _redeem_condition_positions_relayer_15m,
-        _resolved_side_from_chain as _resolved_side_from_chain_15m,
-    )
-
     if not private_key:
         log.warning("[eth_1h] POLYMARKET_PRIVATE_KEY missing; cannot redeem")
         return
@@ -588,16 +581,16 @@ def _settle_resolved_trades(private_key: str | None, rpc_url: str | None = None,
     if not condition_to_tokens:
         return
 
-    _, ctf = _get_web3_and_ctf_15m(rpc_url)
+    _, ctf = _get_web3_and_ctf(rpc_url)
 
     for cid, token_ids in condition_to_tokens.items():
-        side = _resolved_side_from_chain_15m(ctf, str(cid))
+        side = _resolved_side_from_chain(ctf, str(cid))
         if side is None:
             continue
         if redeem_mode == "relayer":
-            tx_hash = _redeem_condition_positions_relayer_15m(private_key=private_key, condition_id=str(cid))
+            tx_hash = _redeem_condition_positions_relayer(private_key=private_key, condition_id=str(cid))
         else:
-            tx_hash = _redeem_condition_positions_15m(private_key=private_key, condition_id=str(cid), rpc_url=rpc_url)
+            tx_hash = _redeem_condition_positions(private_key=private_key, condition_id=str(cid), rpc_url=rpc_url)
         if not tx_hash:
             log.warning("[eth_1h] Redeem submit failed for condition=%s side=%s", cid, side)
             continue

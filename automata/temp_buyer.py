@@ -27,12 +27,19 @@ favorite hasn't settled yet (the picker would just chase noise).
 Candidates are sorted by closest resolution first, then displayed as
 an aligned table for quick scanning.
 
+After each live cycle, scans funder positions and redeems any whose
+condition has resolved on-chain (relayer mode by default). Held to
+resolution = no take-profit sell needed; this closes the loop. Disable
+with --no-redeem, or switch to direct onchain mode with
+--redeem-mode onchain --polygon-rpc <url>.
+
 Usage:
   python -m automata.temp_buyer                   # dry-run, top candidate
-  python -m automata.temp_buyer --bet             # live: place the order
+  python -m automata.temp_buyer --bet             # live: place the order + redeem resolved
   python -m automata.temp_buyer --within 24       # 24h upper bound
   python -m automata.temp_buyer --min-hours 8     # require >=8h to resolution
   python -m automata.temp_buyer --bet --shares 30
+  python -m automata.temp_buyer --bet --no-redeem # live, but skip redeem scan
 """
 from __future__ import annotations
 
@@ -955,9 +962,27 @@ def main() -> int:
                    help="Loop interval in seconds (default 300 = 5 min). Use --once to disable looping.")
     p.add_argument("--once", action="store_true",
                    help="Run a single cycle and exit (default: loop forever)")
+    p.add_argument("--redeem", dest="redeem", action="store_true", default=None,
+                   help="After each live cycle, redeem any resolved positions held by the funder "
+                        "(default: [temp_buyer].redeem_resolved = true). Ignored in dry-run.")
+    p.add_argument("--no-redeem", dest="redeem", action="store_false",
+                   help="Disable post-cycle redeem scan.")
+    p.add_argument("--redeem-mode", choices=["relayer", "onchain"], default=None,
+                   help="Redeem flow when --redeem is on (default: [temp_buyer].redeem_mode = relayer).")
+    p.add_argument("--polygon-rpc", type=str, default=None,
+                   help="Polygon RPC URL for onchain redeem mode (default: $POLYGON_RPC_URL).")
     args = p.parse_args()
     if args.stale_minutes is not None:
         os.environ["TEMPBUY_STALE_MINUTES"] = str(args.stale_minutes)
+
+    redeem_enabled = (
+        args.redeem if args.redeem is not None
+        else config.get_bool("TEMPBUY_REDEEM_RESOLVED", "temp_buyer", "redeem_resolved", True)
+    )
+    redeem_mode = args.redeem_mode or config.get_str(
+        "TEMPBUY_REDEEM_MODE", "temp_buyer", "redeem_mode", "relayer",
+    )
+    polygon_rpc = args.polygon_rpc or os.getenv("POLYGON_RPC_URL")
 
     logger = _setup_logging()
     interval = max(15, args.interval)
@@ -971,8 +996,25 @@ def main() -> int:
             max_orders=max(1, args.max_orders),
         )
 
+    def _redeem() -> None:
+        # Live-only: scan funder positions and redeem any whose chain-side
+        # condition has resolved. _settle_resolved_trades is source-agnostic
+        # — it picks up temp_buyer's NO positions alongside anything else.
+        if not args.bet or not redeem_enabled:
+            return
+        try:
+            from automata.eth_1h import _settle_resolved_trades
+            _settle_resolved_trades(
+                private_key=os.getenv("POLYMARKET_PRIVATE_KEY"),
+                rpc_url=polygon_rpc,
+                redeem_mode=redeem_mode,
+            )
+        except Exception:
+            logger.exception("[temp-buyer] redeem scan failed")
+
     if args.once:
         _cycle()
+        _redeem()
         return 0
 
     iteration = 0
@@ -984,6 +1026,7 @@ def main() -> int:
                 _cycle()
             except Exception as exc:
                 logger.exception("[temp-buyer] cycle %d failed: %s — continuing", iteration, exc)
+            _redeem()
             # Backfill resolved-event outcomes every ~10 cycles so the
             # weather_model bias/sigma EMAs absorb fresh data without
             # spamming the Gamma API on every loop.
