@@ -153,7 +153,7 @@ min_delta_f = 4.0
 # TEMPBUY_BET_SHARES — target share size per bet. If free USDC balance
 # is short, the bot does a partial fill for whatever the balance allows
 # (down to TEMPBUY_MIN_TOPUP_SHARES).
-bet_shares = 100.0
+bet_shares = 50.0
 
 # TEMPBUY_MIN_BUCKET_DISTANCE — minimum ladder steps below the YES-
 # favorite a candidate must sit before we'll buy. The picker already
@@ -168,10 +168,9 @@ min_bucket_distance = 3
 min_topup_shares = 1.05
 
 # TEMPBUY_MIN_HOURS / TEMPBUY_MAX_HOURS — only consider events whose
-# local-3pm resolution falls in [now+min_hours, now+max_hours]. The
-# 4-hour floor skips events too close to resolution to react to;
+# local-3pm resolution falls in [now+min_hours, now+max_hours].
 # capping at 18h drops events where the YES favorite hasn't settled.
-min_hours = 4.0
+min_hours = 1.0
 max_hours = 18
 
 # TEMPBUY_STALE_MINUTES — cancel our own unfilled BUY orders older than

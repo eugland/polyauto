@@ -945,8 +945,8 @@ def main() -> int:
                         "(default: [temp_buyer].min_hours = 4)")
     p.add_argument("--shares", type=float, default=None,
                    help="Shares per bet (default: [temp_buyer].bet_shares = 30)")
-    p.add_argument("--max-orders", type=int, default=1,
-                   help="How many bets to place this run (default 1, top-of-list)")
+    p.add_argument("--max-orders", type=int, default=2,
+                   help="How many bets to place this run (default 2, top-of-list)")
     p.add_argument("--stale-minutes", type=float, default=None,
                    help="Cancel our own BUY orders older than this many minutes "
                         "before placing new ones (default: [temp_buyer].stale_minutes = 10). "
