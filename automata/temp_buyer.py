@@ -515,6 +515,12 @@ def _run_topup_pass(
         book = get_book_depth(host, tid)
         live_ask = book["ask"]
         ask_size = book["ask_size"]
+        bid_pct = book.get("bid_pct_above")
+        log.info(
+            "[top-up] book %s %s  ask=%.2fc  ask_size=%.0f sh  bid≥95%%=%.0f%%",
+            sel["city"], sel["bucket_label"], live_ask * 100 if live_ask else 0,
+            ask_size or 0, bid_pct if bid_pct is not None else 0,
+        )
         if live_ask is None:
             log.info("[top-up] no live ask  %s %s — skip", sel["city"], sel["bucket_label"])
             continue
@@ -906,9 +912,17 @@ def run(
             log.info("  ask dropped to %.2fc < %.2fc  %s — skipping",
                      live_ask * 100, min_no_ask * 100, c["city"])
             continue
-        log.info("  book %s %s  ask=%.2fc  ask_size=%.0f sh  vol=%.0f",
-                 c["city"], c["bucket_label"], live_ask * 100,
-                 ask_size or 0, c.get("volume") or 0)
+        bid_pct = book.get("bid_pct_above")
+        bid_above = book.get("bid_size_above") or 0
+        bid_below = book.get("bid_size_below") or 0
+        log.info(
+            "  book %s %s  ask=%.2fc  ask_size=%.0f sh  "
+            "bid≥95¢=%.0f sh  bid<95¢=%.0f sh  bid≥95%%=%.0f%%  vol=%.0f",
+            c["city"], c["bucket_label"], live_ask * 100,
+            ask_size or 0, bid_above, bid_below,
+            bid_pct if bid_pct is not None else 0,
+            c.get("volume") or 0,
+        )
         if min_ask_size > 0 and (ask_size or 0) < min_ask_size:
             log.info("  ask_size %.0f sh < %.0f minimum  %s %s — skipping (thin book)",
                      ask_size or 0, min_ask_size, c["city"], c["bucket_label"])

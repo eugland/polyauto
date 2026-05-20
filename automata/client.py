@@ -89,31 +89,52 @@ def get_best_bid_ask(host: str, token_id: str) -> tuple[float | None, float | No
         return None, None
 
 
-def get_book_depth(host: str, token_id: str) -> dict:
-    """Fetch bid/ask plus size available at the best ask (and best bid).
+def get_book_depth(host: str, token_id: str, bid_conviction_threshold: float = 0.95) -> dict:
+    """Fetch bid/ask depth plus a bid-conviction ratio for a token.
 
-    Returns {"bid", "ask", "ask_size", "bid_size"}. ask_size is the total
-    shares offered at the best-ask price level — a proxy for how much
-    conviction sellers (NO-holders) have at that price.
+    Returns:
+      bid              — best bid price
+      ask              — best ask price
+      ask_size         — shares available at the best-ask price level
+      bid_size_above   — total shares bid at >= bid_conviction_threshold
+      bid_size_below   — total shares bid at <  bid_conviction_threshold
+      bid_pct_above    — bid_size_above / total_bid_size (0-100), or None if no bids
+
+    bid_pct_above tells you what fraction of buyer interest is priced near
+    full value. 80%+ means strong conviction; <30% means buyers are hedging.
     """
     import requests
+    empty = {"bid": None, "ask": None, "ask_size": None,
+             "bid_size_above": None, "bid_size_below": None, "bid_pct_above": None}
     try:
         resp = requests.get(f"{host}/book", params={"token_id": token_id}, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         bids = data.get("bids", [])
         asks = data.get("asks", [])
+
         best_bid = max((float(b["price"]) for b in bids), default=None)
         best_ask = min((float(a["price"]) for a in asks), default=None)
+
         ask_size = None
-        bid_size = None
         if best_ask is not None:
             ask_size = sum(float(a.get("size", 0)) for a in asks if float(a["price"]) == best_ask)
-        if best_bid is not None:
-            bid_size = sum(float(b.get("size", 0)) for b in bids if float(b["price"]) == best_bid)
-        return {"bid": best_bid, "ask": best_ask, "ask_size": ask_size, "bid_size": bid_size}
+
+        bid_size_above = sum(float(b.get("size", 0)) for b in bids if float(b["price"]) >= bid_conviction_threshold)
+        bid_size_below = sum(float(b.get("size", 0)) for b in bids if float(b["price"]) <  bid_conviction_threshold)
+        total_bid = bid_size_above + bid_size_below
+        bid_pct_above = (bid_size_above / total_bid * 100) if total_bid > 0 else None
+
+        return {
+            "bid": best_bid,
+            "ask": best_ask,
+            "ask_size": ask_size,
+            "bid_size_above": bid_size_above,
+            "bid_size_below": bid_size_below,
+            "bid_pct_above": bid_pct_above,
+        }
     except Exception:
-        return {"bid": None, "ask": None, "ask_size": None, "bid_size": None}
+        return empty
 
 
 def get_best_books_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -> dict[str, dict]:
