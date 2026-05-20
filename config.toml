@@ -191,23 +191,32 @@ min_balance_usdc = 0.0
 # which is a low-conviction signal. Default 20 sh; set 0 to disable the gate.
 min_ask_size = 20.0
 
-# Conviction gate: the YES-favorite must be priced at or above this to enter.
-# If the market isn't confident where the temperature lands (e.g. 60c favorite),
-# buckets 2-3 steps below are NOT safe — the actual temp could land there.
-# Default 0.75 means we only bet when the market is ≥75% certain of the outcome.
-# Raise to 0.85+ for more conservative entries; lower to 0.65 for more action.
-min_fav_yes_bid = 0.75
+# Two complementary book-shape floors:
+# TEMPBUY_MIN_BID_PCT_ABOVE — % of real bid size at ≥95c. Single-point cut.
+# 4% lets early-cycle markets through; ranking does the rest.
+# TEMPBUY_MIN_BID_P75 — top-75% conviction price among bids ≥10c (excludes
+# MM penny bait). Captures the *shape* of the bid book — does the bottom
+# quartile of real bidders still pay >= this much? A high p75 means support
+# extends deep into the book; a low p75 means the book collapses fast.
+# Calibrated 2026-05-20 to 0.70 (the natural break between weak-shape clusters
+# at 57–60c and acceptable-shape clusters at 72–97c across 14 candidate markets).
+min_bid_pct_above = 4.0
+min_bid_p75 = 0.70
 
 # Candidate scoring: score = bucket_distance * score_bucket_weight
 #                          - hours_to_resolution * score_hours_weight
 #                          + log(1+volume) * score_volume_weight
-# volume rewards buckets with more trading activity (higher market conviction).
+#                          + bid_pct_above   * score_conviction_weight
+#                          + bid_p75         * score_p75_weight
+# score_conviction_weight rewards exit liquidity near full value (95c+);
+# score_p75_weight rewards book-shape integrity (deep support, not just a thin spike).
 # Raise score_bucket_weight to favor deeper-below-favorite buckets;
-# raise score_hours_weight to penalize lead time more aggressively;
-# raise score_volume_weight to strongly prefer high-volume buckets.
+# raise score_hours_weight to penalize lead time more aggressively.
 score_bucket_weight = 1.0
 score_hours_weight = 2.0
 score_volume_weight = 1.0
+score_conviction_weight = 0.1
+score_p75_weight = 8.0
 
 # TEMPBUY_REDEEM_RESOLVED — after each live cycle, scan funder positions
 # and redeem any whose condition has resolved on-chain. Required since

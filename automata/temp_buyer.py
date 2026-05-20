@@ -247,6 +247,10 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
         hours_to_res = (rdt - now).total_seconds() / 3600 if rdt else None
         score = c.get("score")
         vol = c.get("volume")
+        conv = c.get("bid_pct_above")
+        p25 = c.get("bid_p25")
+        p50 = c.get("bid_p50")
+        p75 = c.get("bid_p75")
         rows.append({
             "city":  c["city"],
             "date":  c["title_date"],
@@ -256,6 +260,10 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
             "fav":   f"{int(round(fav_yes * 100))}c" if fav_yes is not None else "",
             "dist":  f"-{bd}b",
             "vol":   f"{vol:.0f}" if vol is not None else "",
+            "conv":  f"{conv:.0f}%" if conv is not None else "",
+            "p25":   f"{p25 * 100:.0f}c" if p25 is not None else "",
+            "p50":   f"{p50 * 100:.0f}c" if p50 is not None else "",
+            "p75":   f"{p75 * 100:.0f}c" if p75 is not None else "",
             "in":    f"{hours_to_res:.1f}h" if hours_to_res is not None else "",
             "score": f"{score:.1f}" if score is not None else "",
             "res":   rdt.astimezone().strftime("%m-%d %H:%M") if rdt else "?",
@@ -270,6 +278,10 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
         ("fav",   "fav",      ">"),
         ("dist",  "dist",     ">"),
         ("vol",   "vol",      ">"),
+        ("conv",  "conv",     ">"),
+        ("p25",   "p25",      ">"),
+        ("p50",   "p50",      ">"),
+        ("p75",   "p75",      ">"),
         ("in",    "in",       ">"),
         ("score", "score",    ">"),
         ("res",   "resolves", "<"),
@@ -646,13 +658,6 @@ def run(
     min_bucket_distance = config.get_int(
         "TEMPBUY_MIN_BUCKET_DISTANCE", "temp_buyer", "min_bucket_distance", 2
     )
-    # Minimum YES-bid for the market's favorite bucket. If the favorite isn't
-    # strongly priced (e.g. 60c), the "safe" lower buckets aren't safe — the
-    # actual temperature could easily land there. Default 0.75 means we only
-    # enter when the market is ≥75% confident where the temperature will land.
-    min_fav_yes_bid = config.get_float(
-        "TEMPBUY_MIN_FAV_YES_BID", "temp_buyer", "min_fav_yes_bid", 0.75,
-    )
     min_ask_size = config.get_float(
         "TEMPBUY_MIN_ASK_SIZE", "temp_buyer", "min_ask_size", 20.0,
     )
@@ -684,6 +689,23 @@ def run(
     except Exception as exc:
         log.warning("[weather-model] scan_and_record_events failed: %s", exc)
 
+    # Two complementary book-shape floors:
+    #  - min_bid_pct_above: % of real bid size at ≥95c. Captures "exit liquidity
+    #    at near-full value." Cheap, single-point metric.
+    #  - min_bid_p75: top-75% conviction price (within bids ≥10c). Captures the
+    #    *shape* of the book — does the bottom quartile of real bidders still
+    #    pay >= this much? Catches collapsing books that the binary 95c cut
+    #    misses. Calibrated 2026-05-20: 0.70c is the natural break between
+    #    weak-shape (57-60c) and acceptable-shape (72-97c) markets.
+    min_bid_pct_above = config.get_float(
+        "TEMPBUY_MIN_BID_PCT_ABOVE", "temp_buyer", "min_bid_pct_above", 4.0,
+    )
+    min_bid_p75 = config.get_float(
+        "TEMPBUY_MIN_BID_P75", "temp_buyer", "min_bid_p75", 0.70,
+    )
+    from automata.client import get_book_depth as _get_book_depth_for_rank
+    _book_host = os.environ.get("POLYMARKET_HOST", "")
+
     candidates: list[dict] = []
     for ev in events:
         sel = _select_for_event(
@@ -701,11 +723,29 @@ def run(
                 sel["city"], sel["bucket_label"],
             )
             continue
-        fav_bid = sel.get("fav_yes_bid") or 0.0
-        if fav_bid < min_fav_yes_bid:
+        try:
+            book = _get_book_depth_for_rank(_book_host, sel["no_token_id"])
+        except Exception as exc:
+            log.info("  skip (book err) %s %s — %s", sel["city"], sel["bucket_label"], exc)
+            continue
+        bid_pct = book.get("bid_pct_above")
+        sel["bid_pct_above"] = bid_pct
+        sel["bid_p25"] = book.get("bid_p25")
+        sel["bid_p50"] = book.get("bid_p50")
+        sel["bid_p75"] = book.get("bid_p75")
+        sel["ask_size_book"] = book.get("ask_size")
+        if bid_pct is None or bid_pct < min_bid_pct_above:
             log.info(
-                "  skip (fav %.0fc < %.0fc) %s %s — market not confident enough",
-                fav_bid * 100, min_fav_yes_bid * 100,
+                "  skip (conv %.0f%% < %.0f%%) %s %s — too little support near ask",
+                bid_pct if bid_pct is not None else 0, min_bid_pct_above,
+                sel["city"], sel["bucket_label"],
+            )
+            continue
+        p75 = sel.get("bid_p75")
+        if p75 is None or p75 < min_bid_p75:
+            log.info(
+                "  skip (p75 %.0fc < %.0fc) %s %s — bid book collapses below the top quartile",
+                (p75 or 0) * 100, min_bid_p75 * 100,
                 sel["city"], sel["bucket_label"],
             )
             continue
@@ -727,20 +767,32 @@ def run(
         score_volume_w = config.get_float(
             "TEMPBUY_SCORE_VOLUME_WEIGHT", "temp_buyer", "score_volume_weight", 1.0,
         )
+        score_conv_w = config.get_float(
+            "TEMPBUY_SCORE_CONVICTION_WEIGHT", "temp_buyer", "score_conviction_weight", 0.1,
+        )
+        # p75 ranges ~0.70–0.97 above the floor → 0.27 dollar units of spread.
+        # Weight 8.0 → ~2 pts score spread, comparable to dist (1pt × 3–7 = 4pt).
+        score_p75_w = config.get_float(
+            "TEMPBUY_SCORE_P75_WEIGHT", "temp_buyer", "score_p75_weight", 8.0,
+        )
         now = datetime.now(timezone.utc)
         for c in candidates:
             rdt = c.get("resolution_dt")
             hours = (rdt - now).total_seconds() / 3600 if rdt else 1e6
             vol_score = math.log1p(c.get("volume") or 0) * score_volume_w
+            conv_score = (c.get("bid_pct_above") or 0) * score_conv_w
+            p75_score = (c.get("bid_p75") or 0) * score_p75_w
             c["score"] = (
                 (c.get("bucket_distance") or 0) * score_bucket_w
                 - hours * score_hours_w
                 + vol_score
+                + conv_score
+                + p75_score
             )
         candidates.sort(key=lambda c: c["score"], reverse=True)
         log.info(
-            "  %d eligible candidate(s) (score = dist*%.1f − hours*%.1f + log(vol)*%.1f):",
-            len(candidates), score_bucket_w, score_hours_w, score_volume_w,
+            "  %d eligible candidate(s) (score = dist*%.1f − hours*%.1f + log(vol)*%.1f + conv%%*%.2f + p75$*%.1f):",
+            len(candidates), score_bucket_w, score_hours_w, score_volume_w, score_conv_w, score_p75_w,
         )
         for line in _render_candidates_table(candidates):
             log.info("    %s", line)

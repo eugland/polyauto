@@ -89,8 +89,34 @@ def get_best_bid_ask(host: str, token_id: str) -> tuple[float | None, float | No
         return None, None
 
 
-def get_book_depth(host: str, token_id: str, bid_conviction_threshold: float = 0.95) -> dict:
-    """Fetch bid/ask depth plus a bid-conviction ratio for a token.
+def _weighted_quantile_price(bid_pairs: list[tuple[float, float]], q: float) -> float | None:
+    """Share-weighted price quantile from the top of the bid book.
+
+    bid_pairs: list of (price, size), order-independent, all sizes > 0.
+    q in (0,1]: the fraction of cumulative bid size, counted from the highest
+    price down. q=0.25 returns the price at which the top 25% of bid shares sit
+    at or above — i.e. "what is the top quarter of buyer interest willing to pay?"
+    """
+    if not bid_pairs:
+        return None
+    total = sum(s for _, s in bid_pairs)
+    if total <= 0:
+        return None
+    target = q * total
+    cum = 0.0
+    for price, size in sorted(bid_pairs, key=lambda x: -x[0]):  # high → low
+        cum += size
+        if cum >= target:
+            return price
+    return bid_pairs[-1][0]
+
+
+def get_book_depth(
+    host: str, token_id: str,
+    bid_conviction_threshold: float = 0.95,
+    pct_floor: float = 0.10,
+) -> dict:
+    """Fetch bid/ask depth, a bid-conviction ratio, and shape-aware bid percentiles.
 
     Returns:
       bid              — best bid price
@@ -99,13 +125,21 @@ def get_book_depth(host: str, token_id: str, bid_conviction_threshold: float = 0
       bid_size_above   — total shares bid at >= bid_conviction_threshold
       bid_size_below   — total shares bid at <  bid_conviction_threshold
       bid_pct_above    — bid_size_above / total_bid_size (0-100), or None if no bids
+      bid_p25          — top-25% conviction price (within bids ≥ pct_floor)
+      bid_p50          — top-50% conviction price (share-weighted median, within bids ≥ pct_floor)
+      bid_p75          — top-75% conviction price (within bids ≥ pct_floor)
 
-    bid_pct_above tells you what fraction of buyer interest is priced near
-    full value. 80%+ means strong conviction; <30% means buyers are hedging.
+    bid_pct_above is a single binary cut at 95¢. bid_p25/p50/p75 capture
+    the full shape of the *real* bid book — bids below pct_floor (default 10¢)
+    are excluded because they're typically MM price-improvement floor / "free
+    option" orders that drown the signal. A high bid_p25 (e.g. 0.90+) means
+    the top quarter of buyer interest is priced near ask — strong conviction.
+    A low bid_p25 (e.g. <0.30) means even the most-convicted bids are lowballing.
     """
     import requests
     empty = {"bid": None, "ask": None, "ask_size": None,
-             "bid_size_above": None, "bid_size_below": None, "bid_pct_above": None}
+             "bid_size_above": None, "bid_size_below": None, "bid_pct_above": None,
+             "bid_p25": None, "bid_p50": None, "bid_p75": None}
     try:
         resp = requests.get(f"{host}/book", params={"token_id": token_id}, timeout=5)
         resp.raise_for_status()
@@ -125,6 +159,15 @@ def get_book_depth(host: str, token_id: str, bid_conviction_threshold: float = 0
         total_bid = bid_size_above + bid_size_below
         bid_pct_above = (bid_size_above / total_bid * 100) if total_bid > 0 else None
 
+        bid_pairs_real = [
+            (float(b["price"]), float(b.get("size", 0)))
+            for b in bids
+            if float(b.get("size", 0)) > 0 and float(b["price"]) >= pct_floor
+        ]
+        bid_p25 = _weighted_quantile_price(bid_pairs_real, 0.25)
+        bid_p50 = _weighted_quantile_price(bid_pairs_real, 0.50)
+        bid_p75 = _weighted_quantile_price(bid_pairs_real, 0.75)
+
         return {
             "bid": best_bid,
             "ask": best_ask,
@@ -132,6 +175,9 @@ def get_book_depth(host: str, token_id: str, bid_conviction_threshold: float = 0
             "bid_size_above": bid_size_above,
             "bid_size_below": bid_size_below,
             "bid_pct_above": bid_pct_above,
+            "bid_p25": bid_p25,
+            "bid_p50": bid_p50,
+            "bid_p75": bid_p75,
         }
     except Exception:
         return empty
