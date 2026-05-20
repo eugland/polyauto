@@ -89,6 +89,33 @@ def get_best_bid_ask(host: str, token_id: str) -> tuple[float | None, float | No
         return None, None
 
 
+def get_book_depth(host: str, token_id: str) -> dict:
+    """Fetch bid/ask plus size available at the best ask (and best bid).
+
+    Returns {"bid", "ask", "ask_size", "bid_size"}. ask_size is the total
+    shares offered at the best-ask price level — a proxy for how much
+    conviction sellers (NO-holders) have at that price.
+    """
+    import requests
+    try:
+        resp = requests.get(f"{host}/book", params={"token_id": token_id}, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+        best_bid = max((float(b["price"]) for b in bids), default=None)
+        best_ask = min((float(a["price"]) for a in asks), default=None)
+        ask_size = None
+        bid_size = None
+        if best_ask is not None:
+            ask_size = sum(float(a.get("size", 0)) for a in asks if float(a["price"]) == best_ask)
+        if best_bid is not None:
+            bid_size = sum(float(b.get("size", 0)) for b in bids if float(b["price"]) == best_bid)
+        return {"bid": best_bid, "ask": best_ask, "ask_size": ask_size, "bid_size": bid_size}
+    except Exception:
+        return {"bid": None, "ask": None, "ask_size": None, "bid_size": None}
+
+
 def get_best_books_bulk(host: str, token_ids: list[str], chunk_size: int = 200) -> dict[str, dict]:
     """
     Fetch live best bid and ask prices for multiple tokens via POST to /books.

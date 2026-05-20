@@ -221,6 +221,7 @@ def _select_for_event(
         "event_token_ids": event_token_ids,
         "no_ask": r["no_ask"],
         "no_bid": r["no_bid"],
+        "volume": r.get("volume"),
         "fav_label": _bucket_label(fav_pair[1]["question"]),
         "fav_yes_bid": fav_pair[1]["yes_bid"],
         "bucket_distance": bucket_distance,
@@ -245,6 +246,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
         fav_yes = c.get("fav_yes_bid")
         hours_to_res = (rdt - now).total_seconds() / 3600 if rdt else None
         score = c.get("score")
+        vol = c.get("volume")
         rows.append({
             "city":  c["city"],
             "date":  c["title_date"],
@@ -253,6 +255,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
             "exp":   (c.get("fav_label") or "").strip(),
             "fav":   f"{int(round(fav_yes * 100))}c" if fav_yes is not None else "",
             "dist":  f"-{bd}b",
+            "vol":   f"{vol:.0f}" if vol is not None else "",
             "in":    f"{hours_to_res:.1f}h" if hours_to_res is not None else "",
             "score": f"{score:.1f}" if score is not None else "",
             "res":   rdt.astimezone().strftime("%m-%d %H:%M") if rdt else "?",
@@ -266,6 +269,7 @@ def _render_candidates_table(candidates: list[dict], *, now: datetime | None = N
         ("exp",   "exp",      "<"),
         ("fav",   "fav",      ">"),
         ("dist",  "dist",     ">"),
+        ("vol",   "vol",      ">"),
         ("in",    "in",       ">"),
         ("score", "score",    ">"),
         ("res",   "resolves", "<"),
@@ -407,6 +411,7 @@ def _run_topup_pass(
     min_bucket_distance: int,
     city_blacklist: set[str],
     min_topup_shares: float,
+    min_ask_size: float,
     balance: float,
     min_balance: float,
     max_orders_remaining: int,
@@ -422,7 +427,7 @@ def _run_topup_pass(
     lines and decrements `balance` as if orders were placed, but never
     calls place_no_order or record_bet_fn."""
     from experiment.view import _parse_json_list, fetch_events_resolving_within
-    from automata.client import get_best_bid_ask, place_no_order
+    from automata.client import get_book_depth, place_no_order
     from automata.parser import _extract_no_token_id
 
     if max_orders_remaining <= 0:
@@ -507,7 +512,9 @@ def _run_topup_pass(
             )
             continue
 
-        live_bid, live_ask = get_best_bid_ask(host, tid)
+        book = get_book_depth(host, tid)
+        live_ask = book["ask"]
+        ask_size = book["ask_size"]
         if live_ask is None:
             log.info("[top-up] no live ask  %s %s — skip", sel["city"], sel["bucket_label"])
             continue
@@ -516,6 +523,10 @@ def _run_topup_pass(
                 "[top-up] ask %.2fc out of band  %s — skip",
                 live_ask * 100, sel["city"],
             )
+            continue
+        if min_ask_size > 0 and (ask_size or 0) < min_ask_size:
+            log.info("[top-up] ask_size %.0f sh < %.0f minimum  %s — skip (thin book)",
+                     ask_size or 0, min_ask_size, sel["city"])
             continue
         price = round(min(live_ask, max_no_ask), 4)
 
@@ -629,6 +640,16 @@ def run(
     min_bucket_distance = config.get_int(
         "TEMPBUY_MIN_BUCKET_DISTANCE", "temp_buyer", "min_bucket_distance", 2
     )
+    # Minimum YES-bid for the market's favorite bucket. If the favorite isn't
+    # strongly priced (e.g. 60c), the "safe" lower buckets aren't safe — the
+    # actual temperature could easily land there. Default 0.75 means we only
+    # enter when the market is ≥75% confident where the temperature will land.
+    min_fav_yes_bid = config.get_float(
+        "TEMPBUY_MIN_FAV_YES_BID", "temp_buyer", "min_fav_yes_bid", 0.75,
+    )
+    min_ask_size = config.get_float(
+        "TEMPBUY_MIN_ASK_SIZE", "temp_buyer", "min_ask_size", 20.0,
+    )
     cfg_shares  = config.get_float("TEMPBUY_BET_SHARES", "temp_buyer", "bet_shares", 30.0)
     cfg_min_h   = config.get_float("TEMPBUY_MIN_HOURS", "temp_buyer", "min_hours", 4.0)
     cfg_max_h   = config.get_int("TEMPBUY_MAX_HOURS", "temp_buyer", "max_hours", 18)
@@ -674,28 +695,46 @@ def run(
                 sel["city"], sel["bucket_label"],
             )
             continue
+        fav_bid = sel.get("fav_yes_bid") or 0.0
+        if fav_bid < min_fav_yes_bid:
+            log.info(
+                "  skip (fav %.0fc < %.0fc) %s %s — market not confident enough",
+                fav_bid * 100, min_fav_yes_bid * 100,
+                sel["city"], sel["bucket_label"],
+            )
+            continue
         candidates.append(sel)
 
     if candidates:
-        # Score = bucket_distance * w_d - hours_to_resolution * w_h. Defaults
-        # are w_d=3, w_h=1 → one ladder step is worth ~3h of lead time, so
-        # closer-to-resolution markets win unless the distance gap is large.
-        # Tune via [temp_buyer].score_bucket_weight / score_hours_weight.
+        # Score = dist*w_d − hours*w_h + log(1+volume)*w_v
+        # Defaults: w_d=3, w_h=1, w_v=1
+        #   - bucket distance: more steps below favorite = stronger NO conviction
+        #   - hours: prefer closer resolution (less time for surprise reversal)
+        #   - volume: more traded shares = more market participants agree
+        # Tune via [temp_buyer].score_bucket_weight / score_hours_weight / score_volume_weight
         score_bucket_w = config.get_float(
             "TEMPBUY_SCORE_BUCKET_WEIGHT", "temp_buyer", "score_bucket_weight", 3.0,
         )
         score_hours_w = config.get_float(
             "TEMPBUY_SCORE_HOURS_WEIGHT", "temp_buyer", "score_hours_weight", 1.0,
         )
+        score_volume_w = config.get_float(
+            "TEMPBUY_SCORE_VOLUME_WEIGHT", "temp_buyer", "score_volume_weight", 1.0,
+        )
         now = datetime.now(timezone.utc)
         for c in candidates:
             rdt = c.get("resolution_dt")
             hours = (rdt - now).total_seconds() / 3600 if rdt else 1e6
-            c["score"] = (c.get("bucket_distance") or 0) * score_bucket_w - hours * score_hours_w
+            vol_score = math.log1p(c.get("volume") or 0) * score_volume_w
+            c["score"] = (
+                (c.get("bucket_distance") or 0) * score_bucket_w
+                - hours * score_hours_w
+                + vol_score
+            )
         candidates.sort(key=lambda c: c["score"], reverse=True)
         log.info(
-            "  %d eligible candidate(s) (score = dist*%.1f − hours*%.1f):",
-            len(candidates), score_bucket_w, score_hours_w,
+            "  %d eligible candidate(s) (score = dist*%.1f − hours*%.1f + log(vol)*%.1f):",
+            len(candidates), score_bucket_w, score_hours_w, score_volume_w,
         )
         for line in _render_candidates_table(candidates):
             log.info("    %s", line)
@@ -711,6 +750,7 @@ def run(
         build_client,
         derive_api_credentials,
         get_best_bid_ask,
+        get_book_depth,
         get_positions,
         get_usdc_balance,
         place_no_order,
@@ -823,6 +863,7 @@ def run(
         min_bucket_distance=min_bucket_distance,
         city_blacklist=city_blacklist,
         min_topup_shares=min_topup_shares,
+        min_ask_size=min_ask_size,
         balance=balance,
         min_balance=cfg_min_bal,
         max_orders_remaining=max_orders,
@@ -855,13 +896,22 @@ def run(
 
         # Re-pull live book; quote at the tighter of book ask and our cap.
         host = os.environ["POLYMARKET_HOST"]
-        live_bid, live_ask = get_best_bid_ask(host, c["no_token_id"])
+        book = get_book_depth(host, c["no_token_id"])
+        live_ask = book["ask"]
+        ask_size = book["ask_size"]
         if live_ask is None:
             log.info("  no live ask  %s %s — skipping", c["city"], c["bucket_label"])
             continue
         if live_ask < min_no_ask:
             log.info("  ask dropped to %.2fc < %.2fc  %s — skipping",
                      live_ask * 100, min_no_ask * 100, c["city"])
+            continue
+        log.info("  book %s %s  ask=%.2fc  ask_size=%.0f sh  vol=%.0f",
+                 c["city"], c["bucket_label"], live_ask * 100,
+                 ask_size or 0, c.get("volume") or 0)
+        if min_ask_size > 0 and (ask_size or 0) < min_ask_size:
+            log.info("  ask_size %.0f sh < %.0f minimum  %s %s — skipping (thin book)",
+                     ask_size or 0, min_ask_size, c["city"], c["bucket_label"])
             continue
         price = round(min(live_ask, max_no_ask), 4)
 
@@ -937,6 +987,303 @@ def run(
     log.info("  done — %d order(s) %s, $%.2f balance remaining", placed, verb, balance)
 
 
+# ── Redeem helpers (formerly in automata/eth_1h.py) ──────────────────────────
+
+_CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+_USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+_POLYGON_CHAIN_ID = 137
+_POLYGON_RPC_FALLBACKS = [
+    "https://polygon-bor-rpc.publicnode.com",
+    "https://1rpc.io/matic",
+    "https://polygon-rpc.com",
+]
+_CTF_ABI = [
+    {
+        "inputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
+        "name": "payoutDenominator",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "bytes32", "name": "", "type": "bytes32"},
+            {"internalType": "uint256", "name": "", "type": "uint256"},
+        ],
+        "name": "payoutNumerators",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "collateralToken", "type": "address"},
+            {"internalType": "bytes32", "name": "parentCollectionId", "type": "bytes32"},
+            {"internalType": "bytes32", "name": "conditionId", "type": "bytes32"},
+            {"internalType": "uint256[]", "name": "indexSets", "type": "uint256[]"},
+        ],
+        "name": "redeemPositions",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+]
+
+
+def _get_web3_and_ctf(rpc_url: str | None = None):
+    from web3 import Web3
+
+    rpc_candidates = [rpc_url] if rpc_url else []
+    rpc_candidates.extend(_POLYGON_RPC_FALLBACKS)
+    last_err = None
+    for url in [u for u in rpc_candidates if u]:
+        try:
+            w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 10}))
+            _ = w3.eth.block_number
+            ctf = w3.eth.contract(address=Web3.to_checksum_address(_CTF_ADDRESS), abi=_CTF_ABI)
+            return w3, ctf
+        except Exception as exc:
+            last_err = exc
+    raise RuntimeError(f"No working Polygon RPC for redeem: {last_err}")
+
+
+def _as_bytes32(hex_value: str) -> bytes:
+    h = (hex_value or "").lower().replace("0x", "")
+    if len(h) != 64:
+        raise ValueError(f"Invalid bytes32 hex length: {hex_value}")
+    return bytes.fromhex(h)
+
+
+def _resolved_side_from_chain(ctf: Any, condition_id: str) -> str | None:
+    cid = _as_bytes32(condition_id)
+    denom = int(ctf.functions.payoutDenominator(cid).call())
+    if denom <= 0:
+        return None
+    n0 = int(ctf.functions.payoutNumerators(cid, 0).call())
+    n1 = int(ctf.functions.payoutNumerators(cid, 1).call())
+    if n0 > n1:
+        return "up"
+    if n1 > n0:
+        return "down"
+    return "invalid"
+
+
+def _redeem_condition_positions(private_key: str, condition_id: str, rpc_url: str | None = None) -> str | None:
+    from web3 import Web3
+
+    w3, ctf = _get_web3_and_ctf(rpc_url)
+    account = w3.eth.account.from_key(private_key)
+    cid = _as_bytes32(condition_id)
+    try:
+        tx = ctf.functions.redeemPositions(
+            Web3.to_checksum_address(_USDC_E_ADDRESS),
+            b"\x00" * 32,
+            cid,
+            [1, 2],
+        ).build_transaction(
+            {
+                "from": account.address,
+                "nonce": w3.eth.get_transaction_count(account.address),
+                "chainId": _POLYGON_CHAIN_ID,
+                "gas": 350000,
+                "gasPrice": w3.eth.gas_price,
+            }
+        )
+        signed = w3.eth.account.sign_transaction(tx, private_key=private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        return tx_hash.hex()
+    except Exception as exc:
+        log.warning("[redeem] redeemPositions failed for %s: %s", condition_id, exc)
+        return None
+
+
+def _redeem_condition_positions_relayer(private_key: str, condition_id: str, relayer_url: str | None = None) -> str | None:
+    relayer_base = relayer_url or config.get_str("POLYMARKET_RELAYER_URL", "polymarket", "relayer_url", "https://relayer-v2.polymarket.com")
+    relayer_key = os.getenv("RELAYER_API_KEY")
+    relayer_addr = os.getenv("RELAYER_API_KEY_ADDRESS")
+
+    if relayer_key and relayer_addr:
+        try:
+            import requests
+            from py_builder_relayer_client.builder.safe import build_safe_transaction_request
+            from py_builder_relayer_client.config import get_contract_config
+            from py_builder_relayer_client.models import SafeTransaction, OperationType, SafeTransactionArgs, TransactionType
+            from py_builder_relayer_client.signer import Signer
+            from web3 import Web3
+
+            headers = {
+                "RELAYER_API_KEY": relayer_key,
+                "RELAYER_API_KEY_ADDRESS": relayer_addr,
+                "Content-Type": "application/json",
+            }
+
+            signer = Signer(private_key, _POLYGON_CHAIN_ID)
+            from_address = signer.address()
+            nonce_resp = requests.get(
+                f"{relayer_base}/nonce",
+                params={"address": from_address, "type": TransactionType.SAFE.value},
+                headers=headers,
+                timeout=20,
+            )
+            if nonce_resp.status_code != 200:
+                raise RuntimeError(f"nonce failed: {nonce_resp.status_code} {nonce_resp.text[:200]}")
+            nonce_payload = nonce_resp.json() or {}
+            nonce = nonce_payload.get("nonce")
+            if nonce is None:
+                raise RuntimeError(f"invalid nonce payload: {nonce_payload}")
+
+            _, ctf = _get_web3_and_ctf(os.getenv("POLYGON_RPC_URL"))
+            data = ctf.encode_abi(
+                "redeemPositions",
+                args=[
+                    Web3.to_checksum_address(_USDC_E_ADDRESS),
+                    b"\x00" * 32,
+                    _as_bytes32(condition_id),
+                    [1, 2],
+                ],
+            )
+            tx = SafeTransaction(
+                to=Web3.to_checksum_address(_CTF_ADDRESS),
+                operation=OperationType.Call,
+                data=data,
+                value="0",
+            )
+            req = build_safe_transaction_request(
+                signer=signer,
+                args=SafeTransactionArgs(
+                    from_address=from_address,
+                    nonce=nonce,
+                    chain_id=_POLYGON_CHAIN_ID,
+                    transactions=[tx],
+                ),
+                config=get_contract_config(_POLYGON_CHAIN_ID),
+                metadata="redeem positions",
+            ).to_dict()
+            submit_resp = requests.post(f"{relayer_base}/submit", headers=headers, json=req, timeout=20)
+            if submit_resp.status_code != 200:
+                raise RuntimeError(f"submit failed: {submit_resp.status_code} {submit_resp.text[:300]}")
+            body = submit_resp.json() or {}
+            tx_hash = body.get("transactionHash")
+            tx_id = body.get("transactionID")
+            if tx_hash:
+                return tx_hash
+            if tx_id:
+                for _ in range(30):
+                    q = requests.get(f"{relayer_base}/transaction", params={"id": tx_id}, headers=headers, timeout=20)
+                    if q.status_code != 200:
+                        break
+                    arr = q.json() if q.text else []
+                    if isinstance(arr, list) and arr:
+                        st = arr[0].get("state")
+                        h = arr[0].get("transactionHash")
+                        if h:
+                            return h
+                        if st in ("STATE_FAILED", "STATE_INVALID"):
+                            break
+            return None
+        except Exception as exc:
+            log.warning("[redeem] relayer API-key redeem failed for %s: %s", condition_id, exc)
+
+    try:
+        from py_builder_relayer_client.client import RelayClient
+        from py_builder_relayer_client.models import SafeTransaction, OperationType
+        from py_builder_signing_sdk.config import BuilderConfig
+        from py_builder_signing_sdk.sdk_types import BuilderApiKeyCreds
+        from web3 import Web3
+    except Exception as exc:
+        log.warning("[redeem] relayer SDK unavailable: %s", exc)
+        return None
+
+    key = os.getenv("POLY_BUILDER_API_KEY")
+    secret = os.getenv("POLY_BUILDER_SECRET")
+    passphrase = os.getenv("POLY_BUILDER_PASSPHRASE")
+    if not key or not secret or not passphrase:
+        log.warning("[redeem] Missing builder creds for relayer redeem (POLY_BUILDER_API_KEY/SECRET/PASSPHRASE)")
+        return None
+
+    try:
+        builder_cfg = BuilderConfig(local_builder_creds=BuilderApiKeyCreds(key=key, secret=secret, passphrase=passphrase))
+        client = RelayClient(relayer_base, _POLYGON_CHAIN_ID, private_key=private_key, builder_config=builder_cfg)
+        _, ctf = _get_web3_and_ctf(os.getenv("POLYGON_RPC_URL"))
+        data = ctf.encode_abi(
+            "redeemPositions",
+            args=[
+                Web3.to_checksum_address(_USDC_E_ADDRESS),
+                b"\x00" * 32,
+                _as_bytes32(condition_id),
+                [1, 2],
+            ],
+        )
+        tx = SafeTransaction(
+            to=Web3.to_checksum_address(_CTF_ADDRESS),
+            operation=OperationType.Call,
+            data=data,
+            value="0",
+        )
+        resp = client.execute([tx], "redeem positions")
+        waited = resp.wait()
+        tx_hash = waited.get("transactionHash") if isinstance(waited, dict) else None
+        if not tx_hash:
+            tx_hash = getattr(resp, "transaction_hash", None)
+        return tx_hash
+    except Exception as exc:
+        log.warning("[redeem] relayer redeem failed for %s: %s", condition_id, exc)
+        return None
+
+
+def _settle_resolved_trades(private_key: str | None, rpc_url: str | None = None, redeem_mode: str = "relayer") -> None:
+    if not private_key:
+        log.warning("[redeem] POLYMARKET_PRIVATE_KEY missing; cannot redeem")
+        return
+
+    funder = os.getenv("POLYMARKET_FUNDER")
+    if not funder:
+        log.warning("[redeem] POLYMARKET_FUNDER missing; cannot scan positions for redeem")
+        return
+
+    import requests as _requests
+    try:
+        r = _requests.get(
+            "https://data-api.polymarket.com/positions",
+            params={"user": funder, "sizeThreshold": "0.01"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        positions = r.json()
+    except Exception as exc:
+        log.warning("[redeem] get_positions failed: %s", exc)
+        return
+
+    if not positions:
+        return
+
+    condition_to_tokens: dict[str, set[str]] = {}
+    for p in positions:
+        cid = str(p.get("conditionId") or "")
+        tid = str(p.get("asset") or "")
+        size = float(p.get("size", 0) or 0)
+        if cid and tid and size > 0:
+            condition_to_tokens.setdefault(cid, set()).add(tid)
+
+    if not condition_to_tokens:
+        return
+
+    _, ctf = _get_web3_and_ctf(rpc_url)
+
+    for cid, token_ids in condition_to_tokens.items():
+        side = _resolved_side_from_chain(ctf, str(cid))
+        if side is None:
+            continue
+        if redeem_mode == "relayer":
+            tx_hash = _redeem_condition_positions_relayer(private_key=private_key, condition_id=str(cid))
+        else:
+            tx_hash = _redeem_condition_positions(private_key=private_key, condition_id=str(cid), rpc_url=rpc_url)
+        if not tx_hash:
+            log.warning("[redeem] Redeem submit failed for condition=%s side=%s", cid, side)
+            continue
+        log.info("[redeem] Settled condition=%s tokens=%s side=%s redeem_tx=%s", cid, token_ids, side, tx_hash)
+
+
 def main() -> int:
     import time as _time
 
@@ -1003,7 +1350,6 @@ def main() -> int:
         if not args.bet or not redeem_enabled:
             return
         try:
-            from automata.eth_1h import _settle_resolved_trades
             _settle_resolved_trades(
                 private_key=os.getenv("POLYMARKET_PRIVATE_KEY"),
                 rpc_url=polygon_rpc,

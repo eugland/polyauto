@@ -186,16 +186,28 @@ stale_minutes = 3.0
 # only the spendable surplus. 0 = no reserve, spend whatever's there.
 min_balance_usdc = 0.0
 
+# TEMPBUY_MIN_ASK_SIZE — minimum shares available at the live NO ask (CLOB book
+# depth). A thin ask queue (e.g. 5 sh) means barely anyone is selling NO there,
+# which is a low-conviction signal. Default 20 sh; set 0 to disable the gate.
+min_ask_size = 20.0
+
+# Conviction gate: the YES-favorite must be priced at or above this to enter.
+# If the market isn't confident where the temperature lands (e.g. 60c favorite),
+# buckets 2-3 steps below are NOT safe — the actual temp could land there.
+# Default 0.75 means we only bet when the market is ≥75% certain of the outcome.
+# Raise to 0.85+ for more conservative entries; lower to 0.65 for more action.
+min_fav_yes_bid = 0.75
+
 # Candidate scoring: score = bucket_distance * score_bucket_weight
 #                          - hours_to_resolution * score_hours_weight
-# Defaults bias heavily toward closer-to-resolution markets — hours
-# dominate bucket distance 2:1, so a -5b @5h beats a -10b @15h. The
-# min_bucket_distance gate already enforces a quality floor on distance,
-# so among qualifying candidates lead-time is the dominant risk signal.
+#                          + log(1+volume) * score_volume_weight
+# volume rewards buckets with more trading activity (higher market conviction).
 # Raise score_bucket_weight to favor deeper-below-favorite buckets;
-# raise score_hours_weight to penalize lead time more aggressively.
+# raise score_hours_weight to penalize lead time more aggressively;
+# raise score_volume_weight to strongly prefer high-volume buckets.
 score_bucket_weight = 1.0
 score_hours_weight = 2.0
+score_volume_weight = 1.0
 
 # TEMPBUY_REDEEM_RESOLVED — after each live cycle, scan funder positions
 # and redeem any whose condition has resolved on-chain. Required since
@@ -207,42 +219,6 @@ redeem_resolved = true
 # or onchain (direct call from POLYMARKET_PRIVATE_KEY; needs POLYGON_RPC_URL).
 redeem_mode = "relayer"
 
-
-[eth_1h]
-# SELL_TARGET — take-profit price (ignored when redeem_only_mode = true)
-sell_target = 0.99
-# STOP_LOSS — exit immediately if position bid drops below this
-stop_loss = 0.60
-# BET_SHARES — target shares per trade
-bet_shares = 20
-# K_DEFAULT — Brownian Bridge k, auto-calibrated once >= 10 outcomes exist
-k_default = 0.09
-# MIN_MINUTES / MAX_MINUTES — entry window in minutes remaining before expiry
-min_minutes = 0
-max_minutes = 7
-# REDEEM_ONLY_MODE — hold to resolution/redeem; no TP sell placement
-redeem_only_mode = true
-
-
-[btc_pre_candle]
-# Live betting — disabled by default. Enable with --bet on the CLI.
-# bet_shares: fixed shares per fire. Polymarket's orderMinSize on these
-# 1H BTC markets is 5, so 5 is the smallest legal size. At ~$0.50 entry
-# this costs ~$2.50/fire.
-bet_shares = 5
-# max_entry_ask: refuse to fire if the chosen-side ask is above this. The
-# backtest assumed flat $0.50; P13_24h_extreme_0 breaks even at $0.5256
-# (54.6% hit minus 2¢ friction), so a 0.52 limit keeps every fill EV-positive.
-max_entry_ask = 0.52
-# daily_spend_cap_usdc: stop placing new live orders once the day's
-# cumulative live cost crosses this (UTC day boundary).
-daily_spend_cap_usdc = 20.0
-# live_strategies: comma-separated allowlist of strategies that may bet
-# live. Anything else only records a shadow fire even with --bet on.
-# P13_24h_extreme_0 (exact 24h hi/lo touch) — 1668 backtest fires, 54.6%
-# hit, +$42.64 PnL at $0.50 entry; breaks even up to $0.5256. Strict
-# subset of _0.2 with cleaner per-share edge (2.6¢ vs 1.9¢).
-live_strategies = "P13_24h_extreme_0"
 
 
 [gamma]

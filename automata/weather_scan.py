@@ -209,7 +209,46 @@ def scan_and_record_events(
             c["taf"] = fc.get("taf")
 
     # ── METAR: dedupe by (icao, tz, date, unit) ─────────────────────────
-    from automata.weather_bot import CITY_TZ
+    CITY_TZ: dict[str, str] = {
+        "Ankara":        "Europe/Istanbul",
+        "Atlanta":       "America/New_York",
+        "Austin":        "America/Chicago",
+        "Beijing":       "Asia/Shanghai",
+        "Buenos Aires":  "America/Argentina/Buenos_Aires",
+        "Chengdu":       "Asia/Shanghai",
+        "Chicago":       "America/Chicago",
+        "Chongqing":     "Asia/Shanghai",
+        "Dallas":        "America/Chicago",
+        "Denver":        "America/Denver",
+        "Hong Kong":     "Asia/Hong_Kong",
+        "Houston":       "America/Chicago",
+        "Istanbul":      "Europe/Istanbul",
+        "London":        "Europe/London",
+        "Los Angeles":   "America/Los_Angeles",
+        "Lucknow":       "Asia/Kolkata",
+        "Madrid":        "Europe/Madrid",
+        "Mexico City":   "America/Mexico_City",
+        "Miami":         "America/New_York",
+        "Milan":         "Europe/Rome",
+        "Moscow":        "Europe/Moscow",
+        "Munich":        "Europe/Berlin",
+        "NYC":           "America/New_York",
+        "Paris":         "Europe/Paris",
+        "San Francisco": "America/Los_Angeles",
+        "Sao Paulo":     "America/Sao_Paulo",
+        "Seattle":       "America/Los_Angeles",
+        "Seoul":         "Asia/Seoul",
+        "Shanghai":      "Asia/Shanghai",
+        "Shenzhen":      "Asia/Shanghai",
+        "Singapore":     "Asia/Singapore",
+        "Taipei":        "Asia/Taipei",
+        "Tel Aviv":      "Asia/Jerusalem",
+        "Tokyo":         "Asia/Tokyo",
+        "Toronto":       "America/Toronto",
+        "Warsaw":        "Europe/Warsaw",
+        "Wellington":    "Pacific/Auckland",
+        "Wuhan":         "Asia/Shanghai",
+    }
     metar_keys: set[tuple[str, str, str, str]] = set()
     for c in candidates:
         if not c["icao"]:
