@@ -661,7 +661,7 @@ def run(
     min_ask_size = config.get_float(
         "TEMPBUY_MIN_ASK_SIZE", "temp_buyer", "min_ask_size", 20.0,
     )
-    cfg_shares  = config.get_float("TEMPBUY_BET_SHARES", "temp_buyer", "bet_shares", 30.0)
+    cfg_shares  = config.get_float("TEMPBUY_BET_SHARES", "temp_buyer", "bet_shares", 60.0)
     cfg_min_h   = config.get_float("TEMPBUY_MIN_HOURS", "temp_buyer", "min_hours", 4.0)
     cfg_max_h   = config.get_int("TEMPBUY_MAX_HOURS", "temp_buyer", "max_hours", 18)
     cfg_min_bal = config.get_float("TEMPBUY_MIN_BALANCE_USDC", "temp_buyer", "min_balance_usdc", 10.0)

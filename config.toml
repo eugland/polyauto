@@ -153,13 +153,13 @@ min_delta_f = 4.0
 # TEMPBUY_BET_SHARES — target share size per bet. If free USDC balance
 # is short, the bot does a partial fill for whatever the balance allows
 # (down to TEMPBUY_MIN_TOPUP_SHARES).
-bet_shares = 50.0
+bet_shares = 60.0
 
 # TEMPBUY_MIN_BUCKET_DISTANCE — minimum ladder steps below the YES-
 # favorite a candidate must sit before we'll buy. The picker already
 # selects the farthest-below qualifying bucket; this is a safety floor
 # that rejects events where nothing is at least this far down.
-min_bucket_distance = 3
+min_bucket_distance = 2
 
 # TEMPBUY_MIN_TOPUP_SHARES — absolute minimum order size (shares). Used
 # both for top-up gap and for partial-fill new entries when balance is
@@ -184,7 +184,7 @@ stale_minutes = 3.0
 # past this balance: bet sizes are computed against (balance - reserve),
 # the new-buy pass is skipped if balance ≤ reserve, and partial-fills use
 # only the spendable surplus. 0 = no reserve, spend whatever's there.
-min_balance_usdc = 0.0
+min_balance_usdc = 10.0
 
 # TEMPBUY_MIN_ASK_SIZE — minimum shares available at the live NO ask (CLOB book
 # depth). A thin ask queue (e.g. 5 sh) means barely anyone is selling NO there,
@@ -200,7 +200,7 @@ min_ask_size = 20.0
 # extends deep into the book; a low p75 means the book collapses fast.
 # Calibrated 2026-05-20 to 0.70 (the natural break between weak-shape clusters
 # at 57–60c and acceptable-shape clusters at 72–97c across 14 candidate markets).
-min_bid_pct_above = 4.0
+min_bid_pct_above = 2.0
 min_bid_p75 = 0.70
 
 # Candidate scoring: score = bucket_distance * score_bucket_weight
