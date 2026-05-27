@@ -29,21 +29,27 @@ from typing import List
 
 
 def remove_element(nums: List[int], val: int) -> int:
-    raise NotImplementedError("Implement remove_element")
+    slow = 0 
+    for fast in range(len(nums)):
+        if nums[fast] == val:
+            continue
+        nums[slow] = nums[fast]
+        slow += 1
+    return slow
 
 
 # ---------------------------- Test cases ----------------------------
 if __name__ == "__main__":
     nums1 = [3, 2, 2, 3]
     print("Test 1 expected: k=2, elements are [2,2] (any order)")
-    # k = remove_element(nums1, 3)
-    # print("got:           ", k, sorted(nums1[:k]))
+    k = remove_element(nums1, 3)
+    print("got:           ", k, sorted(nums1[:k]))
 
     nums2 = [0, 1, 2, 2, 3, 0, 4, 2]
     print("Test 2 expected: k=5, elements are [0,0,1,3,4] (any order)")
-    # k = remove_element(nums2, 2)
-    # print("got:           ", k, sorted(nums2[:k]))
+    k = remove_element(nums2, 2)
+    print("got:           ", k, sorted(nums2[:k]))
 
     nums3 = []
     print("Test 3 expected: k=0  (empty array)")
-    # print("got:           ", remove_element(nums3, 1))
+    print("got:           ", remove_element(nums3, 1))

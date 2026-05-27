@@ -23,19 +23,22 @@ Hint: a naive O(n*m) sliding window is accepted within constraints.
 
 
 def str_str(haystack: str, needle: str) -> int:
-    raise NotImplementedError("Implement str_str")
+    for i in range(len(haystack) - len(needle)+1):
+        if haystack[i:i+len(needle)] == needle:
+            return i
+    return -1 
 
 
 # ---------------------------- Test cases ----------------------------
 if __name__ == "__main__":
     print("Test 1 expected: 0   (\"sadbutsad\", \"sad\")")
-    # print("got:           ", str_str("sadbutsad", "sad"))
+    print("got:           ", str_str("sadbutsad", "sad"))
 
     print("Test 2 expected: -1  (\"leetcode\", \"leeto\")")
-    # print("got:           ", str_str("leetcode", "leeto"))
+    print("got:           ", str_str("leetcode", "leeto"))
 
     print("Test 3 expected: 2   (\"hello\", \"ll\")")
-    # print("got:           ", str_str("hello", "ll"))
+    print("got:           ", str_str("hello", "ll"))
 
     print("Test 4 expected: 4   (second occurrence ignored, \"aabaabaaf\", \"aabaaf\")")
-    # print("got:           ", str_str("aabaabaaf", "aabaaf"))
+    print("got:           ", str_str("aabaabaaf", "aabaaf"))

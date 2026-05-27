@@ -37,7 +37,32 @@ class ListNode:
 
 
 def reverse_k_group(head: Optional[ListNode], k: int) -> Optional[ListNode]:
-    raise NotImplementedError("Implement reverse_k_group")
+    if not head: 
+        return None
+    stc = []
+    cur = head
+    for i in range(k):
+        if not cur:
+            return head
+        stc.append(cur)
+        cur = cur.next
+    fut = cur
+    print(fut)
+    # cur is the one after
+    dummy = ListNode(0)
+    cur = dummy
+    while stc:
+        node = stc.pop()
+        cur.next = node
+        cur = cur.next
+        cur.next = None
+    if fut:
+        fut_rev = reverse_k_group(fut, k)
+        cur.next = fut_rev
+    return dummy.next
+
+
+
 
 
 # ---------------------------- Helpers ----------------------------
@@ -60,10 +85,13 @@ def from_list(vals):
 # ---------------------------- Test cases ----------------------------
 if __name__ == "__main__":
     print("Test 1 expected: [2, 1, 4, 3, 5]  (k=2)")
-    # print("got:           ", to_list(reverse_k_group(from_list([1,2,3,4,5]), 2)))
+    print("got:           ", to_list(reverse_k_group(from_list([1,2,3,4,5]), 2)))
 
     print("Test 2 expected: [3, 2, 1, 4, 5]  (k=3)")
-    # print("got:           ", to_list(reverse_k_group(from_list([1,2,3,4,5]), 3)))
+    print("got:           ", to_list(reverse_k_group(from_list([1,2,3,4,5]), 3)))
 
     print("Test 3 expected: [1, 2, 3]  (k > len, unchanged)")
-    # print("got:           ", to_list(reverse_k_group(from_list([1,2,3]), 4)))
+    print("got:           ", to_list(reverse_k_group(from_list([1,2,3]), 4)))
+
+    print("Test 4 expected: [1, 2]  (k=2)")
+    print("got:           ", to_list(reverse_k_group(from_list([1,2]), 2)))

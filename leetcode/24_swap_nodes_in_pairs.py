@@ -31,7 +31,21 @@ class ListNode:
 
 
 def swap_pairs(head: Optional[ListNode]) -> Optional[ListNode]:
-    raise NotImplementedError("Implement swap_pairs")
+    dummy = ListNode(0)
+    dummy.next = head
+    cur = dummy
+
+    while cur.next and cur.next and cur.next.next:
+        first = cur.next
+        second = cur.next.next
+        future = cur.next.next.next
+
+        cur.next = second
+        second.next = first
+        first.next = future
+        cur = first
+    return dummy.next
+
 
 
 # ---------------------------- Helpers ----------------------------
@@ -54,13 +68,13 @@ def from_list(vals):
 # ---------------------------- Test cases ----------------------------
 if __name__ == "__main__":
     print("Test 1 expected: [2, 1, 4, 3]")
-    # print("got:           ", to_list(swap_pairs(from_list([1,2,3,4]))))
+    print("got:           ", to_list(swap_pairs(from_list([1,2,3,4]))))
 
     print("Test 2 expected: []  (empty list)")
-    # print("got:           ", to_list(swap_pairs(None)))
+    print("got:           ", to_list(swap_pairs(None)))
 
     print("Test 3 expected: [1]  (single node, unchanged)")
-    # print("got:           ", to_list(swap_pairs(from_list([1]))))
+    print("got:           ", to_list(swap_pairs(from_list([1]))))
 
     print("Test 4 expected: [2, 1, 3]  (odd length)")
-    # print("got:           ", to_list(swap_pairs(from_list([1,2,3]))))
+    print("got:           ", to_list(swap_pairs(from_list([1,2,3]))))
