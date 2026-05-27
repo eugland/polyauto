@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import math
 import os
 from datetime import datetime, timezone
@@ -82,7 +83,9 @@ def _setup_logging() -> logging.Logger:
             and getattr(h, "baseFilename", "") == str(path)
             for h in root.handlers
         ):
-            fh = logging.FileHandler(path, encoding="utf-8")
+            fh = logging.handlers.RotatingFileHandler(
+                path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+            )
             fh.setFormatter(fmt)
             fh.setLevel(logging.INFO)
             root.addHandler(fh)
@@ -319,6 +322,80 @@ def _order_open_shares(order: dict[str, Any]) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, size - filled)
+
+
+def _place_resting_sells(
+    client: Any,
+    *,
+    live_positions: list[dict],
+    open_orders: list[dict],
+    sell_price: float = 0.999,
+    dry_run: bool = False,
+) -> None:
+    """For every held NO position, ensure a GTC sell order at sell_price exists
+    for the full position size. Cancels + replaces any existing sell whose size
+    differs. Silently skips if the market's tick size doesn't support the price
+    (precision error from the API)."""
+    from automata.client import cancel_order, place_sell_order
+
+    sell_orders_by_token: dict[str, list[dict]] = {}
+    for o in open_orders:
+        if str(o.get("side", "")).upper() != "SELL":
+            continue
+        tid = str(o.get("asset_id") or o.get("token_id") or "")
+        if tid:
+            sell_orders_by_token.setdefault(tid, []).append(o)
+
+    no_positions = [
+        p for p in live_positions
+        if str(p.get("outcome", "")).lower() == "no"
+        and float(p.get("size") or 0) > 0
+    ]
+    if not no_positions:
+        log.info("[resting-sell] no held NO positions")
+        return
+
+    for pos in no_positions:
+        tid = str(pos["token_id"])
+        target_size = round(float(pos["size"]), 2)
+        existing_sells = sell_orders_by_token.get(tid, [])
+        open_sell_sh = round(sum(_order_open_shares(o) for o in existing_sells), 2)
+
+        if abs(open_sell_sh - target_size) < 0.01:
+            log.info("[resting-sell] %s  sell %.2f sh already resting — skip", tid[:14], open_sell_sh)
+            continue
+
+        # Cancel any mismatched sell orders on this token
+        for o in existing_sells:
+            order_id = str(o.get("id") or o.get("orderID") or "")
+            if not order_id:
+                continue
+            if dry_run:
+                log.info("[resting-sell] WOULD CANCEL sell %s (%.2f sh)", order_id[:14], _order_open_shares(o))
+                continue
+            try:
+                cancel_order(client, order_id)
+                log.info("[resting-sell] cancelled sell %s (%.2f sh)", order_id[:14], _order_open_shares(o))
+            except Exception as exc:
+                log.warning("[resting-sell] cancel failed %s: %s", order_id[:14], exc)
+
+        if dry_run:
+            log.info("[resting-sell] WOULD SELL %s  No @ %.1fc  %.2f sh", tid[:14], sell_price * 100, target_size)
+            continue
+
+        try:
+            resp = place_sell_order(client, tid, sell_price, target_size)
+            order_id = str(resp.get("orderID") or resp.get("id") or "?")
+            status = resp.get("status") or "submitted"
+            log.info("[resting-sell] SELL %s  No @ %.1fc  %.2f sh → %s id=%s",
+                     tid[:14], sell_price * 100, target_size, status, order_id[:18])
+        except Exception as exc:
+            err = str(exc).lower()
+            if any(kw in err for kw in ("precision", "tick", "increment", "decimal", "invalid price", "price level")):
+                log.info("[resting-sell] skip %s — %.3f not a valid tick (precision): %s",
+                         tid[:14], sell_price, exc)
+            else:
+                log.warning("[resting-sell] sell failed %s: %s", tid[:14], exc)
 
 
 def _cancel_stale_buy_orders(
@@ -926,6 +1003,16 @@ def run(
         min_balance=cfg_min_bal,
         max_orders_remaining=max_orders,
         record_bet_fn=record_bet,
+        dry_run=dry_run,
+    )
+
+    # ── Resting-sell pass: runs regardless of balance or candidate state ─────
+    log.info("[resting-sell] placing/updating sell orders for all held NO positions")
+    _place_resting_sells(
+        client,
+        live_positions=live_positions,
+        open_orders=all_open_orders,
+        sell_price=0.999,
         dry_run=dry_run,
     )
 

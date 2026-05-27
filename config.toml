@@ -139,11 +139,10 @@ bet_pass_wait_seconds = 10
 
 # TEMPBUY_MIN_NO_ASK / TEMPBUY_MAX_NO_ASK — accept buckets with NO ask
 # in [min, max] (inclusive). min=0.99 keeps us in the highest-confidence
-# band only. max=1.0 means the saturated 99.9¢ top-of-stack bucket is
-# allowed (no upper gate) — safety comes from min_bucket_distance, not
-# from leaving the cheapest cents on the table.
+# band only. max=0.998 skips the saturated 99.9¢ top-of-stack bucket in
+# favor of the next bucket down, which has more upside per share.
 min_no_ask = 0.99
-max_no_ask = 1.0
+max_no_ask = 0.998
 
 # TEMPBUY_MIN_DELTA_C / TEMPBUY_MIN_DELTA_F — gap to YES-favorite
 # bucket required, applied per-event using the question's unit.
