@@ -26,30 +26,47 @@ INT_MIN = -(2**31)
 
 
 def divide(dividend: int, divisor: int) -> int:
-    if dividend == INT_MIN and divisor == -1:
-        return INT_MAX
+    neg_count = 0
+    if divisor == 0:
+        return None
+    elif divisor < 0:
+        neg_count += 1
+    
+    if dividend == 0:
+        return 0
+    elif dividend < 0: 
+        neg_count += 1
 
-    negative = (dividend < 0) != (divisor < 0)
-    a, b = abs(dividend), abs(divisor)
-    result = 0
+    dividend = abs(dividend)
+    divisor = abs(divisor)
 
-    while a >= b:
-        temp, multiple = b, 1
-        while a >= (temp << 1):
-            temp <<= 1
-            multiple <<= 1
-        a -= temp
-        result += multiple
+    look = [(1, divisor)]
+    count, div = look[-1]
+    while div < dividend:
+        count = count + count
+        div = div + div
+        look.append((count, div))
+    acc = 0
+    while look:
+        count, div = look.pop()
+        if div <= dividend:
+            dividend -= div
+            acc += count
+    if neg_count == 1:
+        acc = -acc
+    return acc
 
-    return -result if negative else result
+
 
 
 # ---------------------------- Test cases ----------------------------
 if __name__ == "__main__":
     print("Test 1 expected: 3   (10 / 3)")
+    print(10//3)
     print("got:           ", divide(10, 3))
 
     print("Test 2 expected: -2  (7 / -3)")
+    print(7//-3)
     print("got:           ", divide(7, -3))
 
     print("Test 3 expected: 1   (1 / 1)")

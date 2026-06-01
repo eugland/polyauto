@@ -23,42 +23,7 @@ Hint: backtracking — for each empty cell try digits 1-9, prune with row/col/bo
 
 
 def solve_sudoku(board: list) -> None:
-    rows = [set() for _ in range(9)]
-    cols = [set() for _ in range(9)]
-    boxes = [set() for _ in range(9)]
-    empty = []
-
-    for r in range(9):
-        for c in range(9):
-            val = board[r][c]
-            if val == '.':
-                empty.append((r, c))
-            else:
-                box = (r // 3) * 3 + (c // 3)
-                rows[r].add(val)
-                cols[c].add(val)
-                boxes[box].add(val)
-
-    def backtrack(idx: int) -> bool:
-        if idx == len(empty):
-            return True
-        r, c = empty[idx]
-        box = (r // 3) * 3 + (c // 3)
-        for d in "123456789":
-            if d not in rows[r] and d not in cols[c] and d not in boxes[box]:
-                board[r][c] = d
-                rows[r].add(d)
-                cols[c].add(d)
-                boxes[box].add(d)
-                if backtrack(idx + 1):
-                    return True
-                board[r][c] = '.'
-                rows[r].discard(d)
-                cols[c].discard(d)
-                boxes[box].discard(d)
-        return False
-
-    backtrack(0)
+    pass
 
 
 # ---------------------------- Test cases ----------------------------

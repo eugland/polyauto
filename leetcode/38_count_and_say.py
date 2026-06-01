@@ -32,19 +32,7 @@ Function signature:
 
 
 def count_and_say(n: int) -> str:
-    s = "1"
-    for _ in range(n - 1):
-        next_s = []
-        i = 0
-        while i < len(s):
-            ch = s[i]
-            count = 1
-            while i + count < len(s) and s[i + count] == ch:
-                count += 1
-            next_s.append(str(count) + ch)
-            i += count
-        s = "".join(next_s)
-    return s
+    pass
 
 
 # ---------------------------- Test cases ----------------------------

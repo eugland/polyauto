@@ -22,25 +22,32 @@ Function signature:
 
 
 def search(nums: list, target: int) -> int:
-    lo, hi = 0, len(nums) - 1
-
-    while lo <= hi:
-        mid = (lo + hi) // 2
+    start, end = 0, len(nums) - 1
+    while start <= end:
+        mid = (start + end) // 2
         if nums[mid] == target:
             return mid
 
-        if nums[lo] <= nums[mid]:
-            if nums[lo] <= target < nums[mid]:
-                hi = mid - 1
+        # 2 3 4 5 1 # mid > left, pivot on the right 
+        # 4 5 1 2 3 # mid < left, pivot on the left
+        # 3 1, 
+        # 0 -> 3, start =3 mid = 3, target = 1
+        if nums[start] <= nums[mid]:
+            # pivot on the right
+            if nums[start] <= target <= nums[mid]:
+                end = mid - 1
             else:
-                lo = mid + 1
-        else:
-            if nums[mid] < target <= nums[hi]:
-                lo = mid + 1
+                start = mid + 1
+        else: # nums[mid] < nums[start]
+            # 4 5 1 2 3 # mid < left, pivot on the left
+            if nums[mid] <= target <= nums[end]:
+                start = mid + 1
             else:
-                hi = mid - 1
-
+                end = mid - 1
     return -1
+
+
+        
 
 
 # ---------------------------- Test cases ----------------------------

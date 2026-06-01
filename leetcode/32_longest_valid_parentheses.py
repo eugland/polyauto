@@ -23,20 +23,26 @@ Hint: use a stack that stores the index of the last unmatched ')'.
 
 
 def longest_valid_parentheses(s: str) -> int:
-    stack = [-1]
+    # ( is a valid start, keep going, ((())()
+    # as opens keep track of open an position, when closing, read previous bracket to get last valid length? 
+    "))()"
     max_len = 0
-
-    for i, ch in enumerate(s):
-        if ch == '(':
-            stack.append(i)
+    last = [-1]
+    for i in range(len(s)):
+        if s[i] == '(':
+            last.append(i)
         else:
-            stack.pop()
-            if not stack:
-                stack.append(i)
+            last.pop()
+            if not last:
+                last.append(i)
             else:
-                max_len = max(max_len, i - stack[-1])
-
+                last_invalid = last[-1]
+                max_len = max(max_len, i - last_invalid)
+            # print(last_invalid, i, last)
     return max_len
+
+
+
 
 
 # ---------------------------- Test cases ----------------------------
