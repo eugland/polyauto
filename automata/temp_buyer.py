@@ -357,7 +357,7 @@ def _place_resting_sells(
 
     for pos in no_positions:
         tid = str(pos["token_id"])
-        target_size = round(float(pos["size"]), 2)
+        target_size = float(pos["size"])
         existing_sells = sell_orders_by_token.get(tid, [])
         open_sell_sh = round(sum(_order_open_shares(o) for o in existing_sells), 2)
 
@@ -778,7 +778,7 @@ def run(
         "TEMPBUY_MIN_BID_PCT_ABOVE", "temp_buyer", "min_bid_pct_above", 4.0,
     )
     min_bid_p75 = config.get_float(
-        "TEMPBUY_MIN_BID_P75", "temp_buyer", "min_bid_p75", 0.70,
+        "TEMPBUY_MIN_BID_P75", "temp_buyer", "min_bid_p75", 0.69,
     )
     from automata.client import get_book_depth as _get_book_depth_for_rank
     _book_host = os.environ.get("POLYMARKET_HOST", "")
@@ -1006,16 +1006,6 @@ def run(
         dry_run=dry_run,
     )
 
-    # ── Resting-sell pass: runs regardless of balance or candidate state ─────
-    log.info("[resting-sell] placing/updating sell orders for all held NO positions")
-    _place_resting_sells(
-        client,
-        live_positions=live_positions,
-        open_orders=all_open_orders,
-        sell_price=0.999,
-        dry_run=dry_run,
-    )
-
     if balance <= cfg_min_bal:
         log.info("Balance $%.2f at/below $%.2f reserve — skipping buy pass "
                  "(top-up completed)", balance, cfg_min_bal)
@@ -1031,12 +1021,11 @@ def run(
                      topup_placed, placed)
             break
 
-        # Event-level dedup: skip if we already hold (or have an open buy on)
-        # ANY bucket of this event — NO or YES, not just the one we'd bet now.
-        overlap = c["event_token_ids"] & held_token_ids
-        if overlap:
-            log.info("  already in event %s %s (token %s held) — skipping",
-                     c["city"], c["event_date"], next(iter(overlap))[:14])
+        # Token-level dedup: skip only if we already hold (or have an open buy on)
+        # this specific NO token — siblings in the same event are still eligible.
+        if c["no_token_id"] in held_token_ids:
+            log.info("  already hold NO token %s %s — skipping",
+                     c["city"], c["bucket_label"])
             continue
 
         # Re-pull live book; quote at the tighter of book ask and our cap.
@@ -1093,7 +1082,7 @@ def run(
             )
             balance = round(balance - cost, 2)
             placed += 1
-            held_token_ids |= c["event_token_ids"]
+            held_token_ids.add(c["no_token_id"])
             continue
 
         try:
@@ -1106,9 +1095,7 @@ def run(
             )
             balance = round(balance - cost, 2)
             placed += 1
-            # Mark the whole event as held so a --max-orders > 1 run doesn't
-            # double-tap a sibling bucket we just bought into.
-            held_token_ids |= c["event_token_ids"]
+            held_token_ids.add(c["no_token_id"])
 
             try:
                 record_bet(

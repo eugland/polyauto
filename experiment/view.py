@@ -160,7 +160,7 @@ def _city_date_from_slug(slug: str) -> tuple[str | None, datetime | None, str | 
 
 
 def _resolution_dt(event: dict, city: str | None, event_date: datetime | None) -> datetime | None:
-    """Resolution = local 3pm at event's location, returned as a tz-aware datetime."""
+    """Resolution = end of day (23:59:59 local) at event's location, returned as a tz-aware datetime."""
     if not event_date:
         return None
     tz_name = _tz_for_slug(event.get("slug") or "")
@@ -171,7 +171,7 @@ def _resolution_dt(event: dict, city: str | None, event_date: datetime | None) -
         local_tz = ZoneInfo(tz_name)
     except Exception:
         return None
-    return event_date.replace(hour=15, minute=0, second=0, tzinfo=local_tz)
+    return event_date.replace(hour=23, minute=59, second=59, tzinfo=local_tz)
 
 
 def _resolution_local(event: dict, slug: str, city: str | None, event_date: datetime | None) -> str | None:
@@ -308,9 +308,10 @@ def fetch_temperature_events(window_hours: int = 48) -> list[dict]:
             if not _SLUG_RE.match(slug):
                 continue
             eid = str(ev.get("id") or slug)
-            if eid in seen:
+            if eid in seen or slug in seen:
                 continue
             seen.add(eid)
+            seen.add(slug)
             out.append(ev)
 
     if errors:
@@ -329,9 +330,10 @@ def fetch_temperature_events(window_hours: int = 48) -> list[dict]:
                 if not _SLUG_RE.match(slug):
                     continue
                 eid = str(ev.get("id") or slug)
-                if eid in seen:
+                if eid in seen or slug in seen:
                     continue
                 seen.add(eid)
+                seen.add(slug)
                 out.append(ev)
             log.info("/events degraded — supplemented with public-search "
                      "(%d → %d events)", primary_count, len(out))
