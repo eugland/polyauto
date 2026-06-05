@@ -183,7 +183,7 @@ stale_minutes = 3.0
 # past this balance: bet sizes are computed against (balance - reserve),
 # the new-buy pass is skipped if balance ≤ reserve, and partial-fills use
 # only the spendable surplus. 0 = no reserve, spend whatever's there.
-min_balance_usdc = 10.0
+min_balance_usdc = 20.0
 
 # TEMPBUY_MIN_ASK_SIZE — minimum shares available at the live NO ask (CLOB book
 # depth). A thin ask queue (e.g. 5 sh) means barely anyone is selling NO there,
