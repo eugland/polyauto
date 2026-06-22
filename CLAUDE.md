@@ -32,6 +32,27 @@ python -m temp_buyer.weather --bet --interval 60
 python -m temp_buyer.view <slug-or-url>
 ```
 
+## Dashboard (web app)
+
+Flask SPA under `dashboard/` (`python -m dashboard`) — Positions, Pros, Markets,
+Backtester tabs. Serves on `[dashboard].port` (default 8000).
+
+**Runs long-lived in a tmux session** named `web`, pane `web:0.0`, in the
+foreground (werkzeug + balance poller log there). It runs the venv interpreter:
+`.venv/bin/python -m dashboard`.
+
+Restart after editing any `dashboard/*.py` (no reloader unless `--debug`):
+
+```bash
+tmux send-keys -t web:0.0 C-c                              # stop
+# wait for :8000 to free, then:
+tmux send-keys -t web:0.0 '.venv/bin/python -m dashboard' Enter
+curl -s localhost:8000/api/health                          # {"ok":true}
+```
+
+`.js`/`.html`/`.css` edits need only a browser hard-refresh, not a restart.
+Other tmux sessions on this box: `cloudflared`, `weather`, `xmr-22` — leave them.
+
 ## Configuration
 
 Split across two files:

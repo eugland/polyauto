@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Polyauto Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232d6cdf'/%3E%3Cpath d='M6 22 L13 14 L19 18 L26 8' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+  <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle sidebar">☰</button>
+  <nav class="sidebar">
+    <div class="brand">◧ Polyauto</div>
+    <button class="nav-item active" data-tab="positions">Positions</button>
+    <button class="nav-item" data-tab="pros">Pros</button>
+    <button class="nav-item" data-tab="markets">Markets</button>
+    <button class="nav-item" data-tab="backtester">Backtester</button>
+    <div class="nav-spacer"></div>
+    <div class="nav-foot" id="nav-addr">—</div>
+  </nav>
+
+  <main class="content">
+    <!-- Positions -->
+    <section class="tab active" id="tab-positions">
+      <h1>Positions</h1>
+      <div class="cards">
+        <div class="card"><div class="card-label">Total balance</div><div class="card-value" id="m-total">—</div></div>
+        <div class="card"><div class="card-label">Portfolio value</div><div class="card-value" id="m-portfolio">—</div></div>
+        <div class="card"><div class="card-label">Cash</div><div class="card-value" id="m-cash">—</div></div>
+        <div class="card"><div class="card-label">User</div><div class="card-value small" id="m-user">—</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          Profit / loss
+          <select id="balance-range" class="range-sel">
+            <option value="1">1D</option><option value="7">1W</option>
+            <option value="30" selected>1M</option><option value="365">1Y</option>
+            <option value="36500">All</option>
+          </select>
+        </div>
+        <canvas id="chart-balance" height="90"></canvas>
+        <div class="muted" id="balance-empty" hidden>No P&L data for this wallet.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">Holdings</div>
+        <div id="positions-table"></div>
+      </div>
+    </section>
+
+    <!-- Pros -->
+    <section class="tab" id="tab-pros">
+      <h1>Pros</h1>
+      <div class="pros-wrap">
+        <div class="panel pros-list">
+          <div class="panel-head">
+            Watchlist
+            <form id="pro-add" class="inline-add">
+              <input id="pro-label" placeholder="Label" />
+              <input id="pro-addr" placeholder="0x wallet address" />
+              <button type="submit">Add</button>
+            </form>
+          </div>
+          <div id="pros-list" class="pro-chips"></div>
+        </div>
+        <div class="pro-detail-title" id="pro-title">Select a trader</div>
+        <div class="panel">
+          <div class="panel-head">
+            Profit / loss
+            <select id="pro-balance-range" class="range-sel">
+              <option value="1">1D</option><option value="7">1W</option>
+              <option value="30" selected>1M</option><option value="365">1Y</option>
+              <option value="36500">All</option>
+            </select>
+          </div>
+          <canvas id="chart-pro-balance" height="80"></canvas>
+          <div class="muted" id="pro-balance-empty" hidden>No P&L data for this trader.</div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">Positions</div>
+          <div id="pro-positions"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">Recent activity</div>
+          <div id="pro-activity"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Markets -->
+    <section class="tab" id="tab-markets">
+      <h1>Markets</h1>
+      <div class="panel">
+        <div class="panel-head">
+          Quotes
+          <form id="quote-add" class="inline-add">
+            <input id="quote-input" placeholder="Add symbol (e.g. NVDA, BTC-USD)" />
+            <button type="submit">Add</button>
+          </form>
+        </div>
+        <div id="quotes-table"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          Price chart
+          <select id="mkt-symbol"></select>
+          <select id="mkt-range">
+            <option value="1d">1D</option><option value="5d">1W</option>
+            <option value="1mo">1M</option><option value="1y" selected>1Y</option>
+            <option value="5y">5Y</option><option value="10y">10Y</option>
+          </select>
+        </div>
+        <canvas id="chart-market" height="90"></canvas>
+      </div>
+    </section>
+
+    <!-- Backtester -->
+    <section class="tab" id="tab-backtester">
+      <h1>Backtester</h1>
+      <form class="bt-form" id="bt-form">
+        <label>Symbol <input id="bt-symbol" value="SPY" /></label>
+        <label>Contribution $ <input id="bt-amount" type="number" value="100" min="0" /></label>
+        <label>Initial offset $ <input id="bt-initial" type="number" value="0" min="0" /></label>
+        <label>Frequency
+          <select id="bt-freq"><option value="weekly" selected>Weekly</option><option value="monthly">Monthly</option></select>
+        </label>
+        <label>Start <input id="bt-start" type="date" value="2020-01-01" /></label>
+        <label>End <input id="bt-end" type="date" value="2025-01-01" /></label>
+        <button type="submit">Add</button>
+      </form>
+      <div class="panel"><div class="panel-head">Equity curves</div><canvas id="chart-bt" height="90"></canvas></div>
+      <div id="bt-runs" class="bt-runs"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

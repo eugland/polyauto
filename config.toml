@@ -191,3 +191,31 @@ connect_timeout = 10
 read_timeout = 30
 max_attempts = 4
 backoff_base = 1.5
+
+
+[dashboard]
+# Dashboard web app (python -m dashboard). All values overridable via the
+# matching UPPERCASE env var.
+# DASHBOARD_PORT
+port = 8000
+# DASHBOARD_POLL_INTERVAL_SECONDS — balance-snapshot cadence
+poll_interval_seconds = 300
+# DASHBOARD_MY_ADDRESS — wallet to show on the Positions tab. Blank = use
+# POLYMARKET_FUNDER from .env.
+my_address = ""
+# DASHBOARD_PROS — other traders to watch, "label:0xaddress" each.
+# Addresses recovered from the old pro_study/ dumps (git 68e58be).
+# (auniwarper 0x0ec4…5ed3 is your own funder — shown on the Positions tab.)
+pros = [
+    "ColdMath:0x594edb9112f526fa6a80b8f858a6379c8a2c1c11",
+    "Hans323:0x0f37cb80dee49d55b5f6d9e595d52591d6371410",
+    "aapang:0x104171232971a6db8cf938f76fdbebbb81c5f452",
+    "aenews2:0x44c1dfe43260c94ed4f1d00de2e1f80fb113ebc1",
+    "gopfan:0x6af75d4e4aaf700450efbac3708cce1665810ff1",
+    "gopfan2:0xf2f6af4f27ec2dcf4072095ab804016e14cd5817",
+    "haerder:0x8dec027d883949a6bfe79842d0ae6b80347e46e0",
+    "sin3000:0x8d71ff86701227bb479b2039edd92b08f73115d8",
+]
+# DASHBOARD_STOCK_WATCHLIST / DASHBOARD_CRYPTO_WATCHLIST — yfinance tickers.
+stock_watchlist = ["SPY", "QQQ", "AAPL"]
+crypto_watchlist = ["BTC-USD", "ETH-USD"]
