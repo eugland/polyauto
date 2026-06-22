@@ -63,13 +63,6 @@ ENV/
 # Environment variables
 .env
 .env.*
-restream/.env
-restream/.session.json
-restream/recordings/
-restream/cuts/
-restream/youtube_token.json
-restream/youtube_oauth_client.json
-restream/upload_log.json
 
 # IDEs / editors
 .idea/
@@ -85,8 +78,3 @@ Thumbs.db
 *.log
 db/
 logs/
-experiment/cache/
-
-# btc_1h_backtest: source under VCS, generated artifacts ignored
-experiment/btc_1h_backtest/results*.parquet
-experiment/btc_1h_backtest/REPORT*.md

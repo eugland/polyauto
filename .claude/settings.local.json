@@ -15,12 +15,7 @@
       "Bash(curl -s 'https://historical-forecast-api.open-meteo.com/v1/forecast?latitude=19.436&longitude=-99.072&start_date=2026-04-15&end_date=2026-04-18&daily=temperature_2m_max&temperature_unit=celsius&timezone=auto&models=best_match')",
       "Bash(curl -s 'https://archive-api.open-meteo.com/v1/archive?latitude=19.436&longitude=-99.072&start_date=2026-04-15&end_date=2026-04-18&daily=temperature_2m_max&temperature_unit=celsius&timezone=auto')",
       "Bash(.venv/bin/python -m scripts.backfill_training --days 180 --workers 12)",
-      "Bash(.venv/bin/python *)",
-      "Bash(pkill -f 'stock.*8081')",
-      "Bash(curl -s 'http://localhost:8081/api/weather-model/live?window_min=30')",
-      "Bash(curl -s -i 'http://localhost:8081/api/weather-model/live?window_min=30')",
-      "Bash(curl -s \"http://localhost:8081/api/weather-model/calibration\")",
-      "Bash(curl -s \"http://localhost:8081/weather-model\")"
+      "Bash(.venv/bin/python *)"
     ]
   }
 }

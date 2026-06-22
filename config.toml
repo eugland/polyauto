@@ -38,7 +38,7 @@ mm_reprice_cents = 0.10
 # ── City filter ───────────────────────────────────────────────────────────
 # CITY_BLACKLIST — cities excluded from all candidates and top-ups.
 # Override at runtime with comma-separated env var, e.g.
-# CITY_BLACKLIST=Seoul,Lagos python -m automata.weather --bet
+# CITY_BLACKLIST=Seoul,Lagos python -m temp_buyer.weather --bet
 city_blacklist = [
     "Seoul",
     "Taipei",
@@ -82,57 +82,8 @@ bet_passes = 3
 bet_pass_wait_seconds = 10
 
 
-[lowbuy]
-# Safe-NO buyer for the LOWEST temperature brackets of the closest-resolving
-# "Highest Temperature in <city>" markets. Bets NO at near-1 prices on a
-# bracket only when today's observed METAR max-so-far has ALREADY climbed
-# above the bracket's upper bound by `safety_margin`, guaranteeing the
-# bracket is mathematically locked out of winning YES.
-
-# ── Price gates ───────────────────────────────────────────────────────────
-min_no_price = 0.97
-max_no_price = 0.997
-
-# ── Safety margin (degrees) between max-so-far-today and bracket upper ────
-# Only bet NO when max_so_far >= bracket_upper + safety_margin.
-safety_margin_c = 3.0
-safety_margin_f = 6.0
-
-# ── Resolution window ─────────────────────────────────────────────────────
-# Only consider events resolving in this window from now (hours).
-# max_hours bounds how far ahead to look; min_hours filters out
-# already-resolved-but-still-open events.
-min_hours_to_resolution = 0.0
-max_hours_to_resolution = 24.0
-
-# ── Selection ─────────────────────────────────────────────────────────────
-# Number of closest-resolving events to scan, and max safe brackets per event.
-target_events = 500
-max_brackets_per_event = 20
-
-# ── Forecast cross-check ──────────────────────────────────────────────────
-# Disabled: lowbuy uses METAR max-so-far only (no Open-Meteo forecast cross-check).
-require_forecast_confirm = false
-
-# ── Bet sizing ────────────────────────────────────────────────────────────
-bet_size_shares = 22.0
-
-# ── Market-maker pricing (mirrors [weather]) ──────────────────────────────
-mm_tick_size = 0.001
-mm_join_bid_ticks = 1
-mm_reprice_cents = 0.10
-
-# ── City filter ───────────────────────────────────────────────────────────
-city_blacklist = []
-
-# ── Order retries ─────────────────────────────────────────────────────────
-stale_order_minutes = 1.0
-bet_passes = 2
-bet_pass_wait_seconds = 10
-
-
 [temp_buyer]
-# automata.temp_buyer — buys NO at the top of the experiment.view list
+# temp_buyer.temp_buyer — buys NO at the top of the temp_buyer.view list
 # (lowest temp bucket sitting strictly below the YES-favorite). The
 # city blacklist is shared with [weather] so this section doesn't
 # duplicate it.
@@ -240,48 +191,3 @@ connect_timeout = 10
 read_timeout = 30
 max_attempts = 4
 backoff_base = 1.5
-
-
-[restream]
-# Twitch -> YouTube restream daemon (restream/ package).
-# Secrets (TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET) stay in restream/.env.
-# Every value below is also overridable via an environment variable of the
-# same UPPERCASE name.
-
-# TWITCH_CHANNEL — which Twitch channel to watch.
-twitch_channel = "hasanabi"
-
-# YOUTUBE_BROADCAST_PRIVACY — public | unlisted | private
-youtube_broadcast_privacy = "public"
-# YOUTUBE_LATENCY — viewer-side buffering. Bigger = smoother.
-#   normal   ~10-15s buffer, most forgiving (recommended)
-#   low      ~5s buffer
-#   ultraLow ~2s buffer, most "live" but most prone to stalls
-youtube_latency = "normal"
-# Paths to the OAuth client secret + cached user token (files themselves
-# are gitignored — these are just pointers).
-youtube_oauth_client_file = "restream/youtube_oauth_client.json"
-youtube_token_file = "restream/youtube_token.json"
-
-# RESTREAM_QUALITY — streamlink quality token: best, 1080p60, 720p, ...
-quality = "best"
-# RESTREAM_RETRY_SECONDS — Helix poll interval when Twitch is offline
-retry_seconds = 30
-# RESTREAM_RECONNECT_SECONDS — delay before reconnecting to the same
-# broadcast after a pipe drop (ffmpeg / streamlink exit)
-reconnect_seconds = 5
-# RESTREAM_HLS_LIVE_EDGE — # segments behind Twitch's live edge. Each segment
-# is ~2s, so 15 ≈ 30s of buffer against HLS hiccups.
-hls_live_edge = 15
-# RESTREAM_BUFFER_MB — streamlink in-memory ring buffer
-buffer_mb = 64
-# RESTREAM_REENCODE_AUDIO / RESTREAM_REENCODE_VIDEO
-# Audio re-encode kills ad-break beeps (~5% CPU). Video re-encode smooths
-# PTS across ad boundaries (~1 CPU core) and is off by default — the
-# audio re-encode alone resolves 95% of the observable weirdness. Flip
-# reencode_video back to true, or pass --full-reencode, if you see
-# visible glitches at Twitch ad breaks. --passthrough disables both.
-reencode_audio = true
-reencode_video = false
-# RESTREAM_VIDEO_BITRATE_KBPS — only used when reencode_video = true
-video_bitrate_kbps = 6000
